@@ -1,4 +1,3 @@
-# ===============================================================================
 # YUREEKA AI RESEARCH ASSISTANT v7.41
 # With Web Search, Evidence-Based Verification, Confidence Scoring
 # SerpAPI Output with Evolution Layer Version
@@ -48,7 +47,6 @@
 # Enriched metric_schema_frozen (analysis side)
 # THIS VERSION HAS THE PLUMBING LOCKED-DOWN
 # ONLY THE METRIC EXTRACTION LAYER FOR EVOLUTION REQUIRES WORK
-# ================================================================================
 
 import io
 import os
@@ -60,7 +58,6 @@ import plotly.express as px
 import streamlit as st
 
 
-# PATCH FIX2D64 (SHADOW MODE): Canonical Identity Spine module import (no behavior change).
 # Enabled only if caller sets web_context["enable_spine_shadow_fix2d64"]=True or env ENABLE_SPINE_SHADOW_FIX2D64=1.
 try:
     import canonical_identity_spine as _canonical_identity_spine_fix2d64
@@ -84,22 +81,17 @@ from bs4 import BeautifulSoup
 from collections import Counter
 from pydantic import BaseModel, Field, ValidationError, ConfigDict
 
-# =========================
 # VERSION STAMP (LOCKED)
-# =========================
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "REFACTOR97"
+_YUREEKA_CODE_VERSION_LOCK = "REFACTOR98"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 
-# =============================================================================
-# PATCH TRACKER V1 (CONSOLIDATED): REFACTOR86
 # - Downsizing step 1: remove accumulated per-patch try/append scaffolding.
 # - Registers a canonical entries list idempotently at import time.
-# =============================================================================
 
-_PATCH_TRACKER_CANONICAL_ENTRIES_V1 = [{'patch_id': 'REFACTOR25', 'date': '2026-01-24', 'summary': 'Add production-only Analysis→Evolution run delta column for metric changes. Standardize top-level timestamps to UTC (+00:00), compute/stamp run_timing_v1 (delta_seconds/human) in Evolution results, and gate per-row delta display when current metric is sourced from injected URLs.', 'files': ['REFACTOR25_full_codebase_streamlit_safe.py'], 'supersedes': ['REFACTOR24']}, {'patch_id': 'REFACTOR26', 'date': '2026-01-24', 'summary': 'Tighten and centralize current metric source_url attribution for reliable row-level injection gating. Add a hydrator that fills primary_metrics_canonical[*].source_url from evidence/provenance, expose current_source_url fields on diff rows, and enhance per-row injection detection to prefer row-attributed URLs before falling back to canonical maps.', 'files': ['REFACTOR26_full_codebase_streamlit_safe.py'], 'supersedes': ['REFACTOR25']}, {'patch_id': 'REFACTOR27', 'date': '2026-01-24', 'summary': "Harden unit comparability and candidate eligibility for currency metrics. Reject date-fragment currency candidates (e.g., 'July 01, 2025') during schema-only rebuild, and strengthen currency unit mismatch detection so mixed scale/code representations do not emit nonsense deltas. Also expose current_source_url on diff rows for clearer row-level injection attribution.", 'files': ['REFACTOR27_full_codebase_streamlit_safe.py'], 'supersedes': ['REFACTOR26']}, {'patch_id': 'REFACTOR28', 'date': '2026-01-24', 'summary': "Consolidate schema-only rebuild authority to eliminate stale wrapper capture chains and ensure REFACTOR27 candidate filters (especially currency date-fragment rejection) are active at runtime. This prevents day-of-month tokens like '01' from binding as currency values, restoring comparable currency baselines while preserving percent-year poisoning sanitization.", 'files': ['REFACTOR28_full_codebase_streamlit_safe.py'], 'supersedes': ['REFACTOR27']}, {'patch_id': 'REFACTOR29', 'date': '2026-01-24', 'summary': 'Refine REFACTOR25 run-delta harness and diagnostics: replace overly-strict global injection assertion with per-row gating stats (injected rows must have blank delta, production rows should show delta when available). Persist row_delta_gating_v1 into run_timing_v1 for easier debugging, without changing schema/key grammar or diff behavior.', 'files': ['REFACTOR29_full_codebase_streamlit_safe.py'], 'supersedes': ['REFACTOR28']}, {'patch_id': 'REFACTOR30', 'date': '2026-01-24', 'summary': 'Fix REFACTOR29 run_timing_v1 row_delta_gating_v1 double-counting: apply per-row Analysis→Evolution delta stamping once (primary metric_changes list) and propagate to metric_changes_v2 by canonical_key, so diagnostic counts match the displayed table while keeping injection gating behavior unchanged.', 'files': ['REFACTOR30_full_codebase_streamlit_safe.py'], 'supersedes': ['REFACTOR29']}, {'patch_id': 'REFACTOR31', 'date': '2026-01-24', 'summary': 'Add runtime_identity_v1 stamp (code_version lock + __file__ + SHA1) to Analysis/Evolution debug for diagnosing stale-version runs; and harden run_timing_v1 row_delta_gating_v1 stats to count unique canonical_keys only (prevents double-counting when both metric_changes and metric_changes_v2 exist). No schema/key-grammar changes.', 'files': ['REFACTOR31_full_codebase_streamlit_safe.py'], 'supersedes': ['REFACTOR30']}, {'patch_id': 'REFACTOR32', 'date': '2026-01-24', 'summary': "Clarify injected URL semantics: treat only UI-provided extra_urls_ui(_raw) (or explicit internal marker) as injected for debug + run-delta gating, preventing production source URLs from being misclassified as injected. Add __yureeka_extra_urls_are_injection_v1 markers when Evolution wires injected URLs into web_context['extra_urls']. No schema/key-grammar changes.", 'files': ['REFACTOR32_full_codebase_streamlit_safe.py'], 'supersedes': ['REFACTOR31']}, {'patch_id': 'REFACTOR33', 'date': '2026-01-24', 'summary': 'Downsize footprint by deleting shadowed duplicate top-level function definitions and redundant metric_changes_legacy preservation block, keeping only the final authoritative implementations. No schema/key-grammar changes.', 'files': ['REFACTOR33_full_codebase_streamlit_safe.py'], 'supersedes': ['REFACTOR32']}, {'patch_id': 'REFACTOR34', 'date': '2026-01-24', 'summary': 'Fix a missing return in rebuild_metrics_from_snapshots_schema_only_fix17 that caused schema-only rebuilds to return None, breaking Analysis primary_metrics_canonical persistence and Evolution diffing after REFACTOR33 deletions. No schema/key-grammar changes.', 'files': ['REFACTOR34_full_codebase_streamlit_safe.py'], 'supersedes': ['REFACTOR33']}, {'patch_id': 'REFACTOR24', 'date': '2026-01-23', 'summary': 'Fix REFACTOR23 syntax regression (mis-indented try block) and make currency-aware unit_cmp construction consistent across all get_canonical_value_and_unit() definitions (USD:B, EUR:B, etc.) so cross-currency deltas are vetoed deterministically.', 'files': ['REFACTOR24_full_codebase_streamlit_safe.py'], 'supersedes': ['REFACTOR23']}, {'patch_id': 'REFACTOR23', 'date': '2026-01-23', 'summary': 'Unit consistency hardening: carry currency_code through candidate canonicalization & schema-only rebuild; include currency_code in diff unit_cmp token for currency metrics (detect USD vs EUR rather than silently comparing); and fix a small anchor-rebuild NameError to keep anchor path safe.', 'files': ['REFACTOR23_full_codebase_streamlit_safe.py'], 'supersedes': ['REFACTOR22']}, {'patch_id': 'REFACTOR22', 'date': '2026-01-23', 'summary': "Fix unit-family noise for yearlike tokens: normalize_unit_family() no longer infers percent/currency/magnitude from surrounding context when unit_tag is empty and raw token is a plain 4-digit year (1900–2100). This reduces unit inconsistencies in baseline_sources_cache and prevents misleading 'percent_tag' traces on year/range endpoints, without changing canonical binding or diff behavior.", 'files': ['REFACTOR23_full_codebase_streamlit_safe.py'], 'supersedes': ['REFACTOR21']}, {'patch_id': 'REFACTOR21', 'date': '2026-01-23', 'summary': "Harden unit inference against year/range artifacts: mark 4-digit year tokens as junk (year_token) when unitless, prevent context-driven unit backfill for yearlike candidates, and tag negative endpoints produced by hyphen ranges (e.g., '151-300' -> '-300') as junk (hyphen_range_negative_endpoint). Reduces unit inconsistencies and percent/currency 'poisoning' from nearby context.", 'files': ['REFACTOR21_full_codebase_streamlit_safe.py'], 'supersedes': ['REFACTOR20']}, {'patch_id': 'REFACTOR20', 'date': '2026-01-23', 'summary': "Fix false currency evidence hits caused by substring matches (e.g., 'eur'/'euro' inside 'Europe'). Introduce boundary-aware currency detection helper and use it in infer_unit_tag_from_context() and normalize_unit_family(), preventing 'million units' candidates from being misclassified as currency in Europe contexts.", 'files': ['REFACTOR20_full_codebase_streamlit_safe.py'], 'supersedes': ['REFACTOR19']}, {'patch_id': 'REFACTOR19', 'date': '2026-01-23', 'summary': 'Restore Analysis/Evolution parity for schema_only_rebuild outputs by including unit_tag, unit_family, base_unit, and multiplier_to_base (plus raw) on rebuilt primary_metrics_canonical entries. This keeps diff comparability deterministic and prevents downstream re-parsing of current values.', 'files': ['REFACTOR19_full_codebase_streamlit_safe.py'], 'supersedes': ['REFACTOR18']}, {'patch_id': 'REFACTOR18', 'date': '2026-01-23', 'summary': 'Harden authoritative diff binding signal: ensure diff_metrics_by_name always carries a reliable __YUREEKA_AUTHORITATIVE_BINDING__ tag (with globals fallback when callable wrappers reject setattr). Make binding_manifest_v1 self-contained (use local bound_from values) and update harness report IDs to the current refactor version for cleaner diagnostics.', 'files': ['REFACTOR18_full_codebase_streamlit_safe.py'], 'supersedes': ['REFACTOR17']}, {'patch_id': 'REFACTOR17', 'date': '2026-01-23', 'summary': 'Add concise in-file debug playbook and surface an authoritative binding manifest for Diff Panel V2 entrypoint (plus legacy diff_metrics_by_name when available). Improves manifest resilience when Streamlit triggers execution before later defs.', 'files': ['REFACTOR17_full_codebase_streamlit_safe.py'], 'supersedes': ['REFACTOR16']}, {'patch_id': 'REFACTOR16', 'date': '2026-01-23', 'summary': 'Hard-lock CODE_VERSION to REFACTOR16 across legacy override sites; expand FINAL BINDINGS candidate set to include _yureeka_diff_metrics_by_name_v24; make binding_manifest_v1 resolve/report the actual diff entrypoint even when Streamlit executes before later diff wrapper defs.', 'files': ['REFACTOR16_full_codebase_streamlit_safe.py'], 'supersedes': ['REFACTOR15']}, {'patch_id': 'REFACTOR02', 'date': '2026-01-21', 'summary': 'Add refactor regression harness (Analysis→Evolution) gated by explicit flag; emits JSON report + asserts diff invariants (both_count > 0, no prev-metrics sentinel, percent-year token rule).', 'files': ['REFACTOR02_full_codebase_streamlit_safe.py'], 'supersedes': ['FIX2D86']}, {'patch_id': 'REFACTOR03', 'date': '2026-01-21', 'summary': 'Fix REFACTOR02 regression: enforce unit-family + scale eligibility in schema-only rebuild; detect unit mismatch in diff panel and mark as unit_mismatch (avoid bogus B vs M diffs).', 'files': ['REFACTOR03_full_codebase_streamlit_safe.py'], 'supersedes': ['REFACTOR02']}, {'patch_id': 'REFACTOR10', 'date': '2026-01-21', 'summary': 'Fix false unit_mismatch caused by context_snippet percent leakage; enrich schema-anchored rebuilt PMC with unit_tag/unit_family/multiplier_to_base; tighten unit-family evidence checks to prefer token/raw evidence over broad context for magnitude keys; update refactor harness labels to REFACTOR04.', 'files': ['REFACTOR04_full_codebase_streamlit_safe.py'], 'supersedes': ['REFACTOR03']}, {'patch_id': 'REFACTOR05', 'date': '2026-01-21', 'summary': 'Selection gating + harness fix: block currency/percent candidates from __unit_* keys, promote raw/unit metadata into PMC for parity, and make harness read evidence lists.', 'files': ['REFACTOR05_full_codebase_streamlit_safe.py'], 'supersedes': ['REFACTOR04']}, {'patch_id': 'REFACTOR07', 'date': '2026-01-22', 'summary': 'Freeze versioning as single-source-of-truth using a refactor version lock; ensure JSON outputs use the locked version; add binding_manifest_v1 and harness assertions for version + authoritative diff binding; update FINAL BINDINGS and harness report labels to REFACTOR07.', 'files': ['REFACTOR07_full_codebase_streamlit_safe.py'], 'supersedes': ['REFACTOR06']}, {'patch_id': 'REFACTOR08', 'date': '2026-01-22', 'summary': 'Enhance refactor regression harness with consistent REFACTOR08 labels/versioning, dynamic authoritative diff binding expectation, and summary consistency checks (rows_total/partition/found/not_found/key_overlap). Update FINAL BINDINGS tag and locked CODE_VERSION to REFACTOR08.', 'files': ['REFACTOR08_full_codebase_streamlit_safe.py'], 'supersedes': ['REFACTOR07']}, {'patch_id': 'REFACTOR06', 'date': '2026-01-22', 'summary': 'Freeze authoritative runtime bindings: add FINAL BINDINGS section for diff_metrics_by_name, tag authoritative function for harness verification, and update harness report/version labels.', 'files': ['REFACTOR06_full_codebase_streamlit_safe.py'], 'supersedes': ['REFACTOR05']}, {'patch_id': 'REFACTOR46', 'date': '2026-01-25', 'summary': 'Prevent refactor harness from terminating Streamlit runtime (disable harness under Streamlit; double-guard EOF harness dispatch).', 'files': ['REFACTOR46_full_codebase_streamlit_safe.py'], 'supersedes': ['REFACTOR45']}, {'patch_id': 'FIX2D71', 'date': '2026-01-19', 'summary': 'Commit schema-keyed baseline canonical metrics during Analysis: if schema authority selection yields no winners but baseline_schema_metrics_v1 is non-empty, promote that schema-keyed (auditable proxy) map into primary_metrics_canonical so Evolution has prev canonical metrics for metric_changes_v2 diffing.', 'files': ['FIX2D71_full_codebase.py'], 'supersedes': ['FIX2D70']}, {'patch_id': 'FIX2D70', 'date': '2026-01-19', 'summary': 'Controlled schema-candidate reconciliation during schema-anchored rebuild: relax key-year matching (±1 for single-year keys, overlap for ranges) and keyword gating only when strict prefilter yields zero candidates, while emitting FIX2D70 rejection counts and relax flags for audit. This closes the last-mile binding gap without reintroducing heuristic matching.', 'files': ['FIX2D70_full_codebase.py'], 'supersedes': ['FIX2D69B']}, {'patch_id': 'FIX2D69', 'date': '2026-01-19', 'summary': 'Hard-wire numeric extraction on injected snapshot_text: when injected placeholders are fetched (FIX41AFC16), convert HTML to plain text if needed, always extract numbers from the non-empty text, and store content_len/clean_text_len plus FIX2D68 extraction diagnostics and errors. Also defensively initialize observed_rows_filtered_noninjected to prevent UnboundLocalError in Diff Panel V2 summary.', 'files': ['FIX2D69_full_codebase.py'], 'supersedes': ['FIX2D68']}, {'patch_id': 'FIX2D66G', 'date': '2026-01-19', 'summary': 'Google Sheets write resiliency: always mirror saved analyses into session_state history; if Sheets write fails, set a flag and record _SHEETS_LAST_WRITE_ERROR so get_history() falls back to session_state when Sheet reads are empty. Prevents Evolution from being blocked by transient Sheets save failures. No changes to extraction/diffing.', 'files': ['FIX2D66G_full_codebase.py'], 'supersedes': ['FIX2D66']}, {'patch_id': 'FIX2D66', 'date': '2026-01-19', 'summary': 'Deterministic injected-URL admission: promote UI raw/diag injection fields into web_context.extra_urls and synthesize diag_injected_urls when missing, so inj_diag/inj_trace_v1 reliably reflect injected URLs in snapshot pool and hash inputs (auditable). No UI/diff changes.', 'files': ['FIX2D66_full_codebase.py'], 'supersedes': ['FIX2D65D']}, {'patch_id': 'FIX2D65A', 'date': '2026-01-19', 'summary': "Hotfix for FIX2D65: repair syntax-corrupted duplicate selector block; make yearlike prune non-fatal (never empties pool); make 'rebuild empty with snapshots' non-fatal so Evolution can still emit JSON diagnostics.", 'files': ['FIX2D65A_full_codebase.py'], 'supersedes': ['FIX2D65']}, {'patch_id': 'FIX2D44', 'date': '2026-01-17', 'summary': 'Fix Analysis baseline schema baseline materialisation: define _core in attach_source_snapshots_to_analysis so FIX2D31/FIX2D38 baseline_schema_metrics_v1 builder executes; emit results.baseline_schema_metrics_v1 for Evolution diff join.', 'files': ['FIX2D44.py'], 'supersedes': ['FIX2D43']}, {'patch_id': 'FIX2D59', 'summary': 'Canonical identity resolver v1: define identity tuple + schema-first resolver; route canonical key minting through resolver to align Analysis and Evolution key authority.'}, {'patch_id': 'FIX2D60', 'summary': 'Enforce schema-only canonical store (Analysis) and hard-reject bare-year candidates for unit/count keys at schema_only_rebuild commit point (Evolution).'}, {'patch_id': 'FIX2D61', 'summary': 'Option A schema extension: generate promotion proposals from primary_metrics_provisional and (optionally) promote them into metric_schema_frozen with full audit metadata; enables closing remaining coverage gaps without reintroducing heuristic canonical minting.'}, {'patch_id': 'FIX2D62', 'summary': 'Normalize time tokens into identity tuple (year/YTD/forecast) + schema-first resolver uses metric_token+time_scope to match schema; prevents 2024/2025 contamination of metric_token and improves Analysis/Evolution convergence.'}, {'patch_id': 'FIX2D63', 'summary': 'Harden schema_only_rebuild_fix17 against injected-year pollution for unit/count metrics: fix _c variable typo in FIX2D2U gate and reject yearlike candidates without unit evidence upstream.'}, {'patch_id': 'FIX2D64', 'summary': 'Add Canonical Identity Spine V1 module (shadow mode only) + minimal regressions: centralizes identity tuple, schema-first resolver contract, and value selection with yearlike rejection immune to context unit backfill.', 'files': ['canonical_identity_spine.py', 'FIX2D64_full_codebase.py'], 'supersedes': ['FIX2D63']}, {'patch_id': 'FIX2D65', 'date': '2026-01-19', 'summary': 'Authority takeover: make Canonical Identity Spine V1 the only key-resolution authority (Analysis+Evolution) and add hard gates; prune yearlike candidates for unit/count metrics immune to context unit backfill.', 'files': ['canonical_identity_spine.py', 'FIX2D65_full_codebase.py'], 'supersedes': ['FIX2D64']}, {'patch_id': 'FIX2D40', 'summary': 'Analysis: when schema is frozen, remap best-fit baseline metrics from generic canonical keys onto schema canonical keys (one-to-one) to enable baseline diffing; stamps explicit schema_remap audit fields; retains FIX2D39 hard unit/dimension rejection.', 'files': ['FIX2D40.py'], 'supersedes': ['FIX2D39']}, {'patch_id': 'FIX2D32', 'date': '2026-01-17', 'summary': 'Diff Panel V2: treat anchor_hash mismatches as still diffable when canonical_key + unit-family gates pass; stamp row-level anchor_mismatch_diffable_v1 diagnostics and count such joins for audit.', 'files': ['FIX2D32.py'], 'supersedes': ['FIX2D31']}, {'patch_id': 'FIX2D33', 'date': '2026-01-17', 'summary': 'Analysis schema-primary rebuild: baseline commitment for schema keys by backfilling missing value_norm from raw/value via deterministic parser when selector chooses a candidate but value_norm is None; improves baseline comparability without weakening semantic gates.', 'files': ['FIX2D33.py'], 'supersedes': ['FIX2D32']}, {'patch_id': 'FIX2D25', 'date': '2026-01-16', 'summary': 'Re-enable Analysis→Evolution diffing by adding deterministic, unit-family-guarded inference for baseline keys in Diff Panel V2 when ckey/anchor joins miss; keep FIX2D20/FIX2D24 tracing and yearlike current blocking.', 'files': ['FIX2D25.py'], 'supersedes': ['FIX2D23']}, {'patch_id': 'FIX2D2D', 'date': '2026-01-16', 'summary': 'Fix Diff Panel V2 crash (prev_v/cur_v NameError) by using correctly scoped norm variables in traces; simplify end-of-file version stamping to a single final override.', 'files': ['FIX2D2D.py'], 'supersedes': ['FIX2D2C']}, {'patch_id': 'FIX2D2E', 'date': '2026-01-16', 'summary': 'Make Diff Panel V2 binding inference authoritative in the active FIX2J override path by committing inferred current_value/current_value_norm/current_source/current_method when joins miss; add explicit inference_commit trace; keep FIX2D24 year blocking and unit-first eligibility.', 'files': ['FIX2D2E.py'], 'supersedes': ['FIX2D2D']}, {'patch_id': 'FIX2D2I', 'date': '2026-01-16', 'summary': 'Enable binding inference fallback when a joined current value is blocked as unitless yearlike; add unit-family backfill for extracted_numbers pool candidates and trace the backfill/override in Diff Panel V2 __rows.', 'files': ['FIX2D2I.py'], 'supersedes': ['FIX2D2G']}, {'patch_id': 'FIX2D2J', 'date': '2026-01-16', 'summary': 'Deterministic unit/measure classifier for extracted numeric candidates: backfill unit_family from unit_tag and currency evidence in context; correct measure_kind/measure_assoc for currency-like candidates; attach classifier trace fields.', 'files': ['FIX2D2J.py'], 'supersedes': ['FIX2D2I']}, {'patch_id': 'FIX2D2K', 'date': '2026-01-16', 'summary': 'Context-driven unit backfill when unit_tag is empty, plus unit_family/measure_kind corrections trace (context_unit_backfill_v1).'}, {'patch_id': 'FIX2D2Z', 'date': '2026-01-17', 'summary': 'Make injected candidates first-class for Diff Panel inference by unwrapping injected scraped_meta into extracted_numbers pools; enforce hard unit-family rejection (percent/currency/units/magnitude) in fallback inference scoring to prevent leakage.', 'files': ['FIX2D2Z.py'], 'supersedes': ['FIX2D2Y']}, {'patch_id': 'FIX2D30', 'date': '2026-01-17', 'summary': "Contextual unit-family correction: prevent magnitude tags (e.g., M/million) in 'million units / units sold / chargers / vehicles' contexts from being misclassified as currency; remove keyword-only currency upgrades to enable clean baseline comparability without weakening hard unit-family rejection.", 'files': ['FIX2D30.py'], 'supersedes': ['FIX2D2Z']}, {'patch_id': 'FIX2D31', 'date': '2026-01-17', 'summary': 'Option A schema authority: when metric_schema_frozen is present in Analysis, rebuild primary_metrics_canonical by running the authoritative Analysis selector (_analysis_canonical_final_selector_v1) constrained to the frozen schema keys. This makes Analysis emit schema-aligned baseline metrics so Evolution injection can overlap and Diff Panel V2 can activate without weakening semantics.', 'files': ['FIX2D31.py'], 'supersedes': ['FIX2D30']}, {'patch_id': 'FIX2D2U', 'date': '2026-01-17', 'summary': 'Introduce shared semantic eligibility gate (Analysis parity) using local context_snippet; enforce it in Evolution schema-only rebuild(s) and Analysis selector to prevent cross-metric pollution (e.g., China sales value mapping into chargers 2040).', 'files': ['FIX2D2U.py'], 'supersedes': ['FIX2D2T']}, {'patch_id': 'FIX2D26', 'date': '2026-01-16', 'summary': 'Unit-first, context-bound inference candidate picker for Diff Panel V2 (Analysis→Evolution). Prefers percent/units/currency matches with keyword binding; rejects bare-year tokens pre-score; adds per-row trace counters.', 'files': ['FIX2D26.py'], 'supersedes': ['FIX2D25']}, {'patch_id': 'FIX2D28', 'date': '2026-01-16', 'summary': 'Close Diff Panel V2 binding gap: when inference selects a current value, commit it into UI/diff-read fields (current_value, current_value_norm, current_source, current_method) and mark baseline_is_comparable once all guards pass.', 'files': ['FIX2D28.py'], 'supersedes': ['FIX2D27']}, {'patch_id': 'FIX2D29', 'date': '2026-01-16', 'summary': 'Fix FIX2D28 insertion placement and complete write-through: commit inference/joined current values into metric_changes fields used by UI/diff (current_value, current_value_norm, current_source, current_method) and set baseline_is_comparable when numeric.', 'files': ['FIX2D29.py'], 'supersedes': ['FIX2D28']}, {'patch_id': 'FIX2D2A', 'date': '2026-01-16', 'summary': 'Enable guarded inference in Diff Panel V2 regardless of join mode; add explicit inference gate + attempted traces so binding inference can commit current values.', 'files': ['FIX2D2A.py']}, {'patch_id': 'FIX2D2B', 'date': '2026-01-16', 'summary': 'Correct version stamping for FIX2D2A runtime by bumping CODE_VERSION and adding final end-of-file override to prevent legacy late assignments from masking patch id.', 'files': ['FIX2D2B.py'], 'supersedes': ['FIX2D2A']}, {'patch_id': 'FIX2D2C', 'date': '2026-01-16', 'summary': 'Fix Diff Panel V2 NameError by defining guarded inference gate in the active builder (build_diff_metrics_panel_v2) and emitting explicit inference gate trace; no heuristic changes.', 'files': ['FIX2D2C.py'], 'supersedes': ['FIX2D2B']}, {'patch_id': 'FIX2D18', 'date': '2026-01-15', 'summary': 'Re-enable schema-only rebuild eligibility gates (domain token + unit-family) and strengthen unit-sales expectations to prevent bare-year (e.g., 2030) contamination; improves baseline comparables for Analysis→Evolution diffing.', 'files': ['FIX2D18.py']}, {'patch_id': 'FIX2D19', 'date': '2026-01-16', 'summary': 'Harden schema_only_rebuild_fix17 with required domain-token binding (prevents generic keyword matches) and add deterministic baseline soft-match fallback in Diff Panel V2 to enable Analysis→Evolution comparable diffs when strict joins fail.', 'files': ['FIX2D19.py']}, {'patch_id': 'FIX2D20', 'date': '2026-01-15', 'summary': 'Diagnostic-first trace: record every year-like (1900-2100) value committed to primary_metrics_canonical, including callsite tags and metric object metadata; also disable FIX2D18/FIX2D19 logic while tracing.', 'files': ['FIX2D20.py']}, {'patch_id': 'FIX2D24', 'date': '2026-01-16', 'summary': 'Last-mile guard for dashboard Current: block unitless year-like values (1900-2100, including 2030.0) from metric_changes hydration for non-year metrics; keep FIX2D20 tracing; supersedes FIX2D23 observed-only filter.', 'files': ['FIX2D24.py']}, {'patch_id': 'FIX2D21', 'date': '2026-01-16', 'summary': 'Evolution baseline-key schema: derive metric_schema_frozen from Analysis primary_metrics_canonical keys, and fix bare-year detection to reject tokens like 2030.0/2024.0; keep FIX2D20 year-commit tracing for verification.', 'files': ['FIX2D21.py']}, {'patch_id': 'FIX2D22', 'date': '2026-01-16', 'summary': 'Schema-only rebuild: enforce *eligibility-before-scoring* (hard reject bare-year tokens incl 2024/2030 and require unit-family + required domain tokens) so years cannot win; supersedes FIX2D21 selector hardening but retains baseline-key schema derivation.', 'files': ['FIX2D22.py'], 'supersedes': ['FIX2D21']}, {'patch_id': 'FIX2D11c', 'date': '2026-01-15', 'summary': 'Fix indentation/scope of FIX2D11 render fallback by ensuring it remains inside compute_source_anchored_diff (4-space indent) to avoid parse-time try/indent errors.', 'files': ['FIX2D11c.py']}, {'patch_id': 'FIX2D12', 'date': '2026-01-15', 'summary': 'Fix Diff Panel V2 premature return that prevented row emission; ensure UNION mode can emit current-only rows (added) and populate Current column.', 'files': ['FIX2D12.py']}, {'patch_id': 'FIX2D15', 'date': '2026-01-15', 'summary': 'Reject bare-year tokens (e.g., 2030) during schema-only rebuild for non-year metrics; add diagnostics to prevent year pollution and restore stable baseline comparables.', 'files': ['FIX2D15.py']}, {'patch_id': 'FIX2D16', 'date': '2026-01-15', 'summary': 'Add soft-match fallback to fill current values for baseline rows when anchor/ckey join fails; add last-mile bare-year reject for schema-only rebuild promotions. Disable FIX2D15 gating.', 'files': ['FIX2D16.py']}, {'patch_id': 'FIX2D17', 'date': '2026-01-15', 'summary': 'Harden canonical selector: reject bare-year tokens as metric values and require domain keyword overlap to prevent cross-metric pollution; deprecate FIX2D16 soft-match/year guards.', 'files': ['FIX2D17.py']}, {'patch_id': 'FIX2D13', 'date': '2026-01-15', 'summary': 'Add baseline-focused diff semantics to Diff Panel V2: classify rows as comparable/added/not_found and emit baseline delta fields + summary counters without requiring injected URLs in Analysis.', 'files': ['FIX2D13.py']}, {'patch_id': 'FIX2D11b', 'date': '2026-01-15', 'summary': 'Syntax-safe render-gate fallback: union-mode unanchored canonical_for_render without introducing nested try blocks.', 'files': ['FIX2D11b.py']}, {'patch_id': 'FIX2D11', 'date': '2026-01-15', 'summary': 'Render gate fallback in union mode: if V28 anchor-enforce yields 0 hits, populate canonical_for_render from current primary_metrics_canonical and label as unanchored-for-render.', 'files': ['FIX2D11.py']}, {'patch_id': 'FIX2D73', 'date': '2026-01-20', 'summary': 'HistoryFull persistence gap: promote baseline primary_metrics_canonical into rehydrated previous_data + ensure compute_source_anchored_diff prev_response carries canonical metrics so Diff Panel V2 can compute deltas.', 'files': ['FIX2D73_full_codebase.py']}, {'patch_id': 'FIX2D75', 'date': '2026-01-20', 'summary': 'Option B fork: materialize Analysis baseline primary_metrics_canonical (schema-anchored rebuild) and persist it (incl. primary_response) so HistoryFull replay exposes previous canonical values for diffing.', 'files': ['FIX2D75_full_codebase.py'], 'supersedes': ['FIX2D73']}, {'patch_id': 'FIX2D10', 'date': '2026-01-15', 'summary': 'Materialize output_debug.canonical_for_render_v1 from results.primary_metrics_canonical so dashboard can hydrate Current and diagnostics stop falsely flagging missing.', 'files': ['FIX2D10.py']}, {'patch_id': 'FIX2D9', 'date': '2026-01-15', 'summary': 'Schema-anchored current-side canonical rebuild for diff/render: prefer schema_only rebuild so keys overlap and Current can populate.', 'files': ['FIX2D9.py']}, {'patch_id': 'FIX2D8', 'date': '2026-01-15', 'summary': 'Normalize output shape by promoting nested results.results.* into results.* for diff/render Current hydration.', 'files': ['FIX2D8_fixed.py']}, {'patch_id': 'FIX2D1', 'date': '2026-01-15', 'summary': 'Alias canonical rebuild functions to avoid fn_missing; harden Diff Panel V2 wrapper to prevent unbound summary crash.', 'files': ['fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2af_fetch_failure_visibility_and_hardening_v1.py']}, {'patch_id': 'FIX2D3', 'date': '2026-01-15', 'summary': 'Fix FIX41AFC19 v19 display-rebuild pool resolution + callable lookup; harden Diff Panel V2 injected-set detection (support cur_response without debug wrapper).', 'files': ['FIX2D3.py']}, {'patch_id': 'FIX2D4', 'date': '2026-01-15', 'summary': 'Add debug.key_overlap_v1 to explicitly report prev/cur canonical key counts, overlap, and target key presence for deterministic diff feasibility checks.', 'files': ['FIX2D4.py']}, {'patch_id': 'FIX2D5', 'date': '2026-01-15', 'summary': 'Mirror canonical_for_render_v1 diagnostics into results.debug so dashboard/diff diagnostics can see it; additive only.', 'files': ['FIX2D5.py']}, {'patch_id': 'FIX2D6', 'date': '2026-01-15', 'summary': 'Option B engine completeness: Diff Panel V2 row universe can be prev∪cur (union) behind EVO_DIFF_JOIN_MODE flag; adds added/removed change_type and summary counts; default remains strict.', 'files': ['FIX2D6.py']}, {'patch_id': 'FIX2D6_HARDCODE', 'date': '2026-01-15', 'summary': 'Hardcode diff join mode override via FORCE_DIFF_JOIN_MODE and route Diff Panel V2 join-mode selection through helper.', 'files': ['FIX2D6.py']}, {'patch_id': 'FIX2D2', 'date': '2026-01-15', 'summary': 'Anchor-fill current_metrics for diff/display when schema_frozen is misaligned; add rebuild-fn name fallbacks to prevent fn_missing.', 'files': ['FIX2D2.py']}, {'patch_id': 'FIX2D2M', 'date': '2026-01-16', 'summary': 'Injected-first current-value inference: two-pass selection (injected-only pool then global fallback) with explicit trace fields and authoritative commit into metric_changes.current_value(_norm).', 'files': ['FIX2D2M.py']}, {'patch_id': 'FIX2D2N', 'date': '2026-01-16', 'summary': 'Baseline-keyed current mapping: for each Analysis baseline canonical key, synthesize a current metric via injected-first, unit-family-guarded inference from extracted_numbers pools when Evolution canonical keys diverge; enables deterministic Analysis→Evolution diff joins even under key parity gaps.', 'files': ['FIX2D2N.py'], 'supersedes': ['FIX2D2M']}, {'patch_id': 'FIX2D2O', 'date': '2026-01-16', 'summary': 'Persist baseline-keyed current mapping for diffing: when baseline keys are synthesized into cur_can, expose them as primary_metrics_canonical_for_diff and mirror into primary_metrics_canonical so Evolution output keys align with Analysis for the diff demo.', 'files': ['FIX2D2O.py'], 'supersedes': ['FIX2D2N']}, {'patch_id': 'FIX2D2Q', 'date': '2026-01-16', 'summary': 'Baseline-aligned current selection for diffing: injected-first with optional base fallback; stamps provenance fields (source_type, selection_mode) to prevent confusion while preserving union pool behavior.', 'files': ['FIX2D2Q.py'], 'supersedes': ['FIX2D2O']}, {'patch_id': 'FIX2D2R', 'date': '2026-01-16', 'summary': 'Rebuild parity guard: prevent schema-only rebuild paths from committing bare-year tokens when a unit-qualified sibling candidate exists in the same snippet; improves Analysis/Evolution parity for injected content.', 'files': ['FIX2D2R.py'], 'supersedes': ['FIX2D2Q']}, {'patch_id': 'FIX2D2S', 'date': '2026-01-16', 'summary': 'Schema-only rebuild hardening: when non-year candidates exist for a schema key, skip bare-year tokens during winner selection (down-rank/skip) and record diagnostics; reduces year-token pollution before downstream year-blocking.', 'files': ['FIX2D2S.py'], 'supersedes': ['FIX2D2R']}, {'patch_id': 'FIX2D42', 'date': '2026-01-17', 'summary': 'Serialize/promote baseline_schema_metrics_v1 into Analysis primary_response/results so Evolution diff can consume it; extend nested results promotion to mirror baseline_schema_metrics_v1.', 'files': ['FIX2D42.py']}, {'patch_id': 'FIX2D2T', 'summary': 'Add explicit baseline->current projection in diff layer: if baseline row is missing CURRENT but cur_response has same canonical_key in primary_metrics_canonical_for_diff/primary_metrics_canonical, project into metric_changes current_value/_norm and recompute diff counters; attach debug summary.', 'ts': '2026-01-16'}, {'patch_id': 'FIX2D2W', 'date': '2026-01-17', 'summary': 'Fix parity leak: ensure schema_only_rebuild commit-time semantic gate is always active (avoid NameError when _FIX2D2U_ENABLE defined later) and fix year-token extraction regex for required-year checks; bump CODE_VERSION.', 'files': ['FIX2D2W.py'], 'supersedes': ['FIX2D2V']}, {'patch_id': 'FIX2D2X', 'date': '2026-01-17', 'summary': 'Parity patch: replace Evolution schema-only slot filling for baseline-key current with Analysis authoritative selector (_analysis_canonical_final_selector_v1) using injected-first two-pass selection and synthesized keyword hints from canonical_key/name; prevents cross-metric misassignment (e.g., China sales -> chargers 2040) and aligns gating with Analysis.', 'files': ['FIX2D2X.py'], 'supersedes': ['FIX2D2W', 'FIX2D2V', 'FIX2D2U']}, {'patch_id': 'FIX2D2Y', 'date': '2026-01-17', 'summary': 'Hardwire Evolution rebuild_metrics_from_snapshots_analysis_canonical_v1 to use the shared Analysis final selector for baseline-keyed diff current metrics (fix41afc19 parity); eliminates disjoint keyset that blocks diff activation.', 'files': ['FIX2D2Y.py'], 'supersedes': ['FIX2D2X']}, {'patch_id': 'FIX2D65B', 'date': '2026-01-19', 'summary': 'Force canonical pipeline materialisation when injected URLs exist (seed schema via deterministic extensions so FIX2D31 schema-authority rebuild can run even for narrative queries).', 'files': ['FIX2D65B_full_codebase.py'], 'supersedes': ['FIX2D65A']}, {'patch_id': 'FIX2D65C', 'date': '2026-01-19', 'summary': 'Restore analysis->evolution diff contract: broaden injected URL detection (ui_raw + legacy keys) so schema seeding and FIX2D31 schema-authority rebuild reliably run when injection is used; bump version.', 'files': ['FIX2D65C_full_codebase.py'], 'supersedes': ['FIX2D65B']}, {'patch_id': 'FIX2D65D', 'date': '2026-01-19', 'summary': 'Restore analysis->evolution diff contract by always serializing/seeding metric_schema_frozen (deterministic schema extensions), so Evolution schema-only rebuild has a stable keyspace even when LLM emits no primary_metrics; bump version.', 'files': ['FIX2D65D_full_codebase.py'], 'supersedes': ['FIX2D65C']}, {'patch_id': 'FIX2D66H', 'date': '2026-01-19', 'summary': "Fix Google Sheets history save return semantics: add_to_history() now returns True on successful Sheets append and False on failure (previously fell through as None, triggering spurious 'Saved to session only' warning). Keeps session fallback and captures last Sheets error for diagnostics.", 'files': ['FIX2D66H_full_codebase.py']}, {'patch_id': 'FIX2D67', 'date': '2026-01-19', 'summary': 'Fix injected numeric extraction missing-link: fetch_web_context() now calls numeric extractor with correct parameter name (source_url vs url), preventing silent TypeError and empty extracted_numbers; restores injected HTML numbers into snapshot pools feeding schema-only rebuild.', 'files': ['FIX2D67_full_codebase.py'], 'supersedes': ['FIX2D66H']}, {'patch_id': 'FIX2D77', 'date': '2026-01-20', 'summary': 'Percent-schema guardrail: prevent schema-only rebuild from binding year-like tokens (e.g., 2040) to __percent keys by requiring percent evidence and rejecting yearlike-without-percent raw; fixes incorrect prev value for CAGR percent metrics.', 'files': ['FIX2D77_full_codebase.py'], 'supersedes': ['FIX2D76']}, {'patch_id': 'FIX2D82', 'date': '2026-01-20', 'summary': 'Definitive fix for year-token leakage into __percent metrics: drop year-token values when raw token is YYYY regardless of context % signs; force-apply at schema_only rebuild (Analysis baseline materialize) and sanitize previous_data before diff join (cleans old HistoryFull snapshots). Adds debug: fix2d82_percent_sanitize_schema_only / fix2d82_prev_percent_sanitize.', 'files': ['FIX2D82_full_codebase.py'], 'supersedes': ['FIX2D80']}, {'patch_id': 'FIX2D83', 'date': '2026-01-20', 'summary': 'Cleanup consolidation: remove obsolete percent-key guard wrappers (FIX2D78/FIX2D79) now superseded by definitive FIX2D82 sanitizer; stabilize CODE_VERSION with final override to avoid stale late assignments; reduce patch clutter without changing diff behavior.', 'files': ['FIX2D83_full_codebase.py'], 'supersedes': ['FIX2D78', 'FIX2D79', 'FIX2D80']}, {'patch_id': 'REFACTOR45', 'date': '2026-01-25', 'summary': 'Evolution: fix Diff Panel V2 empty rows by hardening the V2 builder call against RecursionError (minimal wrappers, traceback capture, preserve existing rows, strict canonical-join fallback).', 'files': ['REFACTOR45_full_codebase_streamlit_safe.py'], 'supersedes': ['REFACTOR44']}, {'patch_id': 'REFACTOR11', 'date': '2026-01-23', 'summary': 'Fix evolution JSON/UI counters: recompute summary (increased/decreased/unchanged/added) from final metric_changes rows; recompute stability_score accordingly; bump final binding/version locks to REFACTOR11 for hygiene.', 'files': ['REFACTOR11_full_codebase_streamlit_safe.py'], 'supersedes': ['REFACTOR10']}, {'patch_id': 'REFACTOR13', 'date': '2026-01-23', 'summary': 'Summary/stability correctness: recompute evolution results.summary and stability_score from canonical-first diff rows (metric_changes_v2/metric_changes). Add graded stability fallback (100 - mean abs % change) when discrete unchanged/small-change scoring would yield 0, and mirror counts into diff_panel_v2_summary for auditability.', 'files': ['REFACTOR13_full_codebase_streamlit_safe.py'], 'supersedes': ['REFACTOR12']}, {'patch_id': 'REFACTOR14', 'date': '2026-01-23', 'summary': 'Diff engine consolidation: eliminate diff_metrics_by_name override chain by renaming legacy impls and introducing a single public wrapper entrypoint. Preserve legacy/fix31/v24 impls under stable names; update base capture vars and keep binding manifest stable/streamlit-safe.', 'files': ['REFACTOR14_full_codebase_streamlit_safe.py'], 'supersedes': ['REFACTOR13']}, {'patch_id': 'REFACTOR15', 'date': '2026-01-23', 'summary': "Restore diffing after REFACTOR14: harden diff_metrics_by_name resolution in FINAL BINDINGS, eliminate V2 UnboundLocalError (cur_resp_for_diff), and add safe fallback extraction for canonical_for_render/current PMC when nested under output['results'].", 'files': ['REFACTOR15_full_codebase_streamlit_safe.py'], 'supersedes': ['REFACTOR14']}, {'patch_id': 'REFACTOR12', 'date': '2026-01-23', 'summary': 'Truth-lock version stamping + binding manifest hygiene: freeze _yureeka_get_code_version() via locked default arg; re-assert globals for observability; ensure FINAL BINDINGS tag + diff function authoritative tag always present; standardize canonical_for_render_v1 debug block to avoid stale missing diagnostics.', 'files': ['REFACTOR12_full_codebase_streamlit_safe.py'], 'supersedes': ['REFACTOR11']}, {'patch_id': 'REFACTOR09', 'date': '2026-01-22', 'summary': 'Introduce a single authoritative diff engine wrapper (_refactor09_diff_metrics_by_name) and bind diff_metrics_by_name to it in final bindings; prepare for safe removal of legacy duplicate diff definitions.', 'files': ['REFACTOR09_full_codebase_streamlit_safe.py']}, {'patch_id': 'REFACTOR60', 'date': '2026-01-26', 'summary': "Fix REFACTOR09 diff wrapper regression by robustly capturing a callable legacy diff implementation (and adding a signature-safe base fallback). Restores Evolution metric_changes so the dashboard no longer shows 'no metrics to display'.", 'files': ['REFACTOR60.py']}, {'patch_id': 'REFACTOR35', 'summary': 'Move main() invocation to EOF so late refactor defs/overrides are active during runs; add schema-key filter to baseline PMC materialization to prevent debug-key leakage.', 'files': ['REFACTOR35_full_codebase_streamlit_safe.py']}, {'patch_id': 'REFACTOR36', 'summary': "Fix Evolution fatal 'NoneType has no attribute get' by hardening add_to_history() against None callers and coercing run_source_anchored_evolution inputs (previous_data/web_context) to dicts.", 'files': ['REFACTOR36_full_codebase_streamlit_safe.py'], 'supersedes': ['REFACTOR35']}, {'patch_id': 'REFACTOR37', 'summary': 'Add a final crash-proof wrapper for run_source_anchored_evolution to prevent fatal NoneType.get exceptions from aborting Streamlit Evolution; coerce inputs to dict and return renderer-safe failed payload with traceback.', 'files': ['REFACTOR37_full_codebase_streamlit_safe.py'], 'supersedes': ['REFACTOR36']}, {'patch_id': 'REFACTOR38', 'summary': 'Fix FIX24 helper regressions causing None.get crashes in Evolution: ensure _fix24_get_prev_full_payload/_fix24_get_prev_hashes/_fix24_compute_current_hashes always return dicts; enhance REFACTOR37 evolution wrapper to persist full traceback under debug.error_traceback, surface a callsite hint in message/debug, and guard against non-dict impl returns.', 'files': ['REFACTOR38_full_codebase_streamlit_safe.py'], 'supersedes': ['REFACTOR37']}, {'patch_id': 'REFACTOR39', 'summary': 'Fix source-anchored evolution snapshot gating regression: when baseline_sources_cache is omitted from HistoryFull payload (Sheets cell limit), rehydrate snapshots deterministically via snapshot_store_ref/snapshot_store_ref_v2 and source_snapshot_hash_v2/source_snapshot_hash (Snapshots worksheet and local snapshot store). Attach snapshot_store_debug into output.debug on failure for fast diagnosis. No heuristic matching added; remains strict snapshot-gated without valid cached source text.', 'files': ['REFACTOR39_full_codebase_streamlit_safe.py'], 'supersedes': ['REFACTOR38']}, {'patch_id': 'REFACTOR83', 'date': '2026-01-28', 'summary': 'Hardening + clarity pass: (1) normalize Evolution output so baseline_sources_cache is never accidentally reduced to an injected-only row when baseline_sources_cache_current contains the full current pool (keeps UI/harness consistent), and (2) fix a latent NameError in canonical_for_render_v1 diagnostic extension (baseline_sources_cache_prev_rows) so diag_ext reliably populates. No schema/key-grammar changes; no unit conversion changes; Streamlit-safe.', 'files': ['REFACTOR83.py'], 'supersedes': ['REFACTOR82']}, {'patch_id': 'REFACTOR84', 'date': '2026-01-28', 'summary': 'Bump the frozen code-version lock to REFACTOR84 so JSON stamping (code_version) matches the active patch and the harness version self-check stops flagging false mismatches. Add patch tracker entry for REFACTOR84. No schema/key-grammar changes; Streamlit-safe.', 'files': ['REFACTOR84.py'], 'supersedes': ['REFACTOR83']}, {'patch_id': 'REFACTOR85', 'date': '2026-01-28', 'summary': "Optional high-value hardening: (1) handle PDF sources in scrape_url (extract text instead of failed:no_text), (2) add explicit last-good snapshot fallback when extractor returns 0 numbers on blocked/placeholder pages, and (3) normalize evolution source caches even when payload contains a nested 'results' mirror dict. No schema/key-grammar changes; no unit conversion changes; Streamlit-safe.", 'files': ['REFACTOR85.py'], 'supersedes': ['REFACTOR84']}, {'patch_id': 'REFACTOR40', 'summary': "Fix recent snapshot retrievability and partial snapshot corruption in Snapshots sheet store. load_full_snapshots_from_sheet now bypasses stale cache on hash miss, and selects the most recent *complete* write batch (grouped by created_at) to avoid mixed/partial merges. store_full_snapshots_to_sheet no longer treats any existing rows as 'complete'; it validates loadability first and attempts repair writes when prior batch is incomplete, and invalidates snapshot worksheet cache after successful writes.", 'files': ['REFACTOR40_full_codebase_streamlit_safe.py'], 'supersedes': ['REFACTOR39']}, {'patch_id': 'REFACTOR41', 'date': '2026-01-25', 'summary': 'Fix recent snapshot rehydration failures by (1) preventing fake snapshot_store_ref_v2 (gsheet:Snapshots:<hash>) from being emitted unless the mirror-write actually succeeded, (2) emitting snapshot_store_ref_stable pointing to a verified store (v2 sheet > v1 sheet > local) plus a compact snapshot_store_write_v1 debug manifest, and (3) making store_full_snapshots_to_sheet more reliable via smaller default chunk size and batched append_rows to reduce API payload size / rate-limit failures.', 'files': ['REFACTOR41_full_codebase_streamlit_safe.py'], 'supersedes': ['REFACTOR40']}, {'patch_id': 'REFACTOR42', 'date': '2026-01-25', 'summary': "Fix snapshot-gate failures caused by large baseline_sources_cache writes silently failing under Sheets rate limits. Snapshots sheet store now compresses very large payloads (zlib+base64 with 'zlib64:' prefix) to drastically reduce chunk count and API calls, adds a small throttle between batch appends for very large writes, and the loader transparently detects/decompresses compressed payloads while remaining backward-compatible with existing uncompressed snapshots.", 'files': ['REFACTOR42_full_codebase_streamlit_safe.py'], 'supersedes': ['REFACTOR41']}, {'patch_id': 'REFACTOR43', 'date': '2026-01-25', 'summary': "BUGFIX: make Snapshots sheet loader actually decode REFACTOR42 compressed payloads ('zlib64:' prefix). Previously store_full_snapshots_to_sheet could write compressed snapshots but load_full_snapshots_from_sheet attempted json.loads() on the compressed string and returned empty, causing Evolution to be snapshot-gated for recent runs while older (uncompressed) snapshots still loaded.", 'files': ['REFACTOR43_full_codebase_streamlit_safe.py'], 'supersedes': ['REFACTOR42']}, {'patch_id': 'REFACTOR44', 'date': '2026-01-25', 'summary': 'BUGFIX: Fix local snapshot persistence path creation. _snapshot_store_dir() previously omitted a return on the success path, returning None and causing local snapshot store/load to fail (os.path.join(None,...)). Wrapped local snapshot write call in add_to_history with guards to prevent snapshot persistence block from aborting. Also hardened store_full_snapshots_local to compute path safely. This restores reliable snapshot persistence for recent runs when Sheets snapshot store is unavailable/partial, eliminating Evolution snapshot-gate failures caused by missing baseline_sources_cache.', 'files': ['REFACTOR44_full_codebase_streamlit_safe.py'], 'supersedes': ['REFACTOR43']}, {'patch_id': 'REFACTOR47', 'date': '2026-01-25', 'summary': 'Fix Diff Panel V2 recursion (maximum recursion depth exceeded) caused by FIX2D2I wrapper chains capturing already-wrapped __rows implementations. Provide a deterministic, non-recursive canonical-first join builder (strict unit comparability + percent/year poisoning containment) and rebind build_diff_metrics_panel_v2__rows (and FIX2D2I aliases) as last-wins entrypoint so Evolution no longer sets diff_panel_v2_error or falls back to strict_fallback_v2.', 'files': ['REFACTOR47_full_codebase_streamlit_safe.py'], 'supersedes': ['REFACTOR46']}, {'patch_id': 'REFACTOR48', 'date': '2026-01-25', 'summary': 'Fix source-anchored Metric Changes table to render metric_changes_v2 fields (delta_abs/delta_pct/comparability/method) while keeping legacy fallback; bump version lock to REFACTOR48.'}, {'patch_id': 'REFACTOR49', 'date': '2026-01-25', 'summary': 'Eliminate Diff Panel V2 RecursionError by making FIX2D2I-style __rows wrapper idempotent and non-recursive across duplicate wrapper blocks and Streamlit reruns. Store a stable base __rows implementation, avoid re-wrapping an already wrapped function, and keep trace augmentation without affecting schema/key grammar or diff semantics.', 'files': ['REFACTOR49_full_codebase_streamlit_safe.py'], 'supersedes': ['REFACTOR48']}, {'patch_id': 'REFACTOR50', 'date': '2026-01-25', 'summary': "Fix Evolution stability calculation: prevent unchanged rows from being double-counted as 'small change' (<10%), clamp discrete stability to 0–100, and compute stable/small counts from comparable rows only. Removes impossible 150% stability when all rows are unchanged; no schema/key-grammar changes.", 'files': ['REFACTOR50_full_codebase_streamlit_safe.py'], 'supersedes': ['REFACTOR49']}, {'patch_id': 'REFACTOR51', 'date': '2026-01-25', 'summary': "Fix evolution stability graded fallback: cap per-row abs % change at 100 before averaging so injected/outlier deltas don't force 0% stability. Add debug fields mean_abs_pct_raw/capped.", 'files': ['REFACTOR51_full_codebase_streamlit_safe.py']}, {'patch_id': 'REFACTOR52', 'date': '2026-01-25', 'summary': 'Add authority_manifest_v1 (runtime last-wins introspection) into binding_manifest_v1 to make refactor deletions safer. No schema/key-grammar changes; no behavior changes.', 'files': ['REFACTOR52_full_codebase_streamlit_safe.py'], 'supersedes': ['REFACTOR51']}, {'patch_id': 'REFACTOR53', 'date': '2026-01-25', 'summary': 'Make metric_changes rows self-attributing for injected-vs-production gating. Extend source_url extraction to include provenance.best_candidate.source_url; stamp rows with cur/current/source_url fields; change Δt gating to suppress only when row source URL matches injected URL set (missing attribution no longer treated as injected). Add debug counters rows_with_source_url/rows_missing_source_url/rows_suppressed_by_injection.', 'files': ['REFACTOR53_full_codebase_streamlit_safe.py'], 'supersedes': ['REFACTOR52']}, {'patch_id': 'REFACTOR54', 'date': '2026-01-25', 'summary': 'Safe downsizing + durability diagnostics: remove duplicated FIX2D2I Diff Panel V2 wrapper block (redundant after recursion hardening); add snapshot_roundtrip_v1 (best-effort readback of snapshot_store_ref_stable) into Analysis persistence debug to catch recent snapshot save/retrieve issues early. No schema/key-grammar changes.', 'files': ['REFACTOR54_full_codebase_streamlit_safe.py'], 'supersedes': ['REFACTOR53']}, {'patch_id': 'REFACTOR55', 'date': '2026-01-25', 'summary': "Consolidate metric changes outputs to a single canonical feed: output['metric_changes'] is authoritative; output['metric_changes_v2'] mirrors the same list for backward/UI compatibility; drop output['metric_changes_legacy'] (no longer maintained). Add a late-stage consolidation block in compute_source_anchored_diff_BASE to enforce invariants. No schema/key-grammar changes.", 'files': ['REFACTOR55_full_codebase_streamlit_safe.py'], 'supersedes': ['REFACTOR54']}, {'patch_id': 'REFACTOR56', 'date': '2026-01-26', 'summary': 'Controlled downsizing: stop emitting metric_changes_legacy entirely (remove late-stage re-add), add end-of-function safety rail to pop it before returning. No schema/key-grammar changes; Diff Panel V2 remains authoritative and metric_changes_v2 continues to mirror metric_changes.', 'files': ['REFACTOR56.py'], 'supersedes': ['REFACTOR55']}, {'patch_id': 'REFACTOR57', 'date': '2026-01-26', 'summary': 'Stabilize diff harness prior to further downsizing: prefer REFACTOR47 V2 row builder when present; suppress emission of debug.diff_panel_v2_error/traceback (legacy V2 builder can fail before late rebinds). Canonical-first strict fallback remains authoritative; no schema/key-grammar changes.', 'files': ['REFACTOR57.py'], 'supersedes': ['REFACTOR56']}, {'patch_id': 'REFACTOR58', 'date': '2026-01-26', 'summary': "Fix latent UnboundLocalError in Diff Panel V2 row builder by initializing 'effective' locals on loop entry and removing a duplicate 'current_value_norm' key in an early fallback row. This eliminates recurring debug.diff_panel_v2_traceback noise while preserving canonical-first diffing semantics. No schema/key-grammar changes.", 'files': ['REFACTOR58.py'], 'supersedes': ['REFACTOR57']}, {'patch_id': 'REFACTOR59', 'date': '2026-01-26', 'summary': 'Controlled downsizing: removed redundant legacy Diff Panel V2 builders/wrappers (incl. Fix2K inference path + FIX2D2I wrapper) and deleted an identical duplicated mid-file block that redefined FIX2D47/FIX2D48/FIX2D49-era helpers. REFACTOR47 canonical-first join remains the sole authoritative diff-row builder. No schema/key-grammar changes; preserves strict unit comparability and percent-year poisoning guardrails.', 'files': ['REFACTOR59.py'], 'supersedes': ['REFACTOR58']}, {'patch_id': 'REFACTOR61', 'date': '2026-01-26', 'summary': 'Restore minimal Diff Panel V2 canonical-first join row builder (build_diff_metrics_panel_v2__rows_refactor47) so Evolution always populates metric_changes_v2 (and thus metric_changes) even when Streamlit triggers execution before late diff wrapper defs. Strict unit comparability preserved; no schema/key-grammar changes.', 'files': ['REFACTOR61.py'], 'supersedes': ['REFACTOR60']}, {'patch_id': 'REFACTOR62', 'date': '2026-01-26', 'summary': "Add an early, schema-agnostic Diff Panel V2 failsafe canonical-first row builder to prevent Streamlit ordering hazards from producing 'no metrics to display' during controlled downsizing. Also remove obsolete commented CODE_VERSION bump blocks (comment-only clutter). No schema/key-grammar changes; strict unit comparability preserved.", 'files': ['REFACTOR62.py'], 'supersedes': ['REFACTOR61']}, {'patch_id': 'REFACTOR63', 'date': '2026-01-26', 'summary': 'Controlled downsizing: remove the unused FIX2D47 Diff Panel V2 builder + shadow helper defs, while retaining (and hardening) the deterministic collision resolver used by schema/key remapping. No schema/key-grammar changes; diffing + unit comparability preserved.', 'files': ['REFACTOR63.py'], 'supersedes': ['REFACTOR62']}, {'patch_id': 'REFACTOR64', 'date': '2026-01-26', 'summary': 'Controlled downsizing (low-risk): remove redundant early Diff Panel V2 failsafe builder (REFACTOR62) and delete a dead post-main REFACTOR47 rebind block that never affects runtime diffing. No schema/key-grammar changes; preserves strict unit comparability + canonical-first diffing.', 'files': ['REFACTOR64.py'], 'supersedes': ['REFACTOR63']}, {'patch_id': 'REFACTOR65', 'date': '2026-01-26', 'summary': 'Controlled downsizing (low-risk): remove unused preserved BASE implementations (diff_metrics_by_name_BASE and compute_source_anchored_diff_BASE) along with their wrap scaffolding. Add code_version to Evolution report export so all JSON artifacts carry the patch ID. No schema/key-grammar changes; preserves canonical-first diffing + strict unit comparability + snapshot rehydration.', 'files': ['REFACTOR65.py'], 'supersedes': ['REFACTOR64']}, {'patch_id': 'REFACTOR66', 'date': '2026-01-26', 'summary': "Controlled downsizing + safety rail: de-duplicate the redundant nested output['results'] mirror in Evolution payloads by shrinking it to a lightweight compatibility stub (prevents baseline_sources_cache duplication and reduces JSON/Sheets footprint). No schema/key-grammar changes; preserves canonical-first diffing, unit comparability, snapshot rehydration, Δt injection gating, and stability scoring.", 'files': ['REFACTOR66.py'], 'supersedes': ['REFACTOR65']}, {'patch_id': 'REFACTOR67', 'date': '2026-01-26', 'summary': 'Controlled downsizing: remove legacy run_source_anchored_evolution_BASE preservation path and the old pre-FIX24 evolution wrapper. FIX24 changed-case recompute now routes directly through compute_source_anchored_diff (single authoritative path), while retaining FIX24 debug markers, snapshot hash trace, Δt injection gating, and stability scoring. No schema/key-grammar changes.', 'files': ['REFACTOR67.py'], 'supersedes': ['REFACTOR66']}, {'patch_id': 'REFACTOR68', 'date': '2026-01-26', 'summary': 'Fix Evolution stability + summary regression: stop overwriting stability_score with legacy (unchanged/total) formula and recompute results.summary + stability_score from the final canonical-first metric_changes rows (V2-first). Restores correct increased/decreased/unchanged counters and non-zero graded stability for injection runs, while keeping strict unit comparability and schema/key-grammar freeze.', 'files': ['REFACTOR68.py'], 'supersedes': ['REFACTOR67']}, {'patch_id': 'REFACTOR69', 'date': '2026-01-26', 'summary': "Controlled downsizing + safety fix: promote _fmt_currency_first to a shared top-level helper (prevents NameError in render_native_comparison and removes an unnecessary nested duplicate). Also make the Source-Anchored Evolution Metric Changes table prefer output['metric_changes'] (authoritative) while retaining metric_changes_v2 as a mirror for compatibility. No schema/key-grammar changes.", 'files': ['REFACTOR69.py'], 'supersedes': ['REFACTOR68']}, {'patch_id': 'REFACTOR70', 'date': '2026-01-27', 'summary': 'Safety rail + simplification: add a late-stage output bridge in compute_source_anchored_diff to enforce a single authoritative metric_changes list (mirrored to metric_changes_v2) and a clamped top-level stability_score, while hard-removing metric_changes_legacy. This stabilizes the Evolution UI/export path during controlled downsizing. No schema/key-grammar changes.', 'files': ['REFACTOR70.py'], 'supersedes': ['REFACTOR69']}, {'patch_id': 'REFACTOR71', 'date': '2026-01-27', 'summary': 'Safety rail: stamp harness_invariants_v1 into Evolution results to prevent silent degradation when external sources flake (e.g., failed:no_text). Records schema-frozen key count vs baseline/current canonical counts, missing keys, and source failure summaries, plus an additive harness_warning_v1 banner string. No schema/key-grammar changes.', 'files': ['REFACTOR71.py'], 'supersedes': ['REFACTOR70']}, {'patch_id': 'REFACTOR72', 'date': '2026-01-27', 'summary': 'Completeness-first diffs: upgrade Diff Panel V2 strict canonical join to prefer frozen schema keys (when metric_schema_frozen is available) and emit explicit completeness rows when either side is missing (missing_baseline / missing_current / missing_both). Keeps strict unit comparability and delta computation only for unit-matching pairs; no schema/key-grammar changes; Streamlit-safe.', 'files': ['REFACTOR72.py'], 'supersedes': ['REFACTOR71']}, {'patch_id': 'REFACTOR73', 'date': '2026-01-27', 'summary': 'Fix REFACTOR72 indentation regression in _refactor13_recompute_summary_and_stability_v1 (rows loop escaped to module scope, causing runtime error). Restores Streamlit-safe execution and preserves completeness-first change_type counting.'}, {'patch_id': 'REFACTOR74', 'date': '2026-01-27', 'summary': 'Completeness-first diffs hardening: guarantee schema-complete Metric Changes rows even if the Diff Panel V2 builder errors by upgrading the strict fallback to iterate frozen schema keys (or union fallback) and emit explicit missing_baseline/missing_current/missing_both rows. Also extend harness_invariants_v1 to record metric_changes row_count vs schema size and surface row_count_mismatch in harness_warning_v1 when violated. No schema/key-grammar changes; Streamlit-safe.', 'files': ['REFACTOR74.py'], 'supersedes': ['REFACTOR73']}, {'patch_id': 'REFACTOR75', 'date': '2026-01-27', 'summary': 'High-value harness hardening: add explicit last-good snapshot fallback inside fetch_web_context for failed:no_text and scrape exceptions using existing_snapshots, with clear provenance fields (fallback_used/status_detail=fallback:last_good_snapshot) so extraction remains complete under source flakiness; extend harness_invariants_v1 to record and surface baseline/current fallbacks in both debug and harness_warning_v1; and restore the invariant that Evolution injection runs suppress Δt.', 'files': ['REFACTOR75.py'], 'supersedes': ['REFACTOR74']}, {'patch_id': 'REFACTOR76', 'date': '2026-01-27', 'summary': 'Fix injection-mode detection and completeness-first harness guards: suppress results.run_delta_seconds/human whenever injected URLs are present using canonical debug.inj_trace_v1 signals (not legacy lists); prefer inj_trace_v1 for per-row injection gating; extend harness_invariants_v1 with schema-key coverage checks (missing/extra/duplicate canonical keys) and warning-only change_type integrity validation for missing_baseline/missing_current rows, surfacing count-only warning banners.', 'files': ['REFACTOR76.py'], 'supersedes': ['REFACTOR75']}, {'patch_id': 'REFACTOR77', 'date': '2026-01-27', 'summary': 'Fix version stamping and add a self-check: bump the locked code version stamp to REFACTOR77, and extend harness_invariants_v1 with a warning-only comparison of output.code_version vs the latest REFACTOR patch_id in PATCH_TRACKER_V1, surfacing version_mismatch in harness_warning_v1 if they diverge (catches stale version locks / wrong file deployments).', 'files': ['REFACTOR77.py'], 'supersedes': ['REFACTOR76']}, {'patch_id': 'REFACTOR80', 'date': '2026-01-27', 'summary': 'Fix injection-mode detection so production runs do not get falsely flagged as suppressed_by_injection; suppress run-delta only when true UI/intake injection URLs exist. Also improve row_delta_gating_v1 source-attribution counters (rows_with_source_url/rows_missing_source_url) even when no injection is present. No schema/key-grammar changes; Streamlit-safe.', 'files': ['REFACTOR80.py'], 'supersedes': ['REFACTOR79']}, {'patch_id': 'REFACTOR81', 'date': '2026-01-27', 'summary': "Last-good snapshot fallback hardening: expand existing_snapshots lookup to match URL variants (scheme/www/trailing slash) and fall back not only on failed:no_text/exception but also when extraction yields zero numbers (explicit status_detail=fallback:last_good_snapshot, never silent). Add telemetry debug_counts.fallback_last_good_snapshot_used(+urls). Also fill units for schema-complete missing rows from metric_schema_frozen when safe (avoid currency placeholder unit 'U'). Streamlit-safe; no schema/key-grammar changes.", 'files': ['REFACTOR81.py'], 'supersedes': ['REFACTOR80']}, {'patch_id': 'REFACTOR82', 'date': '2026-01-27', 'summary': 'Fix patch tracker/version self-check false positives by registering the current REFACTOR patch before main() executes (Streamlit load-order safe). Also make the main() crash banner use the active code version instead of a hardcoded patch id. No schema/key-grammar changes; Streamlit-safe.', 'files': ['REFACTOR82.py'], 'supersedes': ['REFACTOR81']}, {'patch_id': 'REFACTOR86', 'date': '2026-01-28', 'summary': 'Controlled downsizing (step 1): collapse the accumulated patch-tracker try/append blocks into a single consolidated registry. Keep all existing patch metadata as a static canonical entries list, register idempotently at import-time, and remove redundant patch-tracker scaffolding to reduce file size and risk of syntax/indentation drift. No schema/key-grammar changes; no unit conversion changes; Streamlit-safe; core pipeline unchanged.', 'files': ['REFACTOR86.py'], 'supersedes': ['REFACTOR85']}, {'patch_id': 'REFACTOR87', 'date': '2026-01-28', 'summary': 'Controlled downsizing (step 2): remove a large, inactive legacy diff/patch ladder (FIX32→FIX2D77) that is no longer referenced by the authoritative Evolution diff path. Keep Diff Panel V2 (build_diff_metrics_panel_v2__rows_refactor47) and compute_source_anchored_diff unchanged. This reduces file size and lowers syntax/indentation risk while preserving all refactor invariants (schema frozen, strict unit comparability, percent-year poisoning guards, Streamlit-safe).', 'files': ['REFACTOR87.py'], 'supersedes': ['REFACTOR86']}, {'patch_id': 'REFACTOR88', 'date': '2026-01-28', 'summary': 'Hotfix after downsizing: restore/guard the FIX2D55 prev-lift helper used by the FIX24 changed-case evolution recompute path. Prevents the “FIX24: Evolution recompute failed (compute_source_anchored_diff path)” banner caused by missing helper after pruning legacy ladder. No schema/key-grammar changes; Streamlit-safe.', 'files': ['REFACTOR88.py'], 'supersedes': ['REFACTOR87']}, {'patch_id': 'REFACTOR89', 'date': '2026-01-28', 'summary': 'Restore baseline hydration into diff: add robust PMC locator and define the Diff Panel V2 unwrap helper to prevent silent baseline drop; treat empty baseline dict as a failure requiring fallback; broaden HF5 HistoryFull rehydrate trigger to also rehydrate when baseline primary_metrics_canonical is missing; add deterministic FIX24 rehydrate fallback and emit debug.prev_payload_probe_v1 + debug.baseline_missing_reason_v1 for explicit diagnostics. No schema/key-grammar changes; strict unit comparability preserved; Streamlit-safe.', 'files': ['REFACTOR89.py'], 'supersedes': ['REFACTOR88']}, {'id': 'REFACTOR90', 'date': '2026-01-28', 'summary': 'Fix missing baseline for investment metric by improving PDF coverage and supporting space-separated thousands in numeric extraction.', 'notes': ['PDF fetch now extracts first 10 pages plus an evenly-spaced spread sample up to ~50 pages total, to reach late-report tables (IEA PDFs).', 'Number regex now accepts space as a thousands separator (e.g., "2 131.89") and numeric parsing strips both commas and spaces.', 'Extractor fingerprint bumped to invalidate cached extracted_numbers and force recompute.'], 'files': ['REFACTOR90.py'], 'supersedes': ['REFACTOR89']}, {'id': 'REFACTOR90A', 'date': '2026-01-28', 'summary': 'Hotfix: fix indentation error in PDF sampling block (no logic changes).', 'notes': ['Corrects an IndentationError after a with-statement in fetch_url_content_with_status PDF handling.', 'No intended behavioral changes beyond making the REFACTOR90 PDF sampling code runnable.'], 'files': ['REFACTOR90A.py'], 'supersedes': ['REFACTOR90']}, {'id': 'REFACTOR91', 'date': '2026-01-28', 'summary': 'Add toggle to hide missing_both (coverage gap) rows in Metric Changes table by default.', 'notes': ['Adds a Streamlit checkbox: “Show missing-both rows (coverage gaps)”. Default off.', 'Shows a coverage gaps counter so users know rows are hidden.', 'Filtering is presentation-only; diff output remains unchanged.'], 'files': ['REFACTOR91.py'], 'supersedes': ['REFACTOR90A']}, {'patch_id': 'REFACTOR92', 'id': 'REFACTOR92', 'date': '2026-01-29', 'summary': 'Harden PDF ingestion to restore 4/4 schema coverage: add force-PDF path for .pdf URLs, extract pdfplumber tables alongside text sampling, and preserve PDF page coverage in status_detail to prevent front-matter-only misses (IEA Global EV Outlook PDF).', 'files': ['REFACTOR92.py'], 'supersedes': ['REFACTOR91'], 'notes': 'No schema/key grammar changes. Diff semantics unchanged; improves upstream evidence extraction for charging investment metric.'}, {'patch_id': 'REFACTOR93', 'id': 'REFACTOR93', 'date': '2026-01-29', 'summary': 'UI polish: hide missing_both (coverage gap) rows by default in legacy Metric Changes table, with a toggle and coverage counter (presentation-only).', 'notes': ['Adds a Streamlit checkbox near the legacy Metric Changes table to hide rows where both previous and current are missing.', 'Default hides missing_both; toggle reveals them.', 'No changes to schema, key grammar, diff semantics, or JSON outputs.'], 'files': ['REFACTOR93.py'], 'supersedes': ['REFACTOR92']}, {'patch_id': 'REFACTOR94', 'id': 'REFACTOR94', 'date': '2026-01-29', 'summary': 'UI defaults: hide missing_both (coverage gap) rows by default everywhere and hide the legacy Metric Changes table behind an opt-in toggle (presentation-only UI downsizing step).', 'notes': ['Adds a checkbox to show/hide the legacy Metric Changes (diff.metric_diffs) table; default is hidden to reduce clutter and prevent confusion with authoritative metric_changes_v2.', 'Keeps existing missing_both hide toggle defaults (off) and coverage counters.', 'No changes to schema, key grammar, diff semantics, or JSON outputs.'], 'files': ['REFACTOR94.py'], 'supersedes': ['REFACTOR93']}, {'patch_id': 'REFACTOR95', 'id': 'REFACTOR95', 'date': '2026-01-29', 'summary': 'Downsizing step 2: remove legacy Metric Changes (non-authoritative) table from the main UI and delete the unused non-canonical compute_metric_diffs() implementation (canonical path remains). No changes to authoritative metric_changes/metric_changes_v2 output schema or strict comparability rules.', 'notes': ['Legacy metric diffs (diff.metric_diffs) are still computed for stability, but the legacy table UI is removed to reduce clutter.', 'compute_metric_diffs() was dead code (no callers) and is removed.'], 'files': ['REFACTOR95.py'], 'supersedes': ['REFACTOR94']}, {'patch_id': 'REFACTOR96', 'id': 'REFACTOR96', 'date': '2026-01-29', 'summary': 'Downsizing step 3: remove obsolete early alias wrappers (shadowed by later authoritative implementations) for schema-only and analysis-canonical rebuild entrypoints. No behavior change.', 'notes': ['Deletes the redundant early alias definitions of rebuild_metrics_from_snapshots_schema_only_fix16 and rebuild_metrics_from_snapshots_analysis_canonical_v1 that were overwritten later in the file.', 'Reduces F811 redefinition noise; preserves final authoritative implementations.'], 'files': ['REFACTOR96.py'], 'supersedes': ['REFACTOR95']}, {'patch_id': 'REFACTOR97', 'date': '2026-01-29', 'summary': 'Controlled downsizing (low-risk): remove legacy diff capture plumbing and unused fix31 variant; bind REFACTOR09 diff wrapper directly to _yureeka_diff_metrics_by_name_wrap1. No behavior change.', 'notes': ['Deletes the REFACTOR60 _YUREEKA_DIFF_METRICS_BY_NAME_LEGACY capture block and the unused _yureeka_diff_metrics_by_name_fix31 implementation.', 'Simplifies diff wiring to reduce surface area while preserving canonical-first behavior.'], 'files': ['REFACTOR97.py'], 'supersedes': ['REFACTOR96']}]
+_PATCH_TRACKER_CANONICAL_ENTRIES_V1 = [{'patch_id': 'REFACTOR25', 'date': '2026-01-24', 'summary': 'Add production-only Analysis→Evolution run delta column for metric changes. Standardize top-level timestamps to UTC (+00:00), compute/stamp run_timing_v1 (delta_seconds/human) in Evolution results, and gate per-row delta display when current metric is sourced from injected URLs.', 'files': ['REFACTOR25_full_codebase_streamlit_safe.py'], 'supersedes': ['REFACTOR24']}, {'patch_id': 'REFACTOR26', 'date': '2026-01-24', 'summary': 'Tighten and centralize current metric source_url attribution for reliable row-level injection gating. Add a hydrator that fills primary_metrics_canonical[*].source_url from evidence/provenance, expose current_source_url fields on diff rows, and enhance per-row injection detection to prefer row-attributed URLs before falling back to canonical maps.', 'files': ['REFACTOR26_full_codebase_streamlit_safe.py'], 'supersedes': ['REFACTOR25']}, {'patch_id': 'REFACTOR27', 'date': '2026-01-24', 'summary': "Harden unit comparability and candidate eligibility for currency metrics. Reject date-fragment currency candidates (e.g., 'July 01, 2025') during schema-only rebuild, and strengthen currency unit mismatch detection so mixed scale/code representations do not emit nonsense deltas. Also expose current_source_url on diff rows for clearer row-level injection attribution.", 'files': ['REFACTOR27_full_codebase_streamlit_safe.py'], 'supersedes': ['REFACTOR26']}, {'patch_id': 'REFACTOR28', 'date': '2026-01-24', 'summary': "Consolidate schema-only rebuild authority to eliminate stale wrapper capture chains and ensure REFACTOR27 candidate filters (especially currency date-fragment rejection) are active at runtime. This prevents day-of-month tokens like '01' from binding as currency values, restoring comparable currency baselines while preserving percent-year poisoning sanitization.", 'files': ['REFACTOR28_full_codebase_streamlit_safe.py'], 'supersedes': ['REFACTOR27']}, {'patch_id': 'REFACTOR29', 'date': '2026-01-24', 'summary': 'Refine REFACTOR25 run-delta harness and diagnostics: replace overly-strict global injection assertion with per-row gating stats (injected rows must have blank delta, production rows should show delta when available). Persist row_delta_gating_v1 into run_timing_v1 for easier debugging, without changing schema/key grammar or diff behavior.', 'files': ['REFACTOR29_full_codebase_streamlit_safe.py'], 'supersedes': ['REFACTOR28']}, {'patch_id': 'REFACTOR30', 'date': '2026-01-24', 'summary': 'Fix REFACTOR29 run_timing_v1 row_delta_gating_v1 double-counting: apply per-row Analysis→Evolution delta stamping once (primary metric_changes list) and propagate to metric_changes_v2 by canonical_key, so diagnostic counts match the displayed table while keeping injection gating behavior unchanged.', 'files': ['REFACTOR30_full_codebase_streamlit_safe.py'], 'supersedes': ['REFACTOR29']}, {'patch_id': 'REFACTOR31', 'date': '2026-01-24', 'summary': 'Add runtime_identity_v1 stamp (code_version lock + __file__ + SHA1) to Analysis/Evolution debug for diagnosing stale-version runs; and harden run_timing_v1 row_delta_gating_v1 stats to count unique canonical_keys only (prevents double-counting when both metric_changes and metric_changes_v2 exist). No schema/key-grammar changes.', 'files': ['REFACTOR31_full_codebase_streamlit_safe.py'], 'supersedes': ['REFACTOR30']}, {'patch_id': 'REFACTOR32', 'date': '2026-01-24', 'summary': "Clarify injected URL semantics: treat only UI-provided extra_urls_ui(_raw) (or explicit internal marker) as injected for debug + run-delta gating, preventing production source URLs from being misclassified as injected. Add __yureeka_extra_urls_are_injection_v1 markers when Evolution wires injected URLs into web_context['extra_urls']. No schema/key-grammar changes.", 'files': ['REFACTOR32_full_codebase_streamlit_safe.py'], 'supersedes': ['REFACTOR31']}, {'patch_id': 'REFACTOR33', 'date': '2026-01-24', 'summary': 'Downsize footprint by deleting shadowed duplicate top-level function definitions and redundant metric_changes_legacy preservation block, keeping only the final authoritative implementations. No schema/key-grammar changes.', 'files': ['REFACTOR33_full_codebase_streamlit_safe.py'], 'supersedes': ['REFACTOR32']}, {'patch_id': 'REFACTOR34', 'date': '2026-01-24', 'summary': 'Fix a missing return in rebuild_metrics_from_snapshots_schema_only_fix17 that caused schema-only rebuilds to return None, breaking Analysis primary_metrics_canonical persistence and Evolution diffing after REFACTOR33 deletions. No schema/key-grammar changes.', 'files': ['REFACTOR34_full_codebase_streamlit_safe.py'], 'supersedes': ['REFACTOR33']}, {'patch_id': 'REFACTOR24', 'date': '2026-01-23', 'summary': 'Fix REFACTOR23 syntax regression (mis-indented try block) and make currency-aware unit_cmp construction consistent across all get_canonical_value_and_unit() definitions (USD:B, EUR:B, etc.) so cross-currency deltas are vetoed deterministically.', 'files': ['REFACTOR24_full_codebase_streamlit_safe.py'], 'supersedes': ['REFACTOR23']}, {'patch_id': 'REFACTOR23', 'date': '2026-01-23', 'summary': 'Unit consistency hardening: carry currency_code through candidate canonicalization & schema-only rebuild; include currency_code in diff unit_cmp token for currency metrics (detect USD vs EUR rather than silently comparing); and fix a small anchor-rebuild NameError to keep anchor path safe.', 'files': ['REFACTOR23_full_codebase_streamlit_safe.py'], 'supersedes': ['REFACTOR22']}, {'patch_id': 'REFACTOR22', 'date': '2026-01-23', 'summary': "Fix unit-family noise for yearlike tokens: normalize_unit_family() no longer infers percent/currency/magnitude from surrounding context when unit_tag is empty and raw token is a plain 4-digit year (1900–2100). This reduces unit inconsistencies in baseline_sources_cache and prevents misleading 'percent_tag' traces on year/range endpoints, without changing canonical binding or diff behavior.", 'files': ['REFACTOR23_full_codebase_streamlit_safe.py'], 'supersedes': ['REFACTOR21']}, {'patch_id': 'REFACTOR21', 'date': '2026-01-23', 'summary': "Harden unit inference against year/range artifacts: mark 4-digit year tokens as junk (year_token) when unitless, prevent context-driven unit backfill for yearlike candidates, and tag negative endpoints produced by hyphen ranges (e.g., '151-300' -> '-300') as junk (hyphen_range_negative_endpoint). Reduces unit inconsistencies and percent/currency 'poisoning' from nearby context.", 'files': ['REFACTOR21_full_codebase_streamlit_safe.py'], 'supersedes': ['REFACTOR20']}, {'patch_id': 'REFACTOR20', 'date': '2026-01-23', 'summary': "Fix false currency evidence hits caused by substring matches (e.g., 'eur'/'euro' inside 'Europe'). Introduce boundary-aware currency detection helper and use it in infer_unit_tag_from_context() and normalize_unit_family(), preventing 'million units' candidates from being misclassified as currency in Europe contexts.", 'files': ['REFACTOR20_full_codebase_streamlit_safe.py'], 'supersedes': ['REFACTOR19']}, {'patch_id': 'REFACTOR19', 'date': '2026-01-23', 'summary': 'Restore Analysis/Evolution parity for schema_only_rebuild outputs by including unit_tag, unit_family, base_unit, and multiplier_to_base (plus raw) on rebuilt primary_metrics_canonical entries. This keeps diff comparability deterministic and prevents downstream re-parsing of current values.', 'files': ['REFACTOR19_full_codebase_streamlit_safe.py'], 'supersedes': ['REFACTOR18']}, {'patch_id': 'REFACTOR18', 'date': '2026-01-23', 'summary': 'Harden authoritative diff binding signal: ensure diff_metrics_by_name always carries a reliable __YUREEKA_AUTHORITATIVE_BINDING__ tag (with globals fallback when callable wrappers reject setattr). Make binding_manifest_v1 self-contained (use local bound_from values) and update harness report IDs to the current refactor version for cleaner diagnostics.', 'files': ['REFACTOR18_full_codebase_streamlit_safe.py'], 'supersedes': ['REFACTOR17']}, {'patch_id': 'REFACTOR17', 'date': '2026-01-23', 'summary': 'Add concise in-file debug playbook and surface an authoritative binding manifest for Diff Panel V2 entrypoint (plus legacy diff_metrics_by_name when available). Improves manifest resilience when Streamlit triggers execution before later defs.', 'files': ['REFACTOR17_full_codebase_streamlit_safe.py'], 'supersedes': ['REFACTOR16']}, {'patch_id': 'REFACTOR16', 'date': '2026-01-23', 'summary': 'Hard-lock CODE_VERSION to REFACTOR16 across legacy override sites; expand FINAL BINDINGS candidate set to include _yureeka_diff_metrics_by_name_v24; make binding_manifest_v1 resolve/report the actual diff entrypoint even when Streamlit executes before later diff wrapper defs.', 'files': ['REFACTOR16_full_codebase_streamlit_safe.py'], 'supersedes': ['REFACTOR15']}, {'patch_id': 'REFACTOR02', 'date': '2026-01-21', 'summary': 'Add refactor regression harness (Analysis→Evolution) gated by explicit flag; emits JSON report + asserts diff invariants (both_count > 0, no prev-metrics sentinel, percent-year token rule).', 'files': ['REFACTOR02_full_codebase_streamlit_safe.py'], 'supersedes': ['FIX2D86']}, {'patch_id': 'REFACTOR03', 'date': '2026-01-21', 'summary': 'Fix REFACTOR02 regression: enforce unit-family + scale eligibility in schema-only rebuild; detect unit mismatch in diff panel and mark as unit_mismatch (avoid bogus B vs M diffs).', 'files': ['REFACTOR03_full_codebase_streamlit_safe.py'], 'supersedes': ['REFACTOR02']}, {'patch_id': 'REFACTOR10', 'date': '2026-01-21', 'summary': 'Fix false unit_mismatch caused by context_snippet percent leakage; enrich schema-anchored rebuilt PMC with unit_tag/unit_family/multiplier_to_base; tighten unit-family evidence checks to prefer token/raw evidence over broad context for magnitude keys; update refactor harness labels to REFACTOR04.', 'files': ['REFACTOR04_full_codebase_streamlit_safe.py'], 'supersedes': ['REFACTOR03']}, {'patch_id': 'REFACTOR05', 'date': '2026-01-21', 'summary': 'Selection gating + harness fix: block currency/percent candidates from __unit_* keys, promote raw/unit metadata into PMC for parity, and make harness read evidence lists.', 'files': ['REFACTOR05_full_codebase_streamlit_safe.py'], 'supersedes': ['REFACTOR04']}, {'patch_id': 'REFACTOR07', 'date': '2026-01-22', 'summary': 'Freeze versioning as single-source-of-truth using a refactor version lock; ensure JSON outputs use the locked version; add binding_manifest_v1 and harness assertions for version + authoritative diff binding; update FINAL BINDINGS and harness report labels to REFACTOR07.', 'files': ['REFACTOR07_full_codebase_streamlit_safe.py'], 'supersedes': ['REFACTOR06']}, {'patch_id': 'REFACTOR08', 'date': '2026-01-22', 'summary': 'Enhance refactor regression harness with consistent REFACTOR08 labels/versioning, dynamic authoritative diff binding expectation, and summary consistency checks (rows_total/partition/found/not_found/key_overlap). Update FINAL BINDINGS tag and locked CODE_VERSION to REFACTOR08.', 'files': ['REFACTOR08_full_codebase_streamlit_safe.py'], 'supersedes': ['REFACTOR07']}, {'patch_id': 'REFACTOR06', 'date': '2026-01-22', 'summary': 'Freeze authoritative runtime bindings: add FINAL BINDINGS section for diff_metrics_by_name, tag authoritative function for harness verification, and update harness report/version labels.', 'files': ['REFACTOR06_full_codebase_streamlit_safe.py'], 'supersedes': ['REFACTOR05']}, {'patch_id': 'REFACTOR46', 'date': '2026-01-25', 'summary': 'Prevent refactor harness from terminating Streamlit runtime (disable harness under Streamlit; double-guard EOF harness dispatch).', 'files': ['REFACTOR46_full_codebase_streamlit_safe.py'], 'supersedes': ['REFACTOR45']}, {'patch_id': 'FIX2D71', 'date': '2026-01-19', 'summary': 'Commit schema-keyed baseline canonical metrics during Analysis: if schema authority selection yields no winners but baseline_schema_metrics_v1 is non-empty, promote that schema-keyed (auditable proxy) map into primary_metrics_canonical so Evolution has prev canonical metrics for metric_changes_v2 diffing.', 'files': ['FIX2D71_full_codebase.py'], 'supersedes': ['FIX2D70']}, {'patch_id': 'FIX2D70', 'date': '2026-01-19', 'summary': 'Controlled schema-candidate reconciliation during schema-anchored rebuild: relax key-year matching (±1 for single-year keys, overlap for ranges) and keyword gating only when strict prefilter yields zero candidates, while emitting FIX2D70 rejection counts and relax flags for audit. This closes the last-mile binding gap without reintroducing heuristic matching.', 'files': ['FIX2D70_full_codebase.py'], 'supersedes': ['FIX2D69B']}, {'patch_id': 'FIX2D69', 'date': '2026-01-19', 'summary': 'Hard-wire numeric extraction on injected snapshot_text: when injected placeholders are fetched (FIX41AFC16), convert HTML to plain text if needed, always extract numbers from the non-empty text, and store content_len/clean_text_len plus FIX2D68 extraction diagnostics and errors. Also defensively initialize observed_rows_filtered_noninjected to prevent UnboundLocalError in Diff Panel V2 summary.', 'files': ['FIX2D69_full_codebase.py'], 'supersedes': ['FIX2D68']}, {'patch_id': 'FIX2D66G', 'date': '2026-01-19', 'summary': 'Google Sheets write resiliency: always mirror saved analyses into session_state history; if Sheets write fails, set a flag and record _SHEETS_LAST_WRITE_ERROR so get_history() falls back to session_state when Sheet reads are empty. Prevents Evolution from being blocked by transient Sheets save failures. No changes to extraction/diffing.', 'files': ['FIX2D66G_full_codebase.py'], 'supersedes': ['FIX2D66']}, {'patch_id': 'FIX2D66', 'date': '2026-01-19', 'summary': 'Deterministic injected-URL admission: promote UI raw/diag injection fields into web_context.extra_urls and synthesize diag_injected_urls when missing, so inj_diag/inj_trace_v1 reliably reflect injected URLs in snapshot pool and hash inputs (auditable). No UI/diff changes.', 'files': ['FIX2D66_full_codebase.py'], 'supersedes': ['FIX2D65D']}, {'patch_id': 'FIX2D65A', 'date': '2026-01-19', 'summary': "Hotfix for FIX2D65: repair syntax-corrupted duplicate selector block; make yearlike prune non-fatal (never empties pool); make 'rebuild empty with snapshots' non-fatal so Evolution can still emit JSON diagnostics.", 'files': ['FIX2D65A_full_codebase.py'], 'supersedes': ['FIX2D65']}, {'patch_id': 'FIX2D44', 'date': '2026-01-17', 'summary': 'Fix Analysis baseline schema baseline materialisation: define _core in attach_source_snapshots_to_analysis so FIX2D31/FIX2D38 baseline_schema_metrics_v1 builder executes; emit results.baseline_schema_metrics_v1 for Evolution diff join.', 'files': ['FIX2D44.py'], 'supersedes': ['FIX2D43']}, {'patch_id': 'FIX2D59', 'summary': 'Canonical identity resolver v1: define identity tuple + schema-first resolver; route canonical key minting through resolver to align Analysis and Evolution key authority.'}, {'patch_id': 'FIX2D60', 'summary': 'Enforce schema-only canonical store (Analysis) and hard-reject bare-year candidates for unit/count keys at schema_only_rebuild commit point (Evolution).'}, {'patch_id': 'FIX2D61', 'summary': 'Option A schema extension: generate promotion proposals from primary_metrics_provisional and (optionally) promote them into metric_schema_frozen with full audit metadata; enables closing remaining coverage gaps without reintroducing heuristic canonical minting.'}, {'patch_id': 'FIX2D62', 'summary': 'Normalize time tokens into identity tuple (year/YTD/forecast) + schema-first resolver uses metric_token+time_scope to match schema; prevents 2024/2025 contamination of metric_token and improves Analysis/Evolution convergence.'}, {'patch_id': 'FIX2D63', 'summary': 'Harden schema_only_rebuild_fix17 against injected-year pollution for unit/count metrics: fix _c variable typo in FIX2D2U gate and reject yearlike candidates without unit evidence upstream.'}, {'patch_id': 'FIX2D64', 'summary': 'Add Canonical Identity Spine V1 module (shadow mode only) + minimal regressions: centralizes identity tuple, schema-first resolver contract, and value selection with yearlike rejection immune to context unit backfill.', 'files': ['canonical_identity_spine.py', 'FIX2D64_full_codebase.py'], 'supersedes': ['FIX2D63']}, {'patch_id': 'FIX2D65', 'date': '2026-01-19', 'summary': 'Authority takeover: make Canonical Identity Spine V1 the only key-resolution authority (Analysis+Evolution) and add hard gates; prune yearlike candidates for unit/count metrics immune to context unit backfill.', 'files': ['canonical_identity_spine.py', 'FIX2D65_full_codebase.py'], 'supersedes': ['FIX2D64']}, {'patch_id': 'FIX2D40', 'summary': 'Analysis: when schema is frozen, remap best-fit baseline metrics from generic canonical keys onto schema canonical keys (one-to-one) to enable baseline diffing; stamps explicit schema_remap audit fields; retains FIX2D39 hard unit/dimension rejection.', 'files': ['FIX2D40.py'], 'supersedes': ['FIX2D39']}, {'patch_id': 'FIX2D32', 'date': '2026-01-17', 'summary': 'Diff Panel V2: treat anchor_hash mismatches as still diffable when canonical_key + unit-family gates pass; stamp row-level anchor_mismatch_diffable_v1 diagnostics and count such joins for audit.', 'files': ['FIX2D32.py'], 'supersedes': ['FIX2D31']}, {'patch_id': 'FIX2D33', 'date': '2026-01-17', 'summary': 'Analysis schema-primary rebuild: baseline commitment for schema keys by backfilling missing value_norm from raw/value via deterministic parser when selector chooses a candidate but value_norm is None; improves baseline comparability without weakening semantic gates.', 'files': ['FIX2D33.py'], 'supersedes': ['FIX2D32']}, {'patch_id': 'FIX2D25', 'date': '2026-01-16', 'summary': 'Re-enable Analysis→Evolution diffing by adding deterministic, unit-family-guarded inference for baseline keys in Diff Panel V2 when ckey/anchor joins miss; keep FIX2D20/FIX2D24 tracing and yearlike current blocking.', 'files': ['FIX2D25.py'], 'supersedes': ['FIX2D23']}, {'patch_id': 'FIX2D2D', 'date': '2026-01-16', 'summary': 'Fix Diff Panel V2 crash (prev_v/cur_v NameError) by using correctly scoped norm variables in traces; simplify end-of-file version stamping to a single final override.', 'files': ['FIX2D2D.py'], 'supersedes': ['FIX2D2C']}, {'patch_id': 'FIX2D2E', 'date': '2026-01-16', 'summary': 'Make Diff Panel V2 binding inference authoritative in the active FIX2J override path by committing inferred current_value/current_value_norm/current_source/current_method when joins miss; add explicit inference_commit trace; keep FIX2D24 year blocking and unit-first eligibility.', 'files': ['FIX2D2E.py'], 'supersedes': ['FIX2D2D']}, {'patch_id': 'FIX2D2I', 'date': '2026-01-16', 'summary': 'Enable binding inference fallback when a joined current value is blocked as unitless yearlike; add unit-family backfill for extracted_numbers pool candidates and trace the backfill/override in Diff Panel V2 __rows.', 'files': ['FIX2D2I.py'], 'supersedes': ['FIX2D2G']}, {'patch_id': 'FIX2D2J', 'date': '2026-01-16', 'summary': 'Deterministic unit/measure classifier for extracted numeric candidates: backfill unit_family from unit_tag and currency evidence in context; correct measure_kind/measure_assoc for currency-like candidates; attach classifier trace fields.', 'files': ['FIX2D2J.py'], 'supersedes': ['FIX2D2I']}, {'patch_id': 'FIX2D2K', 'date': '2026-01-16', 'summary': 'Context-driven unit backfill when unit_tag is empty, plus unit_family/measure_kind corrections trace (context_unit_backfill_v1).'}, {'patch_id': 'FIX2D2Z', 'date': '2026-01-17', 'summary': 'Make injected candidates first-class for Diff Panel inference by unwrapping injected scraped_meta into extracted_numbers pools; enforce hard unit-family rejection (percent/currency/units/magnitude) in fallback inference scoring to prevent leakage.', 'files': ['FIX2D2Z.py'], 'supersedes': ['FIX2D2Y']}, {'patch_id': 'FIX2D30', 'date': '2026-01-17', 'summary': "Contextual unit-family correction: prevent magnitude tags (e.g., M/million) in 'million units / units sold / chargers / vehicles' contexts from being misclassified as currency; remove keyword-only currency upgrades to enable clean baseline comparability without weakening hard unit-family rejection.", 'files': ['FIX2D30.py'], 'supersedes': ['FIX2D2Z']}, {'patch_id': 'FIX2D31', 'date': '2026-01-17', 'summary': 'Option A schema authority: when metric_schema_frozen is present in Analysis, rebuild primary_metrics_canonical by running the authoritative Analysis selector (_analysis_canonical_final_selector_v1) constrained to the frozen schema keys. This makes Analysis emit schema-aligned baseline metrics so Evolution injection can overlap and Diff Panel V2 can activate without weakening semantics.', 'files': ['FIX2D31.py'], 'supersedes': ['FIX2D30']}, {'patch_id': 'FIX2D2U', 'date': '2026-01-17', 'summary': 'Introduce shared semantic eligibility gate (Analysis parity) using local context_snippet; enforce it in Evolution schema-only rebuild(s) and Analysis selector to prevent cross-metric pollution (e.g., China sales value mapping into chargers 2040).', 'files': ['FIX2D2U.py'], 'supersedes': ['FIX2D2T']}, {'patch_id': 'FIX2D26', 'date': '2026-01-16', 'summary': 'Unit-first, context-bound inference candidate picker for Diff Panel V2 (Analysis→Evolution). Prefers percent/units/currency matches with keyword binding; rejects bare-year tokens pre-score; adds per-row trace counters.', 'files': ['FIX2D26.py'], 'supersedes': ['FIX2D25']}, {'patch_id': 'FIX2D28', 'date': '2026-01-16', 'summary': 'Close Diff Panel V2 binding gap: when inference selects a current value, commit it into UI/diff-read fields (current_value, current_value_norm, current_source, current_method) and mark baseline_is_comparable once all guards pass.', 'files': ['FIX2D28.py'], 'supersedes': ['FIX2D27']}, {'patch_id': 'FIX2D29', 'date': '2026-01-16', 'summary': 'Fix FIX2D28 insertion placement and complete write-through: commit inference/joined current values into metric_changes fields used by UI/diff (current_value, current_value_norm, current_source, current_method) and set baseline_is_comparable when numeric.', 'files': ['FIX2D29.py'], 'supersedes': ['FIX2D28']}, {'patch_id': 'FIX2D2A', 'date': '2026-01-16', 'summary': 'Enable guarded inference in Diff Panel V2 regardless of join mode; add explicit inference gate + attempted traces so binding inference can commit current values.', 'files': ['FIX2D2A.py']}, {'patch_id': 'FIX2D2B', 'date': '2026-01-16', 'summary': 'Correct version stamping for FIX2D2A runtime by bumping CODE_VERSION and adding final end-of-file override to prevent legacy late assignments from masking patch id.', 'files': ['FIX2D2B.py'], 'supersedes': ['FIX2D2A']}, {'patch_id': 'FIX2D2C', 'date': '2026-01-16', 'summary': 'Fix Diff Panel V2 NameError by defining guarded inference gate in the active builder (build_diff_metrics_panel_v2) and emitting explicit inference gate trace; no heuristic changes.', 'files': ['FIX2D2C.py'], 'supersedes': ['FIX2D2B']}, {'patch_id': 'FIX2D18', 'date': '2026-01-15', 'summary': 'Re-enable schema-only rebuild eligibility gates (domain token + unit-family) and strengthen unit-sales expectations to prevent bare-year (e.g., 2030) contamination; improves baseline comparables for Analysis→Evolution diffing.', 'files': ['FIX2D18.py']}, {'patch_id': 'FIX2D19', 'date': '2026-01-16', 'summary': 'Harden schema_only_rebuild_fix17 with required domain-token binding (prevents generic keyword matches) and add deterministic baseline soft-match fallback in Diff Panel V2 to enable Analysis→Evolution comparable diffs when strict joins fail.', 'files': ['FIX2D19.py']}, {'patch_id': 'FIX2D20', 'date': '2026-01-15', 'summary': 'Diagnostic-first trace: record every year-like (1900-2100) value committed to primary_metrics_canonical, including callsite tags and metric object metadata; also disable FIX2D18/FIX2D19 logic while tracing.', 'files': ['FIX2D20.py']}, {'patch_id': 'FIX2D24', 'date': '2026-01-16', 'summary': 'Last-mile guard for dashboard Current: block unitless year-like values (1900-2100, including 2030.0) from metric_changes hydration for non-year metrics; keep FIX2D20 tracing; supersedes FIX2D23 observed-only filter.', 'files': ['FIX2D24.py']}, {'patch_id': 'FIX2D21', 'date': '2026-01-16', 'summary': 'Evolution baseline-key schema: derive metric_schema_frozen from Analysis primary_metrics_canonical keys, and fix bare-year detection to reject tokens like 2030.0/2024.0; keep FIX2D20 year-commit tracing for verification.', 'files': ['FIX2D21.py']}, {'patch_id': 'FIX2D22', 'date': '2026-01-16', 'summary': 'Schema-only rebuild: enforce *eligibility-before-scoring* (hard reject bare-year tokens incl 2024/2030 and require unit-family + required domain tokens) so years cannot win; supersedes FIX2D21 selector hardening but retains baseline-key schema derivation.', 'files': ['FIX2D22.py'], 'supersedes': ['FIX2D21']}, {'patch_id': 'FIX2D11c', 'date': '2026-01-15', 'summary': 'Fix indentation/scope of FIX2D11 render fallback by ensuring it remains inside compute_source_anchored_diff (4-space indent) to avoid parse-time try/indent errors.', 'files': ['FIX2D11c.py']}, {'patch_id': 'FIX2D12', 'date': '2026-01-15', 'summary': 'Fix Diff Panel V2 premature return that prevented row emission; ensure UNION mode can emit current-only rows (added) and populate Current column.', 'files': ['FIX2D12.py']}, {'patch_id': 'FIX2D15', 'date': '2026-01-15', 'summary': 'Reject bare-year tokens (e.g., 2030) during schema-only rebuild for non-year metrics; add diagnostics to prevent year pollution and restore stable baseline comparables.', 'files': ['FIX2D15.py']}, {'patch_id': 'FIX2D16', 'date': '2026-01-15', 'summary': 'Add soft-match fallback to fill current values for baseline rows when anchor/ckey join fails; add last-mile bare-year reject for schema-only rebuild promotions. Disable FIX2D15 gating.', 'files': ['FIX2D16.py']}, {'patch_id': 'FIX2D17', 'date': '2026-01-15', 'summary': 'Harden canonical selector: reject bare-year tokens as metric values and require domain keyword overlap to prevent cross-metric pollution; deprecate FIX2D16 soft-match/year guards.', 'files': ['FIX2D17.py']}, {'patch_id': 'FIX2D13', 'date': '2026-01-15', 'summary': 'Add baseline-focused diff semantics to Diff Panel V2: classify rows as comparable/added/not_found and emit baseline delta fields + summary counters without requiring injected URLs in Analysis.', 'files': ['FIX2D13.py']}, {'patch_id': 'FIX2D11b', 'date': '2026-01-15', 'summary': 'Syntax-safe render-gate fallback: union-mode unanchored canonical_for_render without introducing nested try blocks.', 'files': ['FIX2D11b.py']}, {'patch_id': 'FIX2D11', 'date': '2026-01-15', 'summary': 'Render gate fallback in union mode: if V28 anchor-enforce yields 0 hits, populate canonical_for_render from current primary_metrics_canonical and label as unanchored-for-render.', 'files': ['FIX2D11.py']}, {'patch_id': 'FIX2D73', 'date': '2026-01-20', 'summary': 'HistoryFull persistence gap: promote baseline primary_metrics_canonical into rehydrated previous_data + ensure compute_source_anchored_diff prev_response carries canonical metrics so Diff Panel V2 can compute deltas.', 'files': ['FIX2D73_full_codebase.py']}, {'patch_id': 'FIX2D75', 'date': '2026-01-20', 'summary': 'Option B fork: materialize Analysis baseline primary_metrics_canonical (schema-anchored rebuild) and persist it (incl. primary_response) so HistoryFull replay exposes previous canonical values for diffing.', 'files': ['FIX2D75_full_codebase.py'], 'supersedes': ['FIX2D73']}, {'patch_id': 'FIX2D10', 'date': '2026-01-15', 'summary': 'Materialize output_debug.canonical_for_render_v1 from results.primary_metrics_canonical so dashboard can hydrate Current and diagnostics stop falsely flagging missing.', 'files': ['FIX2D10.py']}, {'patch_id': 'FIX2D9', 'date': '2026-01-15', 'summary': 'Schema-anchored current-side canonical rebuild for diff/render: prefer schema_only rebuild so keys overlap and Current can populate.', 'files': ['FIX2D9.py']}, {'patch_id': 'FIX2D8', 'date': '2026-01-15', 'summary': 'Normalize output shape by promoting nested results.results.* into results.* for diff/render Current hydration.', 'files': ['FIX2D8_fixed.py']}, {'patch_id': 'FIX2D1', 'date': '2026-01-15', 'summary': 'Alias canonical rebuild functions to avoid fn_missing; harden Diff Panel V2 wrapper to prevent unbound summary crash.', 'files': ['fix41afc19_evo_fix16_anchor_rebuild_override_v1_fix2af_fetch_failure_visibility_and_hardening_v1.py']}, {'patch_id': 'FIX2D3', 'date': '2026-01-15', 'summary': 'Fix FIX41AFC19 v19 display-rebuild pool resolution + callable lookup; harden Diff Panel V2 injected-set detection (support cur_response without debug wrapper).', 'files': ['FIX2D3.py']}, {'patch_id': 'FIX2D4', 'date': '2026-01-15', 'summary': 'Add debug.key_overlap_v1 to explicitly report prev/cur canonical key counts, overlap, and target key presence for deterministic diff feasibility checks.', 'files': ['FIX2D4.py']}, {'patch_id': 'FIX2D5', 'date': '2026-01-15', 'summary': 'Mirror canonical_for_render_v1 diagnostics into results.debug so dashboard/diff diagnostics can see it; additive only.', 'files': ['FIX2D5.py']}, {'patch_id': 'FIX2D6', 'date': '2026-01-15', 'summary': 'Option B engine completeness: Diff Panel V2 row universe can be prev∪cur (union) behind EVO_DIFF_JOIN_MODE flag; adds added/removed change_type and summary counts; default remains strict.', 'files': ['FIX2D6.py']}, {'patch_id': 'FIX2D6_HARDCODE', 'date': '2026-01-15', 'summary': 'Hardcode diff join mode override via FORCE_DIFF_JOIN_MODE and route Diff Panel V2 join-mode selection through helper.', 'files': ['FIX2D6.py']}, {'patch_id': 'FIX2D2', 'date': '2026-01-15', 'summary': 'Anchor-fill current_metrics for diff/display when schema_frozen is misaligned; add rebuild-fn name fallbacks to prevent fn_missing.', 'files': ['FIX2D2.py']}, {'patch_id': 'FIX2D2M', 'date': '2026-01-16', 'summary': 'Injected-first current-value inference: two-pass selection (injected-only pool then global fallback) with explicit trace fields and authoritative commit into metric_changes.current_value(_norm).', 'files': ['FIX2D2M.py']}, {'patch_id': 'FIX2D2N', 'date': '2026-01-16', 'summary': 'Baseline-keyed current mapping: for each Analysis baseline canonical key, synthesize a current metric via injected-first, unit-family-guarded inference from extracted_numbers pools when Evolution canonical keys diverge; enables deterministic Analysis→Evolution diff joins even under key parity gaps.', 'files': ['FIX2D2N.py'], 'supersedes': ['FIX2D2M']}, {'patch_id': 'FIX2D2O', 'date': '2026-01-16', 'summary': 'Persist baseline-keyed current mapping for diffing: when baseline keys are synthesized into cur_can, expose them as primary_metrics_canonical_for_diff and mirror into primary_metrics_canonical so Evolution output keys align with Analysis for the diff demo.', 'files': ['FIX2D2O.py'], 'supersedes': ['FIX2D2N']}, {'patch_id': 'FIX2D2Q', 'date': '2026-01-16', 'summary': 'Baseline-aligned current selection for diffing: injected-first with optional base fallback; stamps provenance fields (source_type, selection_mode) to prevent confusion while preserving union pool behavior.', 'files': ['FIX2D2Q.py'], 'supersedes': ['FIX2D2O']}, {'patch_id': 'FIX2D2R', 'date': '2026-01-16', 'summary': 'Rebuild parity guard: prevent schema-only rebuild paths from committing bare-year tokens when a unit-qualified sibling candidate exists in the same snippet; improves Analysis/Evolution parity for injected content.', 'files': ['FIX2D2R.py'], 'supersedes': ['FIX2D2Q']}, {'patch_id': 'FIX2D2S', 'date': '2026-01-16', 'summary': 'Schema-only rebuild hardening: when non-year candidates exist for a schema key, skip bare-year tokens during winner selection (down-rank/skip) and record diagnostics; reduces year-token pollution before downstream year-blocking.', 'files': ['FIX2D2S.py'], 'supersedes': ['FIX2D2R']}, {'patch_id': 'FIX2D42', 'date': '2026-01-17', 'summary': 'Serialize/promote baseline_schema_metrics_v1 into Analysis primary_response/results so Evolution diff can consume it; extend nested results promotion to mirror baseline_schema_metrics_v1.', 'files': ['FIX2D42.py']}, {'patch_id': 'FIX2D2T', 'summary': 'Add explicit baseline->current projection in diff layer: if baseline row is missing CURRENT but cur_response has same canonical_key in primary_metrics_canonical_for_diff/primary_metrics_canonical, project into metric_changes current_value/_norm and recompute diff counters; attach debug summary.', 'ts': '2026-01-16'}, {'patch_id': 'FIX2D2W', 'date': '2026-01-17', 'summary': 'Fix parity leak: ensure schema_only_rebuild commit-time semantic gate is always active (avoid NameError when _FIX2D2U_ENABLE defined later) and fix year-token extraction regex for required-year checks; bump CODE_VERSION.', 'files': ['FIX2D2W.py'], 'supersedes': ['FIX2D2V']}, {'patch_id': 'FIX2D2X', 'date': '2026-01-17', 'summary': 'Parity patch: replace Evolution schema-only slot filling for baseline-key current with Analysis authoritative selector (_analysis_canonical_final_selector_v1) using injected-first two-pass selection and synthesized keyword hints from canonical_key/name; prevents cross-metric misassignment (e.g., China sales -> chargers 2040) and aligns gating with Analysis.', 'files': ['FIX2D2X.py'], 'supersedes': ['FIX2D2W', 'FIX2D2V', 'FIX2D2U']}, {'patch_id': 'FIX2D2Y', 'date': '2026-01-17', 'summary': 'Hardwire Evolution rebuild_metrics_from_snapshots_analysis_canonical_v1 to use the shared Analysis final selector for baseline-keyed diff current metrics (fix41afc19 parity); eliminates disjoint keyset that blocks diff activation.', 'files': ['FIX2D2Y.py'], 'supersedes': ['FIX2D2X']}, {'patch_id': 'FIX2D65B', 'date': '2026-01-19', 'summary': 'Force canonical pipeline materialisation when injected URLs exist (seed schema via deterministic extensions so FIX2D31 schema-authority rebuild can run even for narrative queries).', 'files': ['FIX2D65B_full_codebase.py'], 'supersedes': ['FIX2D65A']}, {'patch_id': 'FIX2D65C', 'date': '2026-01-19', 'summary': 'Restore analysis->evolution diff contract: broaden injected URL detection (ui_raw + legacy keys) so schema seeding and FIX2D31 schema-authority rebuild reliably run when injection is used; bump version.', 'files': ['FIX2D65C_full_codebase.py'], 'supersedes': ['FIX2D65B']}, {'patch_id': 'FIX2D65D', 'date': '2026-01-19', 'summary': 'Restore analysis->evolution diff contract by always serializing/seeding metric_schema_frozen (deterministic schema extensions), so Evolution schema-only rebuild has a stable keyspace even when LLM emits no primary_metrics; bump version.', 'files': ['FIX2D65D_full_codebase.py'], 'supersedes': ['FIX2D65C']}, {'patch_id': 'FIX2D66H', 'date': '2026-01-19', 'summary': "Fix Google Sheets history save return semantics: add_to_history() now returns True on successful Sheets append and False on failure (previously fell through as None, triggering spurious 'Saved to session only' warning). Keeps session fallback and captures last Sheets error for diagnostics.", 'files': ['FIX2D66H_full_codebase.py']}, {'patch_id': 'FIX2D67', 'date': '2026-01-19', 'summary': 'Fix injected numeric extraction missing-link: fetch_web_context() now calls numeric extractor with correct parameter name (source_url vs url), preventing silent TypeError and empty extracted_numbers; restores injected HTML numbers into snapshot pools feeding schema-only rebuild.', 'files': ['FIX2D67_full_codebase.py'], 'supersedes': ['FIX2D66H']}, {'patch_id': 'FIX2D77', 'date': '2026-01-20', 'summary': 'Percent-schema guardrail: prevent schema-only rebuild from binding year-like tokens (e.g., 2040) to __percent keys by requiring percent evidence and rejecting yearlike-without-percent raw; fixes incorrect prev value for CAGR percent metrics.', 'files': ['FIX2D77_full_codebase.py'], 'supersedes': ['FIX2D76']}, {'patch_id': 'FIX2D82', 'date': '2026-01-20', 'summary': 'Definitive fix for year-token leakage into __percent metrics: drop year-token values when raw token is YYYY regardless of context % signs; force-apply at schema_only rebuild (Analysis baseline materialize) and sanitize previous_data before diff join (cleans old HistoryFull snapshots). Adds debug: fix2d82_percent_sanitize_schema_only / fix2d82_prev_percent_sanitize.', 'files': ['FIX2D82_full_codebase.py'], 'supersedes': ['FIX2D80']}, {'patch_id': 'FIX2D83', 'date': '2026-01-20', 'summary': 'Cleanup consolidation: remove obsolete percent-key guard wrappers (FIX2D78/FIX2D79) now superseded by definitive FIX2D82 sanitizer; stabilize CODE_VERSION with final override to avoid stale late assignments; reduce patch clutter without changing diff behavior.', 'files': ['FIX2D83_full_codebase.py'], 'supersedes': ['FIX2D78', 'FIX2D79', 'FIX2D80']}, {'patch_id': 'REFACTOR45', 'date': '2026-01-25', 'summary': 'Evolution: fix Diff Panel V2 empty rows by hardening the V2 builder call against RecursionError (minimal wrappers, traceback capture, preserve existing rows, strict canonical-join fallback).', 'files': ['REFACTOR45_full_codebase_streamlit_safe.py'], 'supersedes': ['REFACTOR44']}, {'patch_id': 'REFACTOR11', 'date': '2026-01-23', 'summary': 'Fix evolution JSON/UI counters: recompute summary (increased/decreased/unchanged/added) from final metric_changes rows; recompute stability_score accordingly; bump final binding/version locks to REFACTOR11 for hygiene.', 'files': ['REFACTOR11_full_codebase_streamlit_safe.py'], 'supersedes': ['REFACTOR10']}, {'patch_id': 'REFACTOR13', 'date': '2026-01-23', 'summary': 'Summary/stability correctness: recompute evolution results.summary and stability_score from canonical-first diff rows (metric_changes_v2/metric_changes). Add graded stability fallback (100 - mean abs % change) when discrete unchanged/small-change scoring would yield 0, and mirror counts into diff_panel_v2_summary for auditability.', 'files': ['REFACTOR13_full_codebase_streamlit_safe.py'], 'supersedes': ['REFACTOR12']}, {'patch_id': 'REFACTOR14', 'date': '2026-01-23', 'summary': 'Diff engine consolidation: eliminate diff_metrics_by_name override chain by renaming legacy impls and introducing a single public wrapper entrypoint. Preserve legacy/fix31/v24 impls under stable names; update base capture vars and keep binding manifest stable/streamlit-safe.', 'files': ['REFACTOR14_full_codebase_streamlit_safe.py'], 'supersedes': ['REFACTOR13']}, {'patch_id': 'REFACTOR15', 'date': '2026-01-23', 'summary': "Restore diffing after REFACTOR14: harden diff_metrics_by_name resolution in FINAL BINDINGS, eliminate V2 UnboundLocalError (cur_resp_for_diff), and add safe fallback extraction for canonical_for_render/current PMC when nested under output['results'].", 'files': ['REFACTOR15_full_codebase_streamlit_safe.py'], 'supersedes': ['REFACTOR14']}, {'patch_id': 'REFACTOR12', 'date': '2026-01-23', 'summary': 'Truth-lock version stamping + binding manifest hygiene: freeze _yureeka_get_code_version() via locked default arg; re-assert globals for observability; ensure FINAL BINDINGS tag + diff function authoritative tag always present; standardize canonical_for_render_v1 debug block to avoid stale missing diagnostics.', 'files': ['REFACTOR12_full_codebase_streamlit_safe.py'], 'supersedes': ['REFACTOR11']}, {'patch_id': 'REFACTOR09', 'date': '2026-01-22', 'summary': 'Introduce a single authoritative diff engine wrapper (_refactor09_diff_metrics_by_name) and bind diff_metrics_by_name to it in final bindings; prepare for safe removal of legacy duplicate diff definitions.', 'files': ['REFACTOR09_full_codebase_streamlit_safe.py']}, {'patch_id': 'REFACTOR60', 'date': '2026-01-26', 'summary': "Fix REFACTOR09 diff wrapper regression by robustly capturing a callable legacy diff implementation (and adding a signature-safe base fallback). Restores Evolution metric_changes so the dashboard no longer shows 'no metrics to display'.", 'files': ['REFACTOR60.py']}, {'patch_id': 'REFACTOR35', 'summary': 'Move main() invocation to EOF so late refactor defs/overrides are active during runs; add schema-key filter to baseline PMC materialization to prevent debug-key leakage.', 'files': ['REFACTOR35_full_codebase_streamlit_safe.py']}, {'patch_id': 'REFACTOR36', 'summary': "Fix Evolution fatal 'NoneType has no attribute get' by hardening add_to_history() against None callers and coercing run_source_anchored_evolution inputs (previous_data/web_context) to dicts.", 'files': ['REFACTOR36_full_codebase_streamlit_safe.py'], 'supersedes': ['REFACTOR35']}, {'patch_id': 'REFACTOR37', 'summary': 'Add a final crash-proof wrapper for run_source_anchored_evolution to prevent fatal NoneType.get exceptions from aborting Streamlit Evolution; coerce inputs to dict and return renderer-safe failed payload with traceback.', 'files': ['REFACTOR37_full_codebase_streamlit_safe.py'], 'supersedes': ['REFACTOR36']}, {'patch_id': 'REFACTOR38', 'summary': 'Fix FIX24 helper regressions causing None.get crashes in Evolution: ensure _fix24_get_prev_full_payload/_fix24_get_prev_hashes/_fix24_compute_current_hashes always return dicts; enhance REFACTOR37 evolution wrapper to persist full traceback under debug.error_traceback, surface a callsite hint in message/debug, and guard against non-dict impl returns.', 'files': ['REFACTOR38_full_codebase_streamlit_safe.py'], 'supersedes': ['REFACTOR37']}, {'patch_id': 'REFACTOR39', 'summary': 'Fix source-anchored evolution snapshot gating regression: when baseline_sources_cache is omitted from HistoryFull payload (Sheets cell limit), rehydrate snapshots deterministically via snapshot_store_ref/snapshot_store_ref_v2 and source_snapshot_hash_v2/source_snapshot_hash (Snapshots worksheet and local snapshot store). Attach snapshot_store_debug into output.debug on failure for fast diagnosis. No heuristic matching added; remains strict snapshot-gated without valid cached source text.', 'files': ['REFACTOR39_full_codebase_streamlit_safe.py'], 'supersedes': ['REFACTOR38']}, {'patch_id': 'REFACTOR83', 'date': '2026-01-28', 'summary': 'Hardening + clarity pass: (1) normalize Evolution output so baseline_sources_cache is never accidentally reduced to an injected-only row when baseline_sources_cache_current contains the full current pool (keeps UI/harness consistent), and (2) fix a latent NameError in canonical_for_render_v1 diagnostic extension (baseline_sources_cache_prev_rows) so diag_ext reliably populates. No schema/key-grammar changes; no unit conversion changes; Streamlit-safe.', 'files': ['REFACTOR83.py'], 'supersedes': ['REFACTOR82']}, {'patch_id': 'REFACTOR84', 'date': '2026-01-28', 'summary': 'Bump the frozen code-version lock to REFACTOR84 so JSON stamping (code_version) matches the active patch and the harness version self-check stops flagging false mismatches. Add patch tracker entry for REFACTOR84. No schema/key-grammar changes; Streamlit-safe.', 'files': ['REFACTOR84.py'], 'supersedes': ['REFACTOR83']}, {'patch_id': 'REFACTOR85', 'date': '2026-01-28', 'summary': "Optional high-value hardening: (1) handle PDF sources in scrape_url (extract text instead of failed:no_text), (2) add explicit last-good snapshot fallback when extractor returns 0 numbers on blocked/placeholder pages, and (3) normalize evolution source caches even when payload contains a nested 'results' mirror dict. No schema/key-grammar changes; no unit conversion changes; Streamlit-safe.", 'files': ['REFACTOR85.py'], 'supersedes': ['REFACTOR84']}, {'patch_id': 'REFACTOR40', 'summary': "Fix recent snapshot retrievability and partial snapshot corruption in Snapshots sheet store. load_full_snapshots_from_sheet now bypasses stale cache on hash miss, and selects the most recent *complete* write batch (grouped by created_at) to avoid mixed/partial merges. store_full_snapshots_to_sheet no longer treats any existing rows as 'complete'; it validates loadability first and attempts repair writes when prior batch is incomplete, and invalidates snapshot worksheet cache after successful writes.", 'files': ['REFACTOR40_full_codebase_streamlit_safe.py'], 'supersedes': ['REFACTOR39']}, {'patch_id': 'REFACTOR41', 'date': '2026-01-25', 'summary': 'Fix recent snapshot rehydration failures by (1) preventing fake snapshot_store_ref_v2 (gsheet:Snapshots:<hash>) from being emitted unless the mirror-write actually succeeded, (2) emitting snapshot_store_ref_stable pointing to a verified store (v2 sheet > v1 sheet > local) plus a compact snapshot_store_write_v1 debug manifest, and (3) making store_full_snapshots_to_sheet more reliable via smaller default chunk size and batched append_rows to reduce API payload size / rate-limit failures.', 'files': ['REFACTOR41_full_codebase_streamlit_safe.py'], 'supersedes': ['REFACTOR40']}, {'patch_id': 'REFACTOR42', 'date': '2026-01-25', 'summary': "Fix snapshot-gate failures caused by large baseline_sources_cache writes silently failing under Sheets rate limits. Snapshots sheet store now compresses very large payloads (zlib+base64 with 'zlib64:' prefix) to drastically reduce chunk count and API calls, adds a small throttle between batch appends for very large writes, and the loader transparently detects/decompresses compressed payloads while remaining backward-compatible with existing uncompressed snapshots.", 'files': ['REFACTOR42_full_codebase_streamlit_safe.py'], 'supersedes': ['REFACTOR41']}, {'patch_id': 'REFACTOR43', 'date': '2026-01-25', 'summary': "BUGFIX: make Snapshots sheet loader actually decode REFACTOR42 compressed payloads ('zlib64:' prefix). Previously store_full_snapshots_to_sheet could write compressed snapshots but load_full_snapshots_from_sheet attempted json.loads() on the compressed string and returned empty, causing Evolution to be snapshot-gated for recent runs while older (uncompressed) snapshots still loaded.", 'files': ['REFACTOR43_full_codebase_streamlit_safe.py'], 'supersedes': ['REFACTOR42']}, {'patch_id': 'REFACTOR44', 'date': '2026-01-25', 'summary': 'BUGFIX: Fix local snapshot persistence path creation. _snapshot_store_dir() previously omitted a return on the success path, returning None and causing local snapshot store/load to fail (os.path.join(None,...)). Wrapped local snapshot write call in add_to_history with guards to prevent snapshot persistence block from aborting. Also hardened store_full_snapshots_local to compute path safely. This restores reliable snapshot persistence for recent runs when Sheets snapshot store is unavailable/partial, eliminating Evolution snapshot-gate failures caused by missing baseline_sources_cache.', 'files': ['REFACTOR44_full_codebase_streamlit_safe.py'], 'supersedes': ['REFACTOR43']}, {'patch_id': 'REFACTOR47', 'date': '2026-01-25', 'summary': 'Fix Diff Panel V2 recursion (maximum recursion depth exceeded) caused by FIX2D2I wrapper chains capturing already-wrapped __rows implementations. Provide a deterministic, non-recursive canonical-first join builder (strict unit comparability + percent/year poisoning containment) and rebind build_diff_metrics_panel_v2__rows (and FIX2D2I aliases) as last-wins entrypoint so Evolution no longer sets diff_panel_v2_error or falls back to strict_fallback_v2.', 'files': ['REFACTOR47_full_codebase_streamlit_safe.py'], 'supersedes': ['REFACTOR46']}, {'patch_id': 'REFACTOR48', 'date': '2026-01-25', 'summary': 'Fix source-anchored Metric Changes table to render metric_changes_v2 fields (delta_abs/delta_pct/comparability/method) while keeping legacy fallback; bump version lock to REFACTOR48.'}, {'patch_id': 'REFACTOR49', 'date': '2026-01-25', 'summary': 'Eliminate Diff Panel V2 RecursionError by making FIX2D2I-style __rows wrapper idempotent and non-recursive across duplicate wrapper blocks and Streamlit reruns. Store a stable base __rows implementation, avoid re-wrapping an already wrapped function, and keep trace augmentation without affecting schema/key grammar or diff semantics.', 'files': ['REFACTOR49_full_codebase_streamlit_safe.py'], 'supersedes': ['REFACTOR48']}, {'patch_id': 'REFACTOR50', 'date': '2026-01-25', 'summary': "Fix Evolution stability calculation: prevent unchanged rows from being double-counted as 'small change' (<10%), clamp discrete stability to 0–100, and compute stable/small counts from comparable rows only. Removes impossible 150% stability when all rows are unchanged; no schema/key-grammar changes.", 'files': ['REFACTOR50_full_codebase_streamlit_safe.py'], 'supersedes': ['REFACTOR49']}, {'patch_id': 'REFACTOR51', 'date': '2026-01-25', 'summary': "Fix evolution stability graded fallback: cap per-row abs % change at 100 before averaging so injected/outlier deltas don't force 0% stability. Add debug fields mean_abs_pct_raw/capped.", 'files': ['REFACTOR51_full_codebase_streamlit_safe.py']}, {'patch_id': 'REFACTOR52', 'date': '2026-01-25', 'summary': 'Add authority_manifest_v1 (runtime last-wins introspection) into binding_manifest_v1 to make refactor deletions safer. No schema/key-grammar changes; no behavior changes.', 'files': ['REFACTOR52_full_codebase_streamlit_safe.py'], 'supersedes': ['REFACTOR51']}, {'patch_id': 'REFACTOR53', 'date': '2026-01-25', 'summary': 'Make metric_changes rows self-attributing for injected-vs-production gating. Extend source_url extraction to include provenance.best_candidate.source_url; stamp rows with cur/current/source_url fields; change Δt gating to suppress only when row source URL matches injected URL set (missing attribution no longer treated as injected). Add debug counters rows_with_source_url/rows_missing_source_url/rows_suppressed_by_injection.', 'files': ['REFACTOR53_full_codebase_streamlit_safe.py'], 'supersedes': ['REFACTOR52']}, {'patch_id': 'REFACTOR54', 'date': '2026-01-25', 'summary': 'Safe downsizing + durability diagnostics: remove duplicated FIX2D2I Diff Panel V2 wrapper block (redundant after recursion hardening); add snapshot_roundtrip_v1 (best-effort readback of snapshot_store_ref_stable) into Analysis persistence debug to catch recent snapshot save/retrieve issues early. No schema/key-grammar changes.', 'files': ['REFACTOR54_full_codebase_streamlit_safe.py'], 'supersedes': ['REFACTOR53']}, {'patch_id': 'REFACTOR55', 'date': '2026-01-25', 'summary': "Consolidate metric changes outputs to a single canonical feed: output['metric_changes'] is authoritative; output['metric_changes_v2'] mirrors the same list for backward/UI compatibility; drop output['metric_changes_legacy'] (no longer maintained). Add a late-stage consolidation block in compute_source_anchored_diff_BASE to enforce invariants. No schema/key-grammar changes.", 'files': ['REFACTOR55_full_codebase_streamlit_safe.py'], 'supersedes': ['REFACTOR54']}, {'patch_id': 'REFACTOR56', 'date': '2026-01-26', 'summary': 'Controlled downsizing: stop emitting metric_changes_legacy entirely (remove late-stage re-add), add end-of-function safety rail to pop it before returning. No schema/key-grammar changes; Diff Panel V2 remains authoritative and metric_changes_v2 continues to mirror metric_changes.', 'files': ['REFACTOR56.py'], 'supersedes': ['REFACTOR55']}, {'patch_id': 'REFACTOR57', 'date': '2026-01-26', 'summary': 'Stabilize diff harness prior to further downsizing: prefer REFACTOR47 V2 row builder when present; suppress emission of debug.diff_panel_v2_error/traceback (legacy V2 builder can fail before late rebinds). Canonical-first strict fallback remains authoritative; no schema/key-grammar changes.', 'files': ['REFACTOR57.py'], 'supersedes': ['REFACTOR56']}, {'patch_id': 'REFACTOR58', 'date': '2026-01-26', 'summary': "Fix latent UnboundLocalError in Diff Panel V2 row builder by initializing 'effective' locals on loop entry and removing a duplicate 'current_value_norm' key in an early fallback row. This eliminates recurring debug.diff_panel_v2_traceback noise while preserving canonical-first diffing semantics. No schema/key-grammar changes.", 'files': ['REFACTOR58.py'], 'supersedes': ['REFACTOR57']}, {'patch_id': 'REFACTOR59', 'date': '2026-01-26', 'summary': 'Controlled downsizing: removed redundant legacy Diff Panel V2 builders/wrappers (incl. Fix2K inference path + FIX2D2I wrapper) and deleted an identical duplicated mid-file block that redefined FIX2D47/FIX2D48/FIX2D49-era helpers. REFACTOR47 canonical-first join remains the sole authoritative diff-row builder. No schema/key-grammar changes; preserves strict unit comparability and percent-year poisoning guardrails.', 'files': ['REFACTOR59.py'], 'supersedes': ['REFACTOR58']}, {'patch_id': 'REFACTOR61', 'date': '2026-01-26', 'summary': 'Restore minimal Diff Panel V2 canonical-first join row builder (build_diff_metrics_panel_v2__rows_refactor47) so Evolution always populates metric_changes_v2 (and thus metric_changes) even when Streamlit triggers execution before late diff wrapper defs. Strict unit comparability preserved; no schema/key-grammar changes.', 'files': ['REFACTOR61.py'], 'supersedes': ['REFACTOR60']}, {'patch_id': 'REFACTOR62', 'date': '2026-01-26', 'summary': "Add an early, schema-agnostic Diff Panel V2 failsafe canonical-first row builder to prevent Streamlit ordering hazards from producing 'no metrics to display' during controlled downsizing. Also remove obsolete commented CODE_VERSION bump blocks (comment-only clutter). No schema/key-grammar changes; strict unit comparability preserved.", 'files': ['REFACTOR62.py'], 'supersedes': ['REFACTOR61']}, {'patch_id': 'REFACTOR63', 'date': '2026-01-26', 'summary': 'Controlled downsizing: remove the unused FIX2D47 Diff Panel V2 builder + shadow helper defs, while retaining (and hardening) the deterministic collision resolver used by schema/key remapping. No schema/key-grammar changes; diffing + unit comparability preserved.', 'files': ['REFACTOR63.py'], 'supersedes': ['REFACTOR62']}, {'patch_id': 'REFACTOR64', 'date': '2026-01-26', 'summary': 'Controlled downsizing (low-risk): remove redundant early Diff Panel V2 failsafe builder (REFACTOR62) and delete a dead post-main REFACTOR47 rebind block that never affects runtime diffing. No schema/key-grammar changes; preserves strict unit comparability + canonical-first diffing.', 'files': ['REFACTOR64.py'], 'supersedes': ['REFACTOR63']}, {'patch_id': 'REFACTOR65', 'date': '2026-01-26', 'summary': 'Controlled downsizing (low-risk): remove unused preserved BASE implementations (diff_metrics_by_name_BASE and compute_source_anchored_diff_BASE) along with their wrap scaffolding. Add code_version to Evolution report export so all JSON artifacts carry the patch ID. No schema/key-grammar changes; preserves canonical-first diffing + strict unit comparability + snapshot rehydration.', 'files': ['REFACTOR65.py'], 'supersedes': ['REFACTOR64']}, {'patch_id': 'REFACTOR66', 'date': '2026-01-26', 'summary': "Controlled downsizing + safety rail: de-duplicate the redundant nested output['results'] mirror in Evolution payloads by shrinking it to a lightweight compatibility stub (prevents baseline_sources_cache duplication and reduces JSON/Sheets footprint). No schema/key-grammar changes; preserves canonical-first diffing, unit comparability, snapshot rehydration, Δt injection gating, and stability scoring.", 'files': ['REFACTOR66.py'], 'supersedes': ['REFACTOR65']}, {'patch_id': 'REFACTOR67', 'date': '2026-01-26', 'summary': 'Controlled downsizing: remove legacy run_source_anchored_evolution_BASE preservation path and the old pre-FIX24 evolution wrapper. FIX24 changed-case recompute now routes directly through compute_source_anchored_diff (single authoritative path), while retaining FIX24 debug markers, snapshot hash trace, Δt injection gating, and stability scoring. No schema/key-grammar changes.', 'files': ['REFACTOR67.py'], 'supersedes': ['REFACTOR66']}, {'patch_id': 'REFACTOR68', 'date': '2026-01-26', 'summary': 'Fix Evolution stability + summary regression: stop overwriting stability_score with legacy (unchanged/total) formula and recompute results.summary + stability_score from the final canonical-first metric_changes rows (V2-first). Restores correct increased/decreased/unchanged counters and non-zero graded stability for injection runs, while keeping strict unit comparability and schema/key-grammar freeze.', 'files': ['REFACTOR68.py'], 'supersedes': ['REFACTOR67']}, {'patch_id': 'REFACTOR69', 'date': '2026-01-26', 'summary': "Controlled downsizing + safety fix: promote _fmt_currency_first to a shared top-level helper (prevents NameError in render_native_comparison and removes an unnecessary nested duplicate). Also make the Source-Anchored Evolution Metric Changes table prefer output['metric_changes'] (authoritative) while retaining metric_changes_v2 as a mirror for compatibility. No schema/key-grammar changes.", 'files': ['REFACTOR69.py'], 'supersedes': ['REFACTOR68']}, {'patch_id': 'REFACTOR70', 'date': '2026-01-27', 'summary': 'Safety rail + simplification: add a late-stage output bridge in compute_source_anchored_diff to enforce a single authoritative metric_changes list (mirrored to metric_changes_v2) and a clamped top-level stability_score, while hard-removing metric_changes_legacy. This stabilizes the Evolution UI/export path during controlled downsizing. No schema/key-grammar changes.', 'files': ['REFACTOR70.py'], 'supersedes': ['REFACTOR69']}, {'patch_id': 'REFACTOR71', 'date': '2026-01-27', 'summary': 'Safety rail: stamp harness_invariants_v1 into Evolution results to prevent silent degradation when external sources flake (e.g., failed:no_text). Records schema-frozen key count vs baseline/current canonical counts, missing keys, and source failure summaries, plus an additive harness_warning_v1 banner string. No schema/key-grammar changes.', 'files': ['REFACTOR71.py'], 'supersedes': ['REFACTOR70']}, {'patch_id': 'REFACTOR72', 'date': '2026-01-27', 'summary': 'Completeness-first diffs: upgrade Diff Panel V2 strict canonical join to prefer frozen schema keys (when metric_schema_frozen is available) and emit explicit completeness rows when either side is missing (missing_baseline / missing_current / missing_both). Keeps strict unit comparability and delta computation only for unit-matching pairs; no schema/key-grammar changes; Streamlit-safe.', 'files': ['REFACTOR72.py'], 'supersedes': ['REFACTOR71']}, {'patch_id': 'REFACTOR73', 'date': '2026-01-27', 'summary': 'Fix REFACTOR72 indentation regression in _refactor13_recompute_summary_and_stability_v1 (rows loop escaped to module scope, causing runtime error). Restores Streamlit-safe execution and preserves completeness-first change_type counting.'}, {'patch_id': 'REFACTOR74', 'date': '2026-01-27', 'summary': 'Completeness-first diffs hardening: guarantee schema-complete Metric Changes rows even if the Diff Panel V2 builder errors by upgrading the strict fallback to iterate frozen schema keys (or union fallback) and emit explicit missing_baseline/missing_current/missing_both rows. Also extend harness_invariants_v1 to record metric_changes row_count vs schema size and surface row_count_mismatch in harness_warning_v1 when violated. No schema/key-grammar changes; Streamlit-safe.', 'files': ['REFACTOR74.py'], 'supersedes': ['REFACTOR73']}, {'patch_id': 'REFACTOR75', 'date': '2026-01-27', 'summary': 'High-value harness hardening: add explicit last-good snapshot fallback inside fetch_web_context for failed:no_text and scrape exceptions using existing_snapshots, with clear provenance fields (fallback_used/status_detail=fallback:last_good_snapshot) so extraction remains complete under source flakiness; extend harness_invariants_v1 to record and surface baseline/current fallbacks in both debug and harness_warning_v1; and restore the invariant that Evolution injection runs suppress Δt.', 'files': ['REFACTOR75.py'], 'supersedes': ['REFACTOR74']}, {'patch_id': 'REFACTOR76', 'date': '2026-01-27', 'summary': 'Fix injection-mode detection and completeness-first harness guards: suppress results.run_delta_seconds/human whenever injected URLs are present using canonical debug.inj_trace_v1 signals (not legacy lists); prefer inj_trace_v1 for per-row injection gating; extend harness_invariants_v1 with schema-key coverage checks (missing/extra/duplicate canonical keys) and warning-only change_type integrity validation for missing_baseline/missing_current rows, surfacing count-only warning banners.', 'files': ['REFACTOR76.py'], 'supersedes': ['REFACTOR75']}, {'patch_id': 'REFACTOR77', 'date': '2026-01-27', 'summary': 'Fix version stamping and add a self-check: bump the locked code version stamp to REFACTOR77, and extend harness_invariants_v1 with a warning-only comparison of output.code_version vs the latest REFACTOR patch_id in PATCH_TRACKER_V1, surfacing version_mismatch in harness_warning_v1 if they diverge (catches stale version locks / wrong file deployments).', 'files': ['REFACTOR77.py'], 'supersedes': ['REFACTOR76']}, {'patch_id': 'REFACTOR80', 'date': '2026-01-27', 'summary': 'Fix injection-mode detection so production runs do not get falsely flagged as suppressed_by_injection; suppress run-delta only when true UI/intake injection URLs exist. Also improve row_delta_gating_v1 source-attribution counters (rows_with_source_url/rows_missing_source_url) even when no injection is present. No schema/key-grammar changes; Streamlit-safe.', 'files': ['REFACTOR80.py'], 'supersedes': ['REFACTOR79']}, {'patch_id': 'REFACTOR81', 'date': '2026-01-27', 'summary': "Last-good snapshot fallback hardening: expand existing_snapshots lookup to match URL variants (scheme/www/trailing slash) and fall back not only on failed:no_text/exception but also when extraction yields zero numbers (explicit status_detail=fallback:last_good_snapshot, never silent). Add telemetry debug_counts.fallback_last_good_snapshot_used(+urls). Also fill units for schema-complete missing rows from metric_schema_frozen when safe (avoid currency placeholder unit 'U'). Streamlit-safe; no schema/key-grammar changes.", 'files': ['REFACTOR81.py'], 'supersedes': ['REFACTOR80']}, {'patch_id': 'REFACTOR82', 'date': '2026-01-27', 'summary': 'Fix patch tracker/version self-check false positives by registering the current REFACTOR patch before main() executes (Streamlit load-order safe). Also make the main() crash banner use the active code version instead of a hardcoded patch id. No schema/key-grammar changes; Streamlit-safe.', 'files': ['REFACTOR82.py'], 'supersedes': ['REFACTOR81']}, {'patch_id': 'REFACTOR86', 'date': '2026-01-28', 'summary': 'Controlled downsizing (step 1): collapse the accumulated patch-tracker try/append blocks into a single consolidated registry. Keep all existing patch metadata as a static canonical entries list, register idempotently at import-time, and remove redundant patch-tracker scaffolding to reduce file size and risk of syntax/indentation drift. No schema/key-grammar changes; no unit conversion changes; Streamlit-safe; core pipeline unchanged.', 'files': ['REFACTOR86.py'], 'supersedes': ['REFACTOR85']}, {'patch_id': 'REFACTOR87', 'date': '2026-01-28', 'summary': 'Controlled downsizing (step 2): remove a large, inactive legacy diff/patch ladder (FIX32→FIX2D77) that is no longer referenced by the authoritative Evolution diff path. Keep Diff Panel V2 (build_diff_metrics_panel_v2__rows_refactor47) and compute_source_anchored_diff unchanged. This reduces file size and lowers syntax/indentation risk while preserving all refactor invariants (schema frozen, strict unit comparability, percent-year poisoning guards, Streamlit-safe).', 'files': ['REFACTOR87.py'], 'supersedes': ['REFACTOR86']}, {'patch_id': 'REFACTOR88', 'date': '2026-01-28', 'summary': 'Hotfix after downsizing: restore/guard the FIX2D55 prev-lift helper used by the FIX24 changed-case evolution recompute path. Prevents the “FIX24: Evolution recompute failed (compute_source_anchored_diff path)” banner caused by missing helper after pruning legacy ladder. No schema/key-grammar changes; Streamlit-safe.', 'files': ['REFACTOR88.py'], 'supersedes': ['REFACTOR87']}, {'patch_id': 'REFACTOR89', 'date': '2026-01-28', 'summary': 'Restore baseline hydration into diff: add robust PMC locator and define the Diff Panel V2 unwrap helper to prevent silent baseline drop; treat empty baseline dict as a failure requiring fallback; broaden HF5 HistoryFull rehydrate trigger to also rehydrate when baseline primary_metrics_canonical is missing; add deterministic FIX24 rehydrate fallback and emit debug.prev_payload_probe_v1 + debug.baseline_missing_reason_v1 for explicit diagnostics. No schema/key-grammar changes; strict unit comparability preserved; Streamlit-safe.', 'files': ['REFACTOR89.py'], 'supersedes': ['REFACTOR88']}, {'id': 'REFACTOR90', 'date': '2026-01-28', 'summary': 'Fix missing baseline for investment metric by improving PDF coverage and supporting space-separated thousands in numeric extraction.', 'notes': ['PDF fetch now extracts first 10 pages plus an evenly-spaced spread sample up to ~50 pages total, to reach late-report tables (IEA PDFs).', 'Number regex now accepts space as a thousands separator (e.g., "2 131.89") and numeric parsing strips both commas and spaces.', 'Extractor fingerprint bumped to invalidate cached extracted_numbers and force recompute.'], 'files': ['REFACTOR90.py'], 'supersedes': ['REFACTOR89']}, {'id': 'REFACTOR90A', 'date': '2026-01-28', 'summary': 'Hotfix: fix indentation error in PDF sampling block (no logic changes).', 'notes': ['Corrects an IndentationError after a with-statement in fetch_url_content_with_status PDF handling.', 'No intended behavioral changes beyond making the REFACTOR90 PDF sampling code runnable.'], 'files': ['REFACTOR90A.py'], 'supersedes': ['REFACTOR90']}, {'id': 'REFACTOR91', 'date': '2026-01-28', 'summary': 'Add toggle to hide missing_both (coverage gap) rows in Metric Changes table by default.', 'notes': ['Adds a Streamlit checkbox: “Show missing-both rows (coverage gaps)”. Default off.', 'Shows a coverage gaps counter so users know rows are hidden.', 'Filtering is presentation-only; diff output remains unchanged.'], 'files': ['REFACTOR91.py'], 'supersedes': ['REFACTOR90A']}, {'patch_id': 'REFACTOR92', 'id': 'REFACTOR92', 'date': '2026-01-29', 'summary': 'Harden PDF ingestion to restore 4/4 schema coverage: add force-PDF path for .pdf URLs, extract pdfplumber tables alongside text sampling, and preserve PDF page coverage in status_detail to prevent front-matter-only misses (IEA Global EV Outlook PDF).', 'files': ['REFACTOR92.py'], 'supersedes': ['REFACTOR91'], 'notes': 'No schema/key grammar changes. Diff semantics unchanged; improves upstream evidence extraction for charging investment metric.'}, {'patch_id': 'REFACTOR93', 'id': 'REFACTOR93', 'date': '2026-01-29', 'summary': 'UI polish: hide missing_both (coverage gap) rows by default in legacy Metric Changes table, with a toggle and coverage counter (presentation-only).', 'notes': ['Adds a Streamlit checkbox near the legacy Metric Changes table to hide rows where both previous and current are missing.', 'Default hides missing_both; toggle reveals them.', 'No changes to schema, key grammar, diff semantics, or JSON outputs.'], 'files': ['REFACTOR93.py'], 'supersedes': ['REFACTOR92']}, {'patch_id': 'REFACTOR94', 'id': 'REFACTOR94', 'date': '2026-01-29', 'summary': 'UI defaults: hide missing_both (coverage gap) rows by default everywhere and hide the legacy Metric Changes table behind an opt-in toggle (presentation-only UI downsizing step).', 'notes': ['Adds a checkbox to show/hide the legacy Metric Changes (diff.metric_diffs) table; default is hidden to reduce clutter and prevent confusion with authoritative metric_changes_v2.', 'Keeps existing missing_both hide toggle defaults (off) and coverage counters.', 'No changes to schema, key grammar, diff semantics, or JSON outputs.'], 'files': ['REFACTOR94.py'], 'supersedes': ['REFACTOR93']}, {'patch_id': 'REFACTOR95', 'id': 'REFACTOR95', 'date': '2026-01-29', 'summary': 'Downsizing step 2: remove legacy Metric Changes (non-authoritative) table from the main UI and delete the unused non-canonical compute_metric_diffs() implementation (canonical path remains). No changes to authoritative metric_changes/metric_changes_v2 output schema or strict comparability rules.', 'notes': ['Legacy metric diffs (diff.metric_diffs) are still computed for stability, but the legacy table UI is removed to reduce clutter.', 'compute_metric_diffs() was dead code (no callers) and is removed.'], 'files': ['REFACTOR95.py'], 'supersedes': ['REFACTOR94']}, {'patch_id': 'REFACTOR96', 'id': 'REFACTOR96', 'date': '2026-01-29', 'summary': 'Downsizing step 3: remove obsolete early alias wrappers (shadowed by later authoritative implementations) for schema-only and analysis-canonical rebuild entrypoints. No behavior change.', 'notes': ['Deletes the redundant early alias definitions of rebuild_metrics_from_snapshots_schema_only_fix16 and rebuild_metrics_from_snapshots_analysis_canonical_v1 that were overwritten later in the file.', 'Reduces F811 redefinition noise; preserves final authoritative implementations.'], 'files': ['REFACTOR96.py'], 'supersedes': ['REFACTOR95']}, {'patch_id': 'REFACTOR97', 'date': '2026-01-29', 'summary': 'Controlled downsizing (low-risk): remove legacy diff capture plumbing and unused fix31 variant; bind REFACTOR09 diff wrapper directly to _yureeka_diff_metrics_by_name_wrap1. No behavior change.', 'notes': ['Deletes the REFACTOR60 _YUREEKA_DIFF_METRICS_BY_NAME_LEGACY capture block and the unused _yureeka_diff_metrics_by_name_fix31 implementation.', 'Simplifies diff wiring to reduce surface area while preserving canonical-first behavior.'], 'files': ['REFACTOR97.py'], 'supersedes': ['REFACTOR96']}, {'patch_id': 'REFACTOR98', 'date': '2026-01-29', 'summary': 'Controlled downsizing (low-risk): prune patch-banner comment scaffolding and separator noise to reduce file size and lower syntax/indentation risk. No behavior change.', 'notes': ['Removes only comment-only banners/separators outside string literals.', 'Runtime logic, schema/key grammar, diff semantics, and strict unit comparability unchanged.'], 'files': ['REFACTOR98.py'], 'supersedes': ['REFACTOR97']}]
 
 def _yureeka_register_patch_tracker_v1(_entries=_PATCH_TRACKER_CANONICAL_ENTRIES_V1):
     try:
@@ -134,7 +126,6 @@ def _yureeka_get_code_version(_lock=_YUREEKA_CODE_VERSION_LOCK):
         return str(_lock)
     except Exception:
         return "UNKNOWN"
-
 
 
 def _yureeka_authority_manifest_v1() -> dict:
@@ -392,75 +383,13 @@ def _yureeka_show_debug_playbook_in_streamlit_v1():
     except Exception:
         pass
 
-# ============================================================
-# ============================================================
-# ============================================================
 
-# ============================================================
-# ============================================================
-# ============================================================
-# ============================================================
-# ============================================================
-# ============================================================
-
-# ============================================================
-# ============================================================
-
-# ============================================================
-
-# ============================================================
-# ============================================================
-# ============================================================
-# ============================================================
-# ============================================================
-# ============================================================
-# ============================================================
-# ============================================================
-# ============================================================
-# ============================================================
-# ============================================================
-# ============================================================
-# ============================================================
-# ============================================================
-# ============================================================
-# ============================================================
-# ============================================================
-# ============================================================
-# ============================================================
-# ============================================================
-# ============================================================
-# ============================================================
-# ============================================================
-# ============================================================
-# ============================================================
-# ============================================================
-# ============================================================
-# ============================================================
-# ============================================================
-# ============================================================
-# ============================================================
-# ============================================================
-# ============================================================
-# ============================================================
-# ============================================================
-
-# ============================================================
-# ============================================================
-# ============================================================
-# ============================================================
-# ============================================================
-# ============================================================
-# ============================================================
-# ============================================================
-# REFACTOR02: HARNESS FLAG (ADDITIVE)
-# - Streamlit-safe: does nothing unless explicitly invoked.
 # Invocation:
 #   - python REFACTOR02_full_codebase_streamlit_safe.py --run_refactor_harness
 #   - or set RUN_REFACTOR_HARNESS=1
 # NOTE:
 #   - Under Streamlit runtime, the harness is forcibly disabled to prevent sys.exit()
 #     from terminating the Streamlit server / failing health checks.
-# ============================================================
 try:
     import os as _rf01_os
     import sys as _rf01_sys
@@ -502,98 +431,32 @@ try:
 except Exception:
     _REFACTOR01_HARNESS_REQUESTED = False
 
-# ============================================================
-# ============================================================
-# ============================================================
-# ============================================================
-# ============================================================
-# ============================================================
-# ============================================================
-# ============================================================
-  # PATCH FIX2D64: add canonical_identity_spine shadow-mode module + regressions (no behavior change)
 
-# ============================================================
-# ============================================================
-# ============================================================
-# ============================================================
-# ============================================================
-# ============================================================
-# ============================================================
-# ============================================================
-
-# ============================================================
-# ============================================================
-
-
-# ============================================================
-# ============================================================
-# =========================
-# PATCH FIX2D59 (ADDITIVE): Canonical Identity Resolver (shared authority)
 # - Introduces a single deterministic identity tuple and a schema-first resolver.
 # - Cuts old direct key-mint paths by routing canonical_key assignment through the resolver.
-# =========================
-# =========================
-# PATCH FIX2D60 (ADDITIVE): schema-only canonical enforcement + yearlike rejection at schema-only commit
 # - Analysis: after identity rekey, keep ONLY schema-bound metrics in primary_metrics_canonical.
 # - Evolution schema_only rebuild: never allow a bare year token to commit for expected_kind=='unit' keys.
-# =========================
-# =========================
-# PATCH FIX2D61 (ADDITIVE): Schema Promotion Path (Option A)
 # - Propose schema entries from primary_metrics_provisional
 # - Allow deterministic promotion into metric_schema_frozen (analysis-side)
 # - Record proposals and promotions for audit
-# =========================
-# =========================
-# PATCH FIX2D62 (ADDITIVE): Time token normalization into identity tuple
 # - Split embedded year/YTD/forecast tokens out of metric_token and into time_scope.
 # - Resolver matches schema on metric_token + '_' + time_scope, preventing 2024/2025 being glued into metric_token.
 # - Also adds required except/pass closure for early patch-tracker try block.
-# =========================
-# =========================
-# PATCH FIX2D63 (ADDITIVE): schema_only_rebuild yearlike hardening for unit/count metrics
 # - Fixes a variable typo that could disable FIX2D2U gating in the prefilter.
 # - Rejects yearlike numeric candidates for unit/count schema keys unless they carry unit evidence.
 # - Records reject counts under _evolution_rebuild_debug.fix2d63_reject_yearlike_no_unit_evidence.
-# =========================
-# =========================
-# PATCH FIX2D64 (ADDITIVE): Canonical Identity Spine V1 (shadow mode)
 # - Introduces canonical_identity_spine.py as the single future authority for identity normalization,
 #   schema-first key resolution, and value selection (incl. yearlike hard rejection immune to window backfill).
 # - Adds minimal regression tests as callable self-checks (no runtime behavior change unless explicitly enabled).
-# =========================
-# =========================
-# PATCH FIX2D65 (AUTHORITY TAKEOVER): Canonical Identity Spine V1 becomes the only authority
 # - Rewire Analysis + Evolution to resolve canonical keys via canonical_identity_spine.resolve_key_v1 (schema-first)
 # - Enforce no-canonical-outside-spine gate at primary_metrics_canonical commit and schema_only_rebuild selection
 # - Prune yearlike candidates for unit/count metrics even when unit evidence was context/window backfilled
-# =========================
-# ============================================================
-# ============================================================
-# ============================================================
-# ============================================================
-# ============================================================
-# ============================================================
-# ============================================================
-# ============================================================
-# ============================================================
-# ============================================================
-# ============================================================
-# ============================================================
-# ============================================================
-# ============================================================
-# ============================================================
-# =====================================================================
-# PATCH FIX2D20 (ADD): Disable earlier speculative selection tweaks while tracing
-# =====================================================================
 _FIX2D20_DISABLE_FIX2D18 = False
 _FIX2D20_DISABLE_FIX2D19 = False
 
-# =====================================================================
-# PATCH FIX2D20 (ADD): Year-like commit tracing for primary_metrics_canonical
 # - We have repeated evidence of year tokens (e.g., 2024/2030) being committed
 #   with method/unit missing. This patch records *where* and *what* is being
 #   committed so we can fix the correct choke point without more speculation.
-# =====================================================================
 
 def _fix2d20_is_yearish_value(v):
     try:
@@ -691,28 +554,13 @@ def _fix2d20_trace_year_like_commits(output: dict, stage: str, callsite: str) ->
     except Exception:
         return
 
-# ============================================================
-# ============================================================
-# ============================================================
-# ============================================================
-# ============================================================
 # NOTE: FIX2D15 supersedes and removes FIX2D15 year-token guard implementation (replaced with stricter schema-only eligibility gates).
-# ============================================================
-# ============================================================
-# ============================================================
-# ============================================================
-# ============================================================
-# ============================================================
-# ============================================================
-# ============================================================
-# PATCH START: FIX2D10_MATERIALIZE_OUTPUT_DEBUG_CANONICAL_FOR_RENDER_V1
 # Purpose:
 #   The Evolution dashboard diagnostics expect output_debug.canonical_for_render_v1
 #   to exist. Some code paths populate current canonical under results.primary_metrics_canonical
 #   (or nested results.results.*). This patch materializes output_debug.canonical_for_render_v1
 #   from results.primary_metrics_canonical (post-promotion) to eliminate false 'missing' signals
 #   and allow Current column hydration.
-# ============================================================
 def _fix2d10_materialize_output_debug_canonical_for_render_v1(output_obj):
     diag = {
         "applied": False,
@@ -760,12 +608,8 @@ def _fix2d10_materialize_output_debug_canonical_for_render_v1(output_obj):
             return diag
     except Exception:
         return diag
-# ============================================================
-# PATCH END: FIX2D10_MATERIALIZE_OUTPUT_DEBUG_CANONICAL_FOR_RENDER_V1
 
 
-# ============================================================
-# PATCH START: FIX2D73_HISTORYFULL_PREV_CANON_PROMOTION_V1
 # Purpose:
 #   - HistoryFull rehydrate can return a full prior analysis payload where baseline
 #     canonical metrics live under nested containers (e.g., results.primary_metrics_canonical).
@@ -775,7 +619,6 @@ def _fix2d10_materialize_output_debug_canonical_for_render_v1(output_obj):
 #   - Promote nested baseline canonical metrics + schema into top-level keys on the
 #     rehydrated previous payload, and mirror into primary_response.
 #   - Emit compact diagnostics counts (safe, additive).
-# ============================================================
 
 def _fix2d73_promote_rehydrated_prevdata_v1(prev_full: dict) -> dict:
     diag = {
@@ -851,20 +694,7 @@ def _fix2d73_promote_rehydrated_prevdata_v1(prev_full: dict) -> dict:
     except Exception:
         return prev_full
 
-# ============================================================
-# PATCH END: FIX2D73_HISTORYFULL_PREV_CANON_PROMOTION_V1
 
-# ============================================================
-# ============================================================
-# ============================================================
-# ============================================================
-# ============================================================
-# ============================================================
-# ============================================================
-
-
-# ============================================================
-# PATCH START: FIX2D9_SCHEMA_ANCHORED_REBUILD_V1
 # Purpose:
 #   Force current-side canonical rebuild to be schema-anchored
 #   to the Analysis (prev_response) schema universe, so keys
@@ -875,7 +705,6 @@ def _fix2d73_promote_rehydrated_prevdata_v1(prev_full: dict) -> dict:
 #   callable; fallback to rebuild_metrics_from_snapshots_analysis_canonical_v1.
 #
 #   Render/diff-facing only; does not change hashing/snapshots.
-# ============================================================
 
 def _fix2d9_schema_anchored_rebuild_current_metrics_v1(prev_response, pool, web_context=None):
     diag = {
@@ -934,23 +763,12 @@ def _fix2d9_schema_anchored_rebuild_current_metrics_v1(prev_response, pool, web_
         diag["reason"] = "exception:" + str(type(_e).__name__)
         return None, diag
 
-# ============================================================
-# PATCH END: FIX2D9_SCHEMA_ANCHORED_REBUILD_V1
 
-# ============================================================
-# ============================================================
-# ============================================================
-
-
-
-# ============================================================
-# PATCH START: FIX2D8_PROMOTE_NESTED_RESULTS_V1
 # Purpose:
 #   Normalize output shape by promoting nested results.results.*
 #   up into results.* so downstream diff/render can see current
 #   canonical metrics in the expected location.
 #   (Additive, deterministic)
-# ============================================================
 def _fix2d8_promote_nested_results_v1(output_obj):
     diag = {
         "applied": False,
@@ -1051,21 +869,12 @@ def _fix2d8_promote_nested_results_v1(output_obj):
             diag["notes"].append("exception:" + str(type(_e).__name__))
         except Exception:
             return diag
-# ============================================================
-# PATCH END: FIX2D8_PROMOTE_NESTED_RESULTS_V1
-
-# ============================================================
-# ============================================================
-# ============================================================
 
 
-# ============================================================
-# PATCH START: FIX2D6_EXECUTION_STAMP_AND_ASSERT_V1
 # Purpose:
 #   - Assert the running code version at runtime (fail fast if wrong file imported)
 #   - Emit execution stamp into results.debug so JSON proves which code ran
 #   - Emit join mode into results.debug
-# ============================================================
 EXPECTED_CODE_VERSION_FIX2D6 = "FIX2D6"
 
 def _fix2d6_assert_and_stamp_runtime_v1(output_obj, join_mode=None):
@@ -1087,13 +896,8 @@ def _fix2d6_assert_and_stamp_runtime_v1(output_obj, join_mode=None):
     except Exception:
         pass
 
-# ============================================================
-# PATCH END: FIX2D6_EXECUTION_STAMP_AND_ASSERT_V1
 
-# ============================================================
-# PATCH START: FIX2D6_BUILD_DIFF_KEY_UNIVERSE_V1
 # Purpose: Construct diff row key universe (strict vs union)
-# ============================================================
 def _build_diff_key_universe(prev_keys, cur_keys):
     join_mode = None
     try:
@@ -1104,21 +908,12 @@ def _build_diff_key_universe(prev_keys, cur_keys):
     if join_mode == "union":
         return sorted(set(prev_keys) | set(cur_keys)), join_mode
     return sorted(set(prev_keys)), join_mode
-# ============================================================
-# PATCH END: FIX2D6_BUILD_DIFF_KEY_UNIVERSE_V1
-# ============================================================
-
-# ============================================================
 
 
-
-# ============================================================
-# PATCH START: FIX2D6_HARDCODE_JOIN_MODE_V1
 # Purpose:
 #   Allow a hardcoded override for diff join mode (demo/debug).
 #   If FORCE_DIFF_JOIN_MODE is set (e.g. "union"), it overrides
 #   EVO_DIFF_JOIN_MODE environment variable.
-# ============================================================
 FORCE_DIFF_JOIN_MODE = "union"   # set to None to restore env-based behavior
 
 def _fix2d6_get_diff_join_mode_v1():
@@ -1132,19 +927,11 @@ def _fix2d6_get_diff_join_mode_v1():
         return str(_os.getenv("EVO_DIFF_JOIN_MODE", "strict")).strip().lower()
     except Exception:
         return "strict"
-# ============================================================
-# PATCH END: FIX2D6_HARDCODE_JOIN_MODE_V1
-# ============================================================
 
-# =====================================================================
-# =====================================================================
-# =====================================================================
-# PATCH START: FIX2D4_key_overlap_debug_v1
 # Purpose:
 #   Emit explicit canonical key overlap diagnostics between previous and
 #   current canonical metrics to make diff feasibility observable.
 #   (Additive, no behavior change)
-# =====================================================================
 
 def _emit_key_overlap_debug_v1(prev_metrics, cur_metrics, target_key=None):
     try:
@@ -1166,14 +953,8 @@ def _emit_key_overlap_debug_v1(prev_metrics, cur_metrics, target_key=None):
             "exception": str(type(_e).__name__),
         }
 
-# =====================================================================
-# PATCH END: FIX2D4_key_overlap_debug_v1
-# =====================================================================
-# =====================================================================
-# PATCH FIX2D1 START: Fix fn_missing + Diff Panel V2 summary crash
 # - Adds best-effort aliases so FIX41AFC19 display rebuild can find a callable
 # - Wraps Diff Panel V2 _impl call so summary is always defined (no UnboundLocalError)
-# =====================================================================
 def _fix2d1_first_callable_name(candidates):
     try:
         for name in candidates:
@@ -1216,17 +997,11 @@ try:
             globals()["rebuild_metrics_from_snapshots_schema_only_fix16"] = globals()[_alt]
 except Exception:
     pass
-# =====================================================================
-# PATCH FIX2D1 END (part 1): aliasing
-# =====================================================================
 
-# =====================================================================
-# PATCH FIX2AF_FETCH_FAILURE_VISIBILITY_AND_PREEMPTIVE_HARDENING_V1 (ADDITIVE)
 # - URL shape normalizer (boundary before scraping)
 # - Scrape ledger keyed by url_norm w/ stage+reason
 # - Scraped text accessor to avoid meta-key drift
 # - Fetch-failure visibility (status/textlen/classification)
-# =====================================================================
 
 def _fix2af_norm_url(u: str) -> str:
     try:
@@ -1365,7 +1140,6 @@ def _fix2af_classify_fetch_failure(status, txt):
         if "error" in s or "exception" in s or "fail" in s:
             return "error"
 
-        # PATCH FIX2D58G (ADDITIVE): magnitude/count units + 'sales' implies unit_sales
         # - Some sources label unit counts as "million units" while metric_name is "... Sales ...".
         # - If we see sales language AND a magnitude-like unit, bind to unit_sales.
         try:
@@ -1394,21 +1168,15 @@ def _fix2af_ledger_put(ledger: dict, url_raw: str, stage: str, reason: str = "",
         pass
 
 _fix2af_last_scrape_ledger = {}
-# END PATCH FIX2AF_FETCH_FAILURE_VISIBILITY_AND_PREEMPTIVE_HARDENING_V1
-# =====================================================================
 
 ENDSTATE_FINAL_VERSION = "v7_41_endstate_final_1"
 INJ_TRACE_PATCH_VERSION = "fix41q_inj_trace_v1_always_emit"
-# =====================================================================
 
-# =====================================================================
-# PATCH ES2/ES8/ES9 (ADDITIVE): shared determinism helpers for drift=0
 # - Deterministic sorting / tie-breaking helpers
 # - Deterministic candidate index builder (anchor_hash -> best candidate)
 # - Lightweight schema + universe hashing for convergence checks
 # - One-button end-state validation harness (callable)
 # NOTE: Additive only; existing logic remains intact.
-# =====================================================================
 import hashlib as _es_hashlib
 
 def _es_hash_text(s: str) -> str:
@@ -1533,7 +1301,6 @@ def _es_build_candidate_index_deterministic(baseline_sources_cache):
                 ctx_hash = c.get("context_hash") or ""
                 val = c.get("value")
                 unit = c.get("unit") or ""
-            # PATCH FIX27 (ADDITIVE): Eligibility gate BEFORE scoring.
             # Reject bare-year tokens for non-year metrics when there is no token unit evidence.
             if expected_kind != "year":
                 raw_token = (c.get("raw") or "").strip()
@@ -1610,14 +1377,9 @@ def end_state_validation_harness(baseline_analysis: dict, evolution_output: dict
         pass
         report["notes"].append("Validation harness encountered an exception (non-fatal).")
     return report
-# =====================================================================
-
-            # =========================
 
 
-# =========================================================
 # GOOGLE SHEETS HISTORY STORAGE
-# =========================================================
 
 SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
@@ -1635,7 +1397,6 @@ def get_google_sheet():
         )
         client = gspread.authorize(creds)
 
-        # ===================== PATCH GS1 (ADDITIVE): prefer explicit History worksheet =====================
         # Why:
         # - Your spreadsheet contains multiple tabs (e.g., "New Analysis", "History", "HistoryFull", "Snapshots")
         # - sheet1 is often NOT "History", so get_history() reads the wrong tab and sees "no analyses"
@@ -1653,7 +1414,6 @@ def get_google_sheet():
         except Exception:
             pass
             sheet = ss.sheet1
-        # =================== END PATCH GS1 (ADDITIVE) ===================
 
         # Ensure headers exist - handle response object
         try:
@@ -1683,7 +1443,6 @@ def get_google_sheet():
                 )
                 client = gspread.authorize(creds)
 
-                # ===================== PATCH GS1b (ADDITIVE): same worksheet selection in fallback =====================
                 spreadsheet_name = st.secrets.get("google_sheets", {}).get("spreadsheet_name", "Yureeka_JSON")
                 ss = client.open(spreadsheet_name)
                 worksheet_title = st.secrets.get("google_sheets", {}).get("history_worksheet", "History")
@@ -1691,7 +1450,6 @@ def get_google_sheet():
                     return ss.worksheet(worksheet_title)
                 except Exception:
                     return ss.sheet1
-                # =================== END PATCH GS1b (ADDITIVE) ===================
             except:
                 pass
         st.error(f"❌ Failed to connect to Google Sheets: {e}")
@@ -1702,8 +1460,6 @@ def generate_analysis_id() -> str:
     return f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{hashlib.md5(str(datetime.now().timestamp()).encode()).hexdigest()[:6]}"
 
 
-# =====================================================================
-# PATCH AI_A (ADDITIVE): emit metric_anchors in analysis payload (analysis-time)
 # Why:
 # - Evolution/diff are now anchor-driven; analysis must persist a deterministic
 #   canonical_key -> anchor_hash mapping for drift=0 convergence.
@@ -1711,7 +1467,6 @@ def generate_analysis_id() -> str:
 # Determinism:
 # - Only uses existing evidence/candidates already present in the analysis payload.
 # - No re-fetching; no heuristic matching.
-# =====================================================================
 def _emit_metric_anchors_in_analysis_payload(analysis_obj: dict) -> dict:
     try:
         if not isinstance(analysis_obj, dict):
@@ -1848,9 +1603,6 @@ def _emit_metric_anchors_in_analysis_payload(analysis_obj: dict) -> dict:
                 "anchor_confidence": aconf,
             }
 
-            # -----------------------------------------------------------------
-            # PATCH AI_B (ADDITIVE): also backfill anchor fields onto the metric row
-            # -----------------------------------------------------------------
             try:
                 if ah and not _safe_str(m.get("anchor_hash")):
                     m["anchor_hash"] = ah
@@ -1864,12 +1616,8 @@ def _emit_metric_anchors_in_analysis_payload(analysis_obj: dict) -> dict:
                     m["anchor_confidence"] = aconf
             except Exception:
                 pass
-            # -----------------------------------------------------------------
 
         if metric_anchors:
-            # -----------------------------------------------------------------
-            # PATCH AI_C (ADDITIVE): persist in all common locations
-            # -----------------------------------------------------------------
             try:
                 analysis_obj["metric_anchors"] = metric_anchors
             except Exception:
@@ -1885,12 +1633,10 @@ def _emit_metric_anchors_in_analysis_payload(analysis_obj: dict) -> dict:
                     analysis_obj["results"].setdefault("metric_anchors", metric_anchors)
             except Exception:
                 pass
-            # -----------------------------------------------------------------
 
         return analysis_obj
     except Exception:
         return analysis_obj
-# =====================================================================
 
 def add_to_history(analysis: dict) -> bool:
     """
@@ -1914,17 +1660,12 @@ def add_to_history(analysis: dict) -> bool:
         return False
 
 
-    # =====================================================================
-    # PATCH AI_A_CALL (ADDITIVE): ensure metric_anchors emitted before persistence
-    # =====================================================================
     try:
         analysis = _emit_metric_anchors_in_analysis_payload(analysis)
     except Exception:
         pass
-    # =====================================================================
 
 
-    # =====================================================================
     import json
     import re
     import streamlit as st
@@ -1932,10 +1673,7 @@ def add_to_history(analysis: dict) -> bool:
 
     SHEETS_CELL_LIMIT = 50000
 
-    # -----------------------
-    # PATCH A1 (ADDITIVE): robustly locate baseline_sources_cache
     # - Added primary_response.baseline_sources_cache as extra fallback
-    # -----------------------
     baseline_cache = (
         analysis.get("baseline_sources_cache")
         or (analysis.get("primary_response", {}) or {}).get("baseline_sources_cache")
@@ -1943,9 +1681,6 @@ def add_to_history(analysis: dict) -> bool:
         or (analysis.get("results", {}) or {}).get("source_results")
     )
 
-    # -----------------------
-    # PATCH A2 (ADDITIVE): build evidence_records deterministically
-    # -----------------------
     def _build_evidence_records_from_baseline_cache(baseline_cache_obj):
         records = []
         if not isinstance(baseline_cache_obj, list):
@@ -2001,14 +1736,10 @@ def add_to_history(analysis: dict) -> bool:
                         "anchor_hash": anchor_hash,
                 "candidate_id": hashlib.sha1(str(anchor_hash or "").encode("utf-8")).hexdigest()[:16] if anchor_hash else None,
 
-            # =====================================================================
-            # PATCH AI2 (ADDITIVE): anchor integrity fields
             # - candidate_id is a stable short id derived from anchor_hash
             # - anchor_basis documents what the anchor_hash was built from
-            # =====================================================================
             "candidate_id": (str(anchor_hash)[:16] if anchor_hash else None),
             "anchor_basis": "url|raw|context",
-            # =====================================================================
                         "source_url": n.get("source_url") or url,
 
                         "start_idx": n.get("start_idx"),
@@ -2049,9 +1780,6 @@ def add_to_history(analysis: dict) -> bool:
         except Exception:
             return records
 
-    # -----------------------
-    # PATCH A3 (ADDITIVE): build metric_anchors deterministically (schema-first if present)
-    # -----------------------
     def _build_metric_anchors(primary_metrics_canonical, evidence_records):
         """
         Build a deterministic metric_anchors mapping for drift=0.
@@ -2211,13 +1939,10 @@ def add_to_history(analysis: dict) -> bool:
             anchors[ckey] = {
                 "canonical_key": ckey,
                 "anchor_hash": chosen.get("anchor_hash"),
-            # =====================================================================
-# PATCH AI3 (ADDITIVE): anchor integrity fingerprint (analysis-time)
 # Why:
 # - Provides a stable, inspectable signature tying the anchor to a specific
 #   candidate (url + anchor_hash + value_norm + base_unit).
 # - Helps detect silent anchor drift across analysis/evolution.
-# =====================================================================
 "anchor_integrity": {
     "candidate_id": chosen.get("candidate_id"),
     "value_norm": chosen.get("value_norm"),
@@ -2227,7 +1952,6 @@ def add_to_history(analysis: dict) -> bool:
         f"{ckey}|{chosen.get('anchor_hash')}|{chosen.get('source_url') or chosen.get('url') or ''}|{chosen.get('value_norm')}|{chosen.get('base_unit') or chosen.get('unit') or ''}"
     ) if callable(globals().get("_es_hash_text")) else None,
 },
-# =====================================================================
                 "candidate_id": chosen.get("candidate_id"),
                 "source_url": chosen.get("source_url") or chosen.get("url"),
                 "context_snippet": chosen.get("context_snippet") or chosen.get("context"),
@@ -2242,14 +1966,12 @@ def add_to_history(analysis: dict) -> bool:
         def _tokenize(s: str):
             return [t for t in re.findall(r"[a-z0-9]+", (s or "").lower()) if len(t) > 2]
 
-        # PATCH A3.1 (ADDITIVE): tiny float helper for deterministic closeness scoring
         def _to_float(x):
             try:
                 return float(x)
             except Exception:
                 return None
 
-        # PATCH A3.9 (ADDITIVE): currency evidence helper
         # - Needed because many currency metrics appear as magnitude-tagged numbers (e.g., "40.7M")
         #   with currency implied in nearby context ("USD", "revenue", "$", etc.)
         def _has_currency_evidence(raw: str, ctx: str) -> bool:
@@ -2267,7 +1989,6 @@ def add_to_history(analysis: dict) -> bool:
             if any(k in c for k in strong_kw):
                 return True
             return False
-        # =========================
 
         # flatten candidates
         all_nums = []
@@ -2278,7 +1999,6 @@ def add_to_history(analysis: dict) -> bool:
                 if isinstance(n, dict):
                     all_nums.append(n)
 
-        # PATCH A3.2 (ADDITIVE): normalize_unit_tag + unit_family hooks (if present)
         _norm_tag_fn = globals().get("normalize_unit_tag")
         _unit_family_fn = globals().get("unit_family")
 
@@ -2302,10 +2022,8 @@ def add_to_history(analysis: dict) -> bool:
             best = None
             best_key = None
 
-            # PATCH A3.3 (ADDITIVE): metric value reference for closeness bonus
             m_val = _to_float(m.get("value_norm") if m.get("value_norm") is not None else m.get("value"))
 
-            # PATCH A3.4 (ADDITIVE): normalized expected tag (schema unit may be "M", "%", etc.)
             exp_tag = expected_unit
             try:
                 if callable(_norm_tag_fn):
@@ -2313,7 +2031,6 @@ def add_to_history(analysis: dict) -> bool:
             except Exception:
                 pass
 
-            # PATCH A3.10 (ADDITIVE): metric unit_tag (if available) to gate closeness bonus
             m_tag = (m.get("unit_tag") or "").strip()
 
             for cand in all_nums:
@@ -2324,36 +2041,24 @@ def add_to_history(analysis: dict) -> bool:
                 c_ut = (cand.get("unit_tag") or "").strip()
                 c_fam = (cand.get("unit_family") or "").lower().strip()
 
-                # =========================
-                # PATCH A3.5 (ADDITIVE): derive candidate family if missing
                 # - prevents leakage when unit_family wasn't populated upstream
-                # =========================
                 if not c_fam:
                     try:
                         if callable(_unit_family_fn):
                             c_fam = str(_unit_family_fn(c_ut or "") or "").lower().strip()
                     except Exception:
                         pass
-                # =========================
 
-                # =========================
-                # PATCH A3.7 (ADDITIVE): prefer unit_tag matching (normalized) over raw unit matching
-                # PATCH A3.11 (ADDITIVE): extend normalization fallback to raw/context
                 # - helps older snapshots where unit_tag/unit may be empty but raw/context carries scale ("million", "%")
-                # =========================
                 cand_tag = c_ut
                 try:
                     if callable(_norm_tag_fn):
                         cand_tag = _norm_tag_fn(c_ut or cand.get("unit") or cand.get("raw") or ctx)
                 except Exception:
                     pass
-                # =========================
 
-                # =========================
-                # PATCH A3.6 (FIX): schema-first family gate with currency exception
                 # - Currency metrics often appear as magnitude candidates ("40.7M") + currency evidence in context.
                 # - We allow cand_fam == "magnitude" for expected_family == "currency" ONLY when currency evidence exists.
-                # =========================
                 if expected_family in ("percent", "currency", "magnitude", "energy"):
                     if expected_family == "currency":
                         if c_fam not in ("currency", "magnitude"):
@@ -2363,7 +2068,6 @@ def add_to_history(analysis: dict) -> bool:
                     else:
                         if (c_fam or "") != expected_family:
                             continue
-                # =========================
 
                 # dimension/meaning gate using measure_kind when present (soft but helpful)
                 mk = cand.get("measure_kind")
@@ -2378,21 +2082,14 @@ def add_to_history(analysis: dict) -> bool:
 
                 bonus = 0.0
 
-                # =========================
-                # PATCH A3.7 (ADDITIVE): tag-based unit bonus (stronger)
-                # =========================
                 if exp_tag and cand_tag and cand_tag == exp_tag:
                     bonus += 0.07
                 # keep a small legacy bonus if exact unit string matches too
                 if expected_unit and (str(cand.get("unit") or "").strip() == expected_unit):
                     bonus += 0.03
-                # =========================
 
-                # =========================
-                # PATCH A3.8 (ADDITIVE): deterministic value closeness bonus (guarded)
                 # - Only apply when units are comparable (tag match or both use value_norm).
                 # - Prevents misleading closeness when one side is normalized and the other isn't.
-                # =========================
                 c_val = _to_float(cand.get("value_norm") if cand.get("value_norm") is not None else cand.get("value"))
                 comparable = False
                 if m_tag and cand_tag and m_tag == cand_tag:
@@ -2407,7 +2104,6 @@ def add_to_history(analysis: dict) -> bool:
                         bonus += 0.06
                     elif rel_err <= 0.10:
                         bonus += 0.03
-                # =========================
 
                 score = float(score + bonus)
 
@@ -2425,12 +2121,8 @@ def add_to_history(analysis: dict) -> bool:
 
             if best and best_key and best_key[0] >= 0.10:
                 anchors[ckey] = {
-                    # =========================
-                    # PATCH MA1 (ADDITIVE): legacy compat fields
-                    # =========================
                     "metric_id": ckey,
                     "metric_name": (m.get("name") or m.get("original_name") or ckey),
-                    # =========================
 
                     "canonical_key": ckey,
                     "anchor_hash": best.get("anchor_hash"),
@@ -2447,21 +2139,13 @@ def add_to_history(analysis: dict) -> bool:
                     "context_snippet": (best.get("context_snippet") or "")[:220],
                     "anchor_confidence": float(min(100.0, best_key[0] * 100.0)),
 
-                    # =========================
-                    # PATCH A3.12 (ADDITIVE): optional fingerprint passthrough (if present)
                     # - Useful later for evolution/debugging; harmless if missing.
-                    # =========================
                     "fingerprint": best.get("fingerprint"),
-                    # =========================
                 }
             else:
                 anchors[ckey] = {
-                    # =========================
-                    # PATCH MA1 (ADDITIVE): legacy compat fields
-                    # =========================
                     "metric_id": ckey,
                     "metric_name": (m.get("name") or m.get("original_name") or ckey),
-                    # =========================
 
                     "canonical_key": ckey,
                     "anchor_hash": None,
@@ -2469,7 +2153,6 @@ def add_to_history(analysis: dict) -> bool:
                     "raw": None,
                     "anchor_confidence": 0.0,
 
-                    # PATCH A3.12 (ADDITIVE): keep key present for stable shape
                     "fingerprint": None,
                 }
 
@@ -2485,13 +2168,10 @@ def add_to_history(analysis: dict) -> bool:
         except Exception:
             pass
 
-        # =====================================================================
-        # PATCH AI_ANCHHASH1 (ADDITIVE): propagate anchor_hash into metric rows
         # Why:
         # - Drift=0 requires prev metrics to carry anchor_hash so diff can compare
         #   prev_anchor_hash vs cur_anchor_hash deterministically.
         # - We ONLY copy existing anchor_hash from anchors map; no fabrication.
-        # =====================================================================
         try:
             if isinstance(primary_metrics_canonical, dict) and isinstance(anchors, dict):
                 for _ck, _a in anchors.items():
@@ -2505,20 +2185,13 @@ def add_to_history(analysis: dict) -> bool:
                         _mrow["anchor_hash"] = _ah
         except Exception:
             pass
-        # =====================================================================
         return anchors
 
-    # -----------------------
-    # PATCH A4 (ADDITIVE): enrich analysis (never block saving)
-    # -----------------------
     try:
         if isinstance(baseline_cache, list) and baseline_cache:
             evidence_records = _build_evidence_records_from_baseline_cache(baseline_cache)
 
-            # =========================
-            # PATCH A4.1 (ADDITIVE): evidence layer versioning (pipeline attribution)
             # - Use CODE_VERSION if available; else keep numeric fallback
-            # =========================
             try:
                 cv = globals().get("CODE_VERSION")
                 analysis.setdefault("evidence_layer_version", cv or 1)
@@ -2526,7 +2199,6 @@ def add_to_history(analysis: dict) -> bool:
                 pass
                 analysis.setdefault("evidence_layer_version", 1)
             analysis.setdefault("evidence_layer_schema_version", 1)
-            # =========================
 
             # stash on analysis (additive)
             analysis["evidence_records"] = evidence_records
@@ -2541,8 +2213,6 @@ def add_to_history(analysis: dict) -> bool:
                 schema = analysis.get("metric_schema_frozen") or {}
 
             metric_anchors = _build_metric_anchors(pmc, schema, evidence_records)
-            # =====================================================================
-            # PATCH ANCH_EMIT1 (ADDITIVE): emit metric_anchors into analysis payload
             # Why:
             # - Evolution (and diff) expects anchors to be discoverable without guessing.
             # - Some storage paths wrap/summarize analysis objects; we persist anchors
@@ -2550,7 +2220,6 @@ def add_to_history(analysis: dict) -> bool:
             # Determinism:
             # - Anchors are derived only from existing evidence_records / schema / pmc.
             # - No re-fetching; no heuristic matching.
-            # =====================================================================
             try:
                 if isinstance(metric_anchors, dict) and metric_anchors:
                     # Top-level (preferred)
@@ -2578,19 +2247,14 @@ def add_to_history(analysis: dict) -> bool:
                         pass
             except Exception:
                 pass
-            # =====================================================================
 
             analysis["metric_anchors"] = metric_anchors
-            # =====================================================================
-            # =====================================================================
-            # PATCH AI4 (ADDITIVE): anchor integrity audit (analysis-time)
             # Why:
             # - Detect duplicate anchor_hash values across canonical keys.
             # - Detect missing anchor_hash on anchors and on baseline canonical metrics.
             # - Provide non-breaking debug/audit fields for drift investigations.
             # Notes:
             # - Purely additive; does not mutate anchors beyond attaching audit metadata.
-            # =====================================================================
             try:
                 if isinstance(analysis, dict):
                     _ma = analysis.get('metric_anchors')
@@ -2628,16 +2292,11 @@ def add_to_history(analysis: dict) -> bool:
                     }
             except Exception:
                 pass
-            # =====================================================================
 
-    # -----------------------
     # Existing Google Sheet save behavior (guarded)
-    # -----------------------
     except Exception:
         pass
 
-    # =====================================================================
-    # PATCH FIX2D75 (OPTION B): Materialize baseline primary_metrics_canonical for persistence
     # Why:
     # - HistoryFull replay/diff requires Analysis baseline canonical values (not just schema).
     # - Prior runs persisted metric_schema_frozen but had no primary_metrics_canonical map.
@@ -2648,7 +2307,6 @@ def add_to_history(analysis: dict) -> bool:
     # - Mirror into analysis.primary_response.primary_metrics_canonical so Sheets minimal
     #   fallback still carries it.
     # - Emit debug counts for verification.
-    # =====================================================================
     try:
         if isinstance(analysis, dict):
             _already = None
@@ -2796,16 +2454,12 @@ def add_to_history(analysis: dict) -> bool:
                     pass
     except Exception:
         pass
-    # =====================================================================
 
-    # =====================================================================
-    # PATCH D (ADDITIVE): propagate metric_anchors onto metric rows + evidence
     # Why:
     # - Drift=0 depends on analysis and evolution sharing the SAME anchor IDs.
     # - Some downstream code paths expect anchor_hash on the metric row itself
     #   and/or inside evidence entries (not only in analysis["metric_anchors"]).
     # - This patch copies existing anchor metadata only (no fabrication, no refetch).
-    # =====================================================================
     try:
         import re
         import hashlib
@@ -2890,7 +2544,6 @@ def add_to_history(analysis: dict) -> bool:
                             _e["anchor_hash"] = _eh
     except Exception:
         pass
-    # =====================================================================
 
 
     def _try_make_sheet_json(obj: dict) -> str:
@@ -2967,25 +2620,19 @@ def add_to_history(analysis: dict) -> bool:
         analysis_id = generate_analysis_id()
 
 
-        # =====================================================================
-        # PATCH ES1F (ADDITIVE): persist full snapshots + pointer for Sheets rows
         # - If full baseline_sources_cache exists (list-shaped), store it outside
         #   Sheets keyed by source_snapshot_hash, and attach pointer fields into
         #   analysis/results for deterministic evolution rehydration.
         # - Pure enrichment only (no refetch, no heuristics).
-        # =====================================================================
         try:
             _bsc = None
             if isinstance(analysis, dict):
                 _bsc = analysis.get("results", {}).get("baseline_sources_cache") or analysis.get("baseline_sources_cache")
 
 
-            # =================================================================
-            # PATCH SS6B (ADDITIVE): if snapshots were already summarized away,
             # rebuild minimal snapshot shape from evidence_records (deterministic).
             # This enables snapshot persistence even when baseline_sources_cache
             # is a summary dict in the main analysis object.
-            # =================================================================
             try:
                 if (not isinstance(_bsc, list)) and isinstance(analysis, dict):
                     _er = None
@@ -2999,14 +2646,10 @@ def add_to_history(analysis: dict) -> bool:
                         _bsc = _rebuilt
             except Exception:
                 pass
-            # =================================================================
 
             if isinstance(_bsc, list) and _bsc:
                 _ssh = compute_source_snapshot_hash(_bsc)
 
-                # =========================
-                # PATCH A2 (ADD): also compute snapshot hash v2 for stronger identity
-                # =========================
                 _ssh_v2 = None
                 try:
                     _ssh_v2 = compute_source_snapshot_hash_v2(_bsc)
@@ -3014,19 +2657,13 @@ def add_to_history(analysis: dict) -> bool:
                     pass
                     _ssh_v2 = None
                 if _ssh:
-                    # =============================================================
-                    # PATCH SS4 (ADDITIVE): store snapshots to Snapshots worksheet when possible
                     # - Persists full baseline_sources_cache in a dedicated worksheet tab.
                     # - Falls back to local snapshot_store file if Sheets snapshot store unavailable.
                     # - Pointer ref stored as 'gsheet:Snapshots:<hash>' when successful.
-                    # =============================================================
                     _gs_ref = ""
                     _gs_ref_v2 = ""
                     try:
                         _gs_ref = store_full_snapshots_to_sheet(_bsc, _ssh, worksheet_title="Snapshots")
-                        # =========================
-                        # PATCH A3 (ADD): mirror-write snapshots under v2 hash as well
-                        # =========================
                         if _ssh_v2 and isinstance(_ssh_v2, str) and _ssh_v2 != _ssh:
                             try:
                                 _gs_ref_v2 = store_full_snapshots_to_sheet(_bsc, _ssh_v2, worksheet_title="Snapshots")
@@ -3046,14 +2683,10 @@ def add_to_history(analysis: dict) -> bool:
                     analysis.setdefault("results", {})
                     if isinstance(analysis["results"], dict):
                         analysis["results"]["source_snapshot_hash"] = analysis["results"].get("source_snapshot_hash") or _ssh
-                        # PATCH A4 (ADD): store v2 hash in results for downstream consumers
                         try:
                             if _ssh_v2:
                                 analysis["results"]["source_snapshot_hash_v2"] = analysis["results"].get("source_snapshot_hash_v2") or _ssh_v2
-                                # =========================
-                                # PATCH FIX37 (ADD): stable snapshot hash alias for fastpath alignment
                                 # - Prefer v2 (stable) when present; fall back to legacy v1.
-                                # =========================
                                 try:
                                     _ssh_stable = _ssh_v2 or _ssh
                                     if _ssh_stable:
@@ -3068,15 +2701,11 @@ def add_to_history(analysis: dict) -> bool:
                         analysis["snapshot_store_ref"] = analysis.get("snapshot_store_ref") or _ref
                         if isinstance(analysis["results"], dict):
                             analysis["results"]["snapshot_store_ref"] = analysis["results"].get("snapshot_store_ref") or _ref
-                            # PATCH A5 (ADD): v2 snapshot ref for convenience
                             try:
                                 if _ssh_v2 and _gs_ref_v2:
                                     analysis["results"]["snapshot_store_ref_v2"] = analysis["results"].get("snapshot_store_ref_v2") or _gs_ref_v2
                             except Exception:
                                 pass
-                    # =============================================================
-                    # PATCH SS4B (ADDITIVE): prefer Sheets snapshot ref when available
-                    # =============================================================
                     try:
                         if _gs_ref:
                             analysis["snapshot_store_ref"] = _gs_ref
@@ -3085,12 +2714,9 @@ def add_to_history(analysis: dict) -> bool:
                     except Exception:
                         pass
 
-                    # =============================================================
-                    # PATCH REFACTOR41 (ADDITIVE): stable snapshot store ref + write debug
                     # - Avoid advertising a v2 gsheet ref unless it was actually written successfully.
                     # - Provide a stable ref that always points to a verified store (v2 sheet > v1 sheet > local).
                     # - Emit a compact debug manifest for diagnosing snapshot write failures.
-                    # =============================================================
                     try:
                         _stable_ref = (_gs_ref_v2 or _gs_ref or (analysis.get("snapshot_store_ref") if isinstance(analysis, dict) else "") or (_ref if "_ref" in locals() else "") or "")
                         if _stable_ref and isinstance(analysis, dict):
@@ -3115,12 +2741,9 @@ def add_to_history(analysis: dict) -> bool:
                                 "final_snapshot_store_ref": str((analysis.get("snapshot_store_ref") or "") if isinstance(analysis, dict) else ""),
                                 "final_snapshot_store_ref_stable": str((analysis.get("snapshot_store_ref_stable") or "") if isinstance(analysis, dict) else ""),
                             }
-                            # =============================================================
-                            # REFACTOR54 (ADDITIVE): snapshot round-trip verification
                             # - After writing snapshot_store_ref_stable, attempt to load it back
                             #   (sheet or local path) and record basic success/failure stats.
                             # - Best-effort only; never blocks persistence.
-                            # =============================================================
                             try:
                                 import os as _os, json as _json
                                 _stable_ref_rt = str(analysis.get("snapshot_store_ref_stable") or "")
@@ -3186,17 +2809,13 @@ def add_to_history(analysis: dict) -> bool:
 
         except Exception:
             pass
-        # =====================================================================
 
         payload_for_sheets = _shrink_for_sheets(analysis)
         payload_json = _try_make_sheet_json(payload_for_sheets)
 
-        # =====================================================================
-        # PATCH A5 (BUGFIX, REQUIRED): never write invalid JSON to Sheets
         # - Previous hard truncation produced non-JSON (prefix + random suffix),
         #   causing history loaders (json.loads) to skip the row entirely.
         # - This wrapper guarantees valid JSON even when we must truncate.
-        # =====================================================================
         if isinstance(payload_json, str) and len(payload_json) > SHEETS_CELL_LIMIT:
             try:
                 payload_json = json.dumps(
@@ -3219,16 +2838,12 @@ def add_to_history(analysis: dict) -> bool:
                 pass
                 # ultra-safe fallback: still valid JSON
                 payload_json = '{"_sheet_write":{"truncated":true,"mode":"hard_truncation_wrapper","note":"json.dumps failed"}}'
-        # =====================================================================
-        # =====================================================================
-        # PATCH HF_PERSIST1 (ADDITIVE): Persist full payload to HistoryFull when History cell is wrapped/truncated
         # Why:
         # - Evolution rebuild requires schema/anchors which may be lost in a sheets-safe wrapper
         # - HistoryFull stores the full JSON keyed by analysis_id for later rehydration
         # Behavior:
         # - If payload_json indicates truncation/wrapper OR is very large, write full payload to HistoryFull
         # - Attach a pointer full_store_ref to both analysis and the wrapper object (when possible)
-        # =====================================================================
         try:
             is_truncated = False
             try:
@@ -3303,7 +2918,6 @@ def add_to_history(analysis: dict) -> bool:
                             pass
         except Exception:
             pass
-        # =====================================================================
 
 
         row = [
@@ -3315,7 +2929,6 @@ def add_to_history(analysis: dict) -> bool:
         ]
         sheet.append_row(row, value_input_option="RAW")
 
-        # PATCH FIX2D66G (ADD): also persist into session history even when Sheets is primary
         # - This prevents Evolution from being blocked when a Sheets write succeeds/fails intermittently.
         try:
             if "analysis_history" not in st.session_state:
@@ -3335,7 +2948,6 @@ def add_to_history(analysis: dict) -> bool:
 
     except Exception as e:
         st.warning(f"⚠️ Failed to save to Google Sheets: {e}")
-        # PATCH FIX2D66G (ADDITIVE): mark Sheets write failure so history can fall back to session state
         try:
             globals()["_SHEETS_LAST_WRITE_ERROR"] = str(e)
         except Exception:
@@ -3387,7 +2999,6 @@ def normalize_unit_tag(unit_str: str) -> str:
         return "K"
 
 
-
     # composite phrases (e.g. "million units")
     # Some extractors pass unit strings like "million units" as a single tag.
     # Normalize these into the same magnitude tags used elsewhere (M/B/T/K) so
@@ -3424,27 +3035,19 @@ def unit_family(unit_tag: str) -> str:
 
     return ""
 
-# =========================
-# PATCH FIX2D2J (ADDITIVE): normalize_unit_family alias + currency-aware family
 # - Many extracted candidates arrive with unit_family='' due to legacy drift.
 # - Provide a stable, analysis/evolution-shared unit_family normalizer.
 # - Currency requires context evidence; caller may pass ctx/raw for upgrade.
-# =========================
 
 
-# =========================
-# PATCH FIX2D2K (ADDITIVE): context-driven unit backfill for unitless candidates
 # - Some sources yield numbers without an attached unit token (unit_tag="").
 # - We conservatively infer unit_tag/unit_family from nearby context text.
 # - This does NOT weaken FIX2D24 year-blocking; it only restores missing unit metadata.
-# =========================
 import re as _re_fix2d2k
 
-# =========================
 # REFACTOR20 (BUGFIX): boundary-aware currency evidence detector
 # - Prevent false positives like 'eur'/'euro' inside 'Europe' from upgrading unit_family to currency.
 # - Treat currency codes/words as tokens (word-boundary), while allowing symbol markers ($, €, £, ¥).
-# =========================
 def _yureeka_has_currency_evidence_v1(text: str) -> bool:
     try:
         t = (text or "").lower()
@@ -3470,7 +3073,6 @@ def _yureeka_has_currency_evidence_v1(text: str) -> bool:
         pass
 
     return False
-
 
 
 def infer_unit_tag_from_context(ctx: str, raw: str = ""):
@@ -3538,7 +3140,6 @@ def normalize_unit_family(unit_tag: str, ctx: str = "", raw: str = "") -> str:
             pass
 
 
-    # PATCH FIX2D2K: infer family from context when unit_tag is missing
     if fam == "" and ut == "":
         try:
             _itag, ifam, _phr, _ex = infer_unit_tag_from_context(ctx or "", raw or "")
@@ -3627,8 +3228,6 @@ def infer_currency_code_from_text_v1(text: str) -> str:
     return ""
 
 
-
-
 def canonicalize_numeric_candidate(candidate: dict) -> dict:
 
 
@@ -3639,7 +3238,6 @@ def canonicalize_numeric_candidate(candidate: dict) -> dict:
 
 
     Safe to call multiple times.
-
 
 
     PATCH AI4 (ADDITIVE): anchor integrity
@@ -3657,15 +3255,10 @@ def canonicalize_numeric_candidate(candidate: dict) -> dict:
     import hashlib
 
 
-
     if not isinstance(candidate, dict):
 
 
         return {}
-
-
-
-    # ---------- numeric value ----------
 
 
     v_raw = candidate.get("value_norm")
@@ -3712,10 +3305,6 @@ def canonicalize_numeric_candidate(candidate: dict) -> dict:
             return candidate
 
 
-
-    # ---------- unit normalization ----------
-
-
     try:
 
 
@@ -3728,12 +3317,9 @@ def canonicalize_numeric_candidate(candidate: dict) -> dict:
 
         ut = str(candidate.get("unit_tag") or candidate.get("unit") or "").strip()
 
-    # =========================
-    # PATCH FIX2D2K (ADDITIVE): context-driven unit backfill when unit_tag is empty
     # - Some sources yield numbers without an attached unit token (unit_tag="").
     # - Infer unit_tag/unit_family from nearby context_snippet/raw without weakening FIX2D24.
     # - Attach per-candidate trace: context_unit_backfill_v1.
-    # =========================
     ctx_s = (candidate.get("context") or candidate.get("context_snippet") or "")
     raw_s = (candidate.get("raw") or candidate.get("display_value") or "")
     context_unit_backfill_v1 = {"applied": False}
@@ -3775,12 +3361,9 @@ def canonicalize_numeric_candidate(candidate: dict) -> dict:
     except Exception:
         pass
 
-    # =========================
-    # PATCH FIX2D2J (ADDITIVE): deterministic unit/measure classifier
     # - Backfill unit_family using unit_tag and currency evidence in context
     # - Correct measure_kind/measure_assoc for currency-like candidates
     # - Attach small per-candidate trace fields for audit
-    # =========================
     ctx_s = (candidate.get("context") or candidate.get("context_snippet") or "")
     raw_s = (candidate.get("raw") or candidate.get("display_value") or "")
     existing_fam = (candidate.get("unit_family") or "")
@@ -3856,8 +3439,6 @@ def canonicalize_numeric_candidate(candidate: dict) -> dict:
         pass
 
 
-
-
     # If candidate already has base_unit/multiplier_to_base, respect them
 
 
@@ -3865,7 +3446,6 @@ def canonicalize_numeric_candidate(candidate: dict) -> dict:
 
 
     mult = candidate.get("multiplier_to_base")
-
 
 
     try:
@@ -3881,7 +3461,6 @@ def canonicalize_numeric_candidate(candidate: dict) -> dict:
         mult = None
 
 
-
     # Minimal deterministic mapping (extend as needed)
 
 
@@ -3894,7 +3473,6 @@ def canonicalize_numeric_candidate(candidate: dict) -> dict:
         mult = 1.0
 
 
-
         # percents
 
 
@@ -3902,7 +3480,6 @@ def canonicalize_numeric_candidate(candidate: dict) -> dict:
 
 
             base_unit, mult = "%", 1.0
-
 
 
         # energy
@@ -3924,7 +3501,6 @@ def canonicalize_numeric_candidate(candidate: dict) -> dict:
 
 
             base_unit, mult = "Wh", 1.0
-
 
 
         # power
@@ -3954,7 +3530,6 @@ def canonicalize_numeric_candidate(candidate: dict) -> dict:
             base_unit, mult = "W", 1.0
 
 
-
         # mass
 
 
@@ -3976,7 +3551,6 @@ def canonicalize_numeric_candidate(candidate: dict) -> dict:
             base_unit, mult = "t", 1.0
 
 
-
         # count-ish
 
 
@@ -3986,7 +3560,6 @@ def canonicalize_numeric_candidate(candidate: dict) -> dict:
             base_unit, mult = ut, 1.0
 
 
-
         else:
 
 
@@ -3994,7 +3567,6 @@ def canonicalize_numeric_candidate(candidate: dict) -> dict:
 
 
             base_unit, mult = (ut or str(candidate.get("unit") or "").strip()), 1.0
-
 
 
     # Only set defaults to avoid overriding existing enriched fields
@@ -4010,7 +3582,6 @@ def canonicalize_numeric_candidate(candidate: dict) -> dict:
 
 
     candidate.setdefault("multiplier_to_base", mult)
-
 
 
     # value_norm: if already present, do not overwrite
@@ -4031,10 +3602,6 @@ def canonicalize_numeric_candidate(candidate: dict) -> dict:
             pass
 
 
-
-    # ---------- anchor integrity ----------
-
-
     def _sha1(s: str) -> str:
 
 
@@ -4046,7 +3613,6 @@ def canonicalize_numeric_candidate(candidate: dict) -> dict:
 
         except Exception:
             return ""
-
 
 
     ah = candidate.get("anchor_hash") or candidate.get("anchor")
@@ -4094,12 +3660,10 @@ def canonicalize_numeric_candidate(candidate: dict) -> dict:
             candidate["anchor_hash"] = ah
 
 
-
     if not candidate.get("candidate_id") and ah:
 
 
         candidate["candidate_id"] = str(ah)[:16]
-
 
 
     return candidate
@@ -4124,41 +3688,29 @@ def rebuild_metrics_from_snapshots(
     import re
     import hashlib
 
-    # =========================
-    # PATCH RMS0 (ADDITIVE): typing imports for Dict/Any/List used below
     # - Prevents NameError if typing symbols are not imported globally.
-    # =========================
     from typing import Dict, Any, List
-    # =========================
 
     prev_response = prev_response if isinstance(prev_response, dict) else {}
 
-    # =========================
-    # PATCH RMS0.1 (ADDITIVE): accept anchors stored under alternate keys
     # - Backward compatible: does not change existing behavior if metric_anchors exists.
-    # =========================
     prev_anchors = (
         prev_response.get("metric_anchors")
         or prev_response.get("anchors")
         or {}
     )
-    # =========================
 
     if not isinstance(prev_anchors, dict):
         prev_anchors = {}
 
     rebuilt: Dict[str, Any] = {}
 
-    # ---------- schema + canonical lookup ----------
     metric_schema = prev_response.get("metric_schema_frozen") or {}
     if not isinstance(metric_schema, dict):
         metric_schema = {}
 
-    # =========================
-    # PATCH RB2 (ADDITIVE): ensure baseline_sources_cache is a full list (rehydrate from snapshot store if needed)
     # - Handles cases where history rows store only a summarized baseline_sources_cache, but full snapshots exist
     #   in the Snapshots sheet (referenced by snapshot_store_ref / source_snapshot_hash).
-    # =========================
     try:
         if (not isinstance(baseline_sources_cache, list)) or (isinstance(baseline_sources_cache, dict) and baseline_sources_cache.get("_summary") is True):
             # Prefer already-rehydrated cache on prev_response["results"]["baseline_sources_cache"]
@@ -4182,11 +3734,8 @@ def rebuild_metrics_from_snapshots(
     if not isinstance(prev_can, dict):
         prev_can = {}
 
-    # =========================
-    # PATCH RMS0.2 (ADDITIVE): compute full metric key universe
     # - Important: some metrics may not have anchors yet; we still must rebuild them
     #   (otherwise evolution "misses" metrics and diffs become unstable).
-    # =========================
     metric_key_universe = set()
     try:
         metric_key_universe.update(list(prev_can.keys()))
@@ -4194,9 +3743,7 @@ def rebuild_metrics_from_snapshots(
     except Exception:
         pass
         metric_key_universe = set(prev_can.keys()) if isinstance(prev_can, dict) else set()
-    # =========================
 
-    # ---------- deterministic candidate id (tie-breaker) ----------
     def _candidate_id(c: dict) -> str:
         try:
             url = str(c.get("source_url") or c.get("url") or "")
@@ -4216,11 +3763,8 @@ def rebuild_metrics_from_snapshots(
         except Exception:
             return ""
 
-    # =====================================================================
-    # PATCH RMS_E0 (ADDITIVE): small evidence extraction helper
     # - Ensures we consistently carry anchor/evidence fields onto rebuilt metrics.
     # - Purely additive; never affects selection logic.
-    # =====================================================================
     def _extract_evidence_fields(c: dict) -> dict:
         if not isinstance(c, dict):
             return {}
@@ -4236,13 +3780,9 @@ def rebuild_metrics_from_snapshots(
             # optional passthroughs if upstream provides them
             "fingerprint": c.get("fingerprint"),
         }
-    # =====================================================================
 
-    # =====================================================================
-    # PATCH RMS_E1 (ADDITIVE): anchor metadata getter
     # - Pull anchor_confidence (and any other safe fields) from prev_anchors entry.
     # - Helps diff/UI show confidence without recomputing.
-    # =====================================================================
     def _anchor_meta(anchor_obj) -> dict:
         if isinstance(anchor_obj, dict):
             out = {}
@@ -4260,9 +3800,7 @@ def rebuild_metrics_from_snapshots(
                 out["anchor_candidate_id"] = anchor_obj.get("candidate_id")
             return out
         return {}
-    # =====================================================================
 
-    # ---------- collect candidates + anchor map ----------
     anchor_to_candidate: Dict[str, Dict[str, Any]] = {}
     all_candidates: List[Dict[str, Any]] = []
 
@@ -4271,12 +3809,8 @@ def rebuild_metrics_from_snapshots(
             continue
         src_url = src.get("url") or src.get("source_url") or ""
 
-        # =================================================================
-        # PATCH RMS_E2 (ADDITIVE): capture source fingerprint on candidates
         # - Helps later debugging and “same source” proofs.
-        # =================================================================
         src_fp = src.get("fingerprint")
-        # =================================================================
 
         for c in (src.get("extracted_numbers") or []):
             if not isinstance(c, dict):
@@ -4293,12 +3827,8 @@ def rebuild_metrics_from_snapshots(
             if not c.get("source_url"):
                 c["source_url"] = src_url
 
-            # =============================================================
-            # PATCH RMS_E2 (ADDITIVE): attach fingerprint if missing
-            # =============================================================
             if src_fp and not c.get("fingerprint"):
                 c["fingerprint"] = src_fp
-            # =============================================================
 
             ah = c.get("anchor_hash")
             if ah:
@@ -4311,7 +3841,6 @@ def rebuild_metrics_from_snapshots(
 
             all_candidates.append(c)
 
-    # ---------- schema-first helpers ----------
     def _schema_for_key(metric_key: str) -> dict:
         d = metric_schema.get(metric_key)
         return d if isinstance(d, dict) else {}
@@ -4391,11 +3920,8 @@ def rebuild_metrics_from_snapshots(
         except Exception:
             return False
 
-    # =========================
-    # PATCH RMS_BASE (ADDITIVE): helper to overlay rebuilt fields onto prior canonical metric
     # - Keeps metric identity fields (name/canonical_key/dimension/etc.) stable for diffing.
     # - Only overwrites value-ish/source-ish fields with rebuilt candidate data.
-    # =========================
     def _overlay_base(metric_key: str, patch: dict) -> dict:
         base = {}
         try:
@@ -4410,9 +3936,7 @@ def rebuild_metrics_from_snapshots(
                 out.update(patch)
         except Exception:
             return out
-    # =========================
 
-    # ---------- 1) primary rebuild by anchor ----------
     rebuilt_by_anchor = set()
 
     for metric_key, anchor in prev_anchors.items():
@@ -4425,10 +3949,7 @@ def rebuild_metrics_from_snapshots(
         if ah and ah in anchor_to_candidate:
             c = anchor_to_candidate[ah]
 
-            # =========================
-            # PATCH RMS1 (ADDITIVE): overlay rebuilt candidate onto base canonical metric
             # - Keeps canonical identity fields intact for downstream diffs/UI.
-            # =========================
             rebuilt[metric_key] = _overlay_base(metric_key, {
                 "value": c.get("value"),
                 "unit": c.get("unit"),
@@ -4443,22 +3964,15 @@ def rebuild_metrics_from_snapshots(
                 "measure_assoc": c.get("measure_assoc"),
                 "rebuild_method": "anchor",
 
-                # =============================================================
-                # PATCH RMS_E3 (ADDITIVE): attach evidence + anchor metadata
                 # - candidate_id used as stable ID for UI/debugging
                 # - anchor_confidence helps diff/UI set match_confidence
-                # =============================================================
                 **_extract_evidence_fields(c),
                 **_anchor_meta(anchor),
-                # =============================================================
             })
-            # =========================
 
             rebuilt_by_anchor.add(metric_key)
 
-    # ---------- 2) fallback rebuild when anchor missing ----------
     # NOTE: existing loop only iterated prev_anchors.keys(); we keep it as-is,
-    # and then add an extra additive loop to cover metrics without anchors. (PATCH RMS2)
     for metric_key in prev_anchors.keys():
         if metric_key in rebuilt_by_anchor:
             continue
@@ -4516,14 +4030,11 @@ def rebuild_metrics_from_snapshots(
             if expected_family not in ("percent", "energy") and not (currencyish or expected_family == "currency"):
                 if (c.get("unit_tag") in ("", None)) and _is_yearish_value(c.get("value")):
                     continue
-            # =====================================================================
-            # PATCH FIX41AFC5 (ADDITIVE): hard-reject year-only + unitless candidates (evolution rebuild parity)
             # Why:
             #   - Prevent "2024"/"2025" from being selected as metric values (especially count/magnitude_other)
             #   - Applies regardless of expected_family, but only when the candidate is unitless/non-percent.
             # Determinism:
             #   - Pure filtering; stable ordering; no refetch.
-            # =====================================================================
             try:
                 _vnorm = c.get("value_norm", None)
                 if _vnorm is None:
@@ -4611,9 +4122,6 @@ def rebuild_metrics_from_snapshots(
                 best = {**c2, "value_norm": val_norm, "candidate_id": cid}
 
         if best:
-            # =========================
-            # PATCH RMS1 (ADDITIVE): overlay onto base canonical metric
-            # =========================
             rebuilt[metric_key] = _overlay_base(metric_key, {
                 "value": best.get("value"),
                 "unit": best.get("unit") or best.get("unit_tag"),
@@ -4630,24 +4138,16 @@ def rebuild_metrics_from_snapshots(
                 "fallback_ctx_score": round(best_score, 6),
                 "candidate_id": best.get("candidate_id"),
 
-                # =============================================================
-                # PATCH RMS_E4 (ADDITIVE): attach standardized evidence fields
                 # - Ensures candidate_id/raw/context are always present when possible.
                 # - Adds anchor_confidence derived from fallback_ctx_score.
-                # =============================================================
                 **_extract_evidence_fields(best),
                 "anchor_confidence": float(min(100.0, max(0.0, best_score) * 100.0)) if best_score is not None else 0.0,
-                # =============================================================
             })
-            # =========================
 
-    # =========================
-    # PATCH RMS2 (ADDITIVE): ensure metrics without anchors are also rebuilt
     # - Your existing fallback loop only iterates prev_anchors.keys().
     # - This loop covers the remaining canonical metrics (prev_can keys) that are missing
     #   from prev_anchors, using the SAME schema-first logic (copied, not refactored).
     # - Additive: does not alter prior behavior for anchored metrics.
-    # =========================
     for metric_key in (metric_key_universe or set()):
         if metric_key in rebuilt:
             continue
@@ -4771,12 +4271,8 @@ def rebuild_metrics_from_snapshots(
                 "fallback_ctx_score": round(best_score, 6),
                 "candidate_id": best.get("candidate_id"),
 
-                # =============================================================
-                # PATCH RMS_E5 (ADDITIVE): attach standardized evidence fields
-                # =============================================================
                 **_extract_evidence_fields(best),
                 "anchor_confidence": float(min(100.0, max(0.0, best_score) * 100.0)) if best_score is not None else 0.0,
-                # =============================================================
             })
         else:
             # stable placeholder (do not fabricate)
@@ -4784,21 +4280,14 @@ def rebuild_metrics_from_snapshots(
                 rebuilt[metric_key] = _overlay_base(metric_key, {
                     "rebuild_method": "not_found_in_snapshots",
 
-                    # =============================================================
-                    # PATCH RMS_E6 (ADDITIVE): keep evidence fields present for stable shape
-                    # =============================================================
                     "anchor_hash": None,
                     "source_url": None,
                     "context_snippet": None,
                     "raw": None,
                     "candidate_id": None,
                     "anchor_confidence": 0.0,
-                    # =============================================================
                 })
-    # =========================
 
-    # =====================================================================
-    # PATCH RMS_FALLBACK1 (ADDITIVE): never return empty rebuild when we have a baseline universe
     # Why:
     #   - Source-anchored evolution is snapshot-gated; if snapshots exist but rebuild fails
     #     (missing anchors/schema mismatch/edge cases), returning {} causes evolution to hard-fail.
@@ -4809,7 +4298,6 @@ def rebuild_metrics_from_snapshots(
     #   - If 'rebuilt' is empty/non-dict, fall back to prev_response['primary_metrics_canonical'].
     #   - Marks each metric with '_rebuild_fallback_used': True (additive field).
     #   - DOES NOT fabricate new values; it reuses previous canonical values only.
-    # =====================================================================
     try:
         if not isinstance(rebuilt, dict) or not rebuilt:
             prev_universe = {}
@@ -4834,27 +4322,20 @@ def rebuild_metrics_from_snapshots(
                     pass
     except Exception:
         pass
-    # =====================================================================
 
-    # =====================================================================
-    # PATCH FIX41AFC5 (ADDITIVE): attach eligibility-hardening debug counters
-    # =====================================================================
     try:
         if isinstance(rebuilt, dict):
             rebuilt.setdefault("_fix41afc5_debug", {})
             if isinstance(rebuilt.get("_fix41afc5_debug"), dict):
                 rebuilt["_fix41afc5_debug"].update(dict(_fix41afc5_dbg))
 
-    # =====================================================================
     except Exception:
         pass
 
-    # PATCH FIX2AD_INJ_ATTEMPT_GATING_DEBUG_V1 (ADDITIVE)
     # Purpose: Explain precisely why an injected URL may be "admitted" (diag) but not "attempted" (fetch).
     # Emits a small deterministic debug object into web_context['diag_injected_urls'].
     # - No behavior changes; debug only.
     # - Compares: raw extra_urls -> normalized extra_urls -> merged urls list.
-    # =====================================================================
     try:
         if isinstance(web_context, dict):
             web_context.setdefault("diag_injected_urls", {})
@@ -4926,26 +4407,15 @@ def rebuild_metrics_from_snapshots(
         pass
 
 
-    # =====================================================================
-    # PATCH FIX2Y_CANDIDATE_AUTOPSY_V1 (ADDITIVE): attach autopsy to web_context
-    # =====================================================================
     try:
         if isinstance(web_context, dict):
             web_context["fix2y_candidate_autopsy_v1"] = _fix2y_autopsy
     except Exception:
         pass
-    # =====================================================================
-    # END PATCH FIX2Y_CANDIDATE_AUTOPSY_V1
-    # =====================================================================
 
     return rebuilt
 
 
-
-
-# =====================================================================
-# PATCH RMS_MIN1 (ADDITIVE): Minimal schema-driven rebuild from snapshots
-# ---------------------------------------------------------------------
 # Goal:
 #   - Provide a deterministic, evolution-safe metric rebuild that uses ONLY:
 #       (a) baseline_sources_cache snapshots (and their extracted_numbers)
@@ -4956,11 +4426,8 @@ def rebuild_metrics_from_snapshots(
 #   - Returns a dict shaped like primary_metrics_canonical:
 #       { canonical_key: { ...metric fields... } }
 #   - Deterministic tie-break ordering.
-# =====================================================================
 
 
-# =====================================================================
-# PATCH F (deterministic): Explicit candidate exclusion in rebuild stage
 #   - Enforce that ANY candidate flagged as junk is excluded from:
 #       * candidate indexing
 #       * candidate scoring
@@ -4969,7 +4436,6 @@ def rebuild_metrics_from_snapshots(
 #     non-year metrics (currency/percent/rate/ratio/growth/etc.) to prevent
 #     year fixation during evolution.
 #   - Purely deterministic: no LLM, no refetch, no heuristics outside schema cues.
-# =====================================================================
 
 def _candidate_disallowed_for_metric(_cand: dict, _spec: dict = None) -> bool:
     """Return True if a snapshot candidate must not be used to assign a metric value."""
@@ -5020,8 +4486,6 @@ def _candidate_disallowed_for_metric(_cand: dict, _spec: dict = None) -> bool:
         return False
 
 
-# ===============================
-# REFACTOR03 (ADDITIVE)
 # Unit-family + scale eligibility guardrails for schema-only rebuild
 # and unit-mismatch detection for Diff Panel V2.
 #
@@ -5032,7 +4496,6 @@ def _candidate_disallowed_for_metric(_cand: dict, _spec: dict = None) -> bool:
 #   surfaced as unit_mismatch rather than as a bogus increased/decreased classification).
 # Determinism:
 # - Pure filtering + stable logic; no refetch; no randomness.
-# ===============================
 
 def _refactor03_has_currency_evidence_v1(text: str) -> bool:
     try:
@@ -5078,7 +4541,6 @@ def _refactor03_extract_text_from_metric_v1(metric: dict) -> str:
         return " | ".join([p for p in parts if p])
     except Exception:
         return ""
-
 
 
 def _refactor04_unit_evidence_text_from_metric_v1(metric: dict, include_context: bool = False) -> str:
@@ -5299,7 +4761,6 @@ def _refactor03_candidate_rejected_by_unit_family_v1(cand: dict, spec: dict = No
         return False
 
 
-
 def _refactor27_candidate_rejected_currency_date_fragment_v1(cand: dict, spec: dict = None) -> bool:
     """Reject date-fragment candidates like '01' in contexts such as 'July 01, 2025' for currency-ish metrics.
 
@@ -5361,7 +4822,6 @@ def _refactor27_candidate_rejected_currency_date_fragment_v1(cand: dict, spec: d
         return False
 
 
-
 def _refactor03_diff_unit_mismatch_v1(prev_key: str, prev_metric: dict, cur_metric: dict, prev_unit: str = None, cur_unit: str = None) -> bool:
     """Return True if the prev/current pair is not comparable due to unit family or scale mismatch."""
     try:
@@ -5399,7 +4859,6 @@ def _refactor03_diff_unit_mismatch_v1(prev_key: str, prev_metric: dict, cur_metr
         except Exception:
             pass
 
-        # REFACTOR27 (ADDITIVE): currency code/scale mismatch guard (handles mixed representations like 'USD' vs 'B')
         try:
             if expected == "currency":
                 pu = str(prev_unit or "").upper().strip()
@@ -5484,18 +4943,9 @@ def _refactor03_diff_unit_mismatch_v1(prev_key: str, prev_metric: dict, cur_metr
         return False
 
 
-
-
-
-# ===================== PATCH RMS_AWARE1 (ADDITIVE) =====================
-# =================== END PATCH RMS_AWARE1 (ADDITIVE) ===================
-
-
-
 def get_history(limit: int = MAX_HISTORY_ITEMS) -> List[Dict]:
     """Load analysis history from Google Sheet"""
     sheet = get_google_sheet()
-    # PATCH FIX2D66G (ADDITIVE): if Sheets writes recently failed, allow History to fall back to session_state
     # This prevents Evolution from being blocked by transient Sheets failures.
     try:
         if st.session_state.get("fix2d66_force_session_history"):
@@ -5507,16 +4957,12 @@ def get_history(limit: int = MAX_HISTORY_ITEMS) -> List[Dict]:
         return st.session_state.get('analysis_history', [])
 
     try:
-        # ============================================================
-        # PATCH GH_KEY1 (ADDITIVE): Use the actual worksheet title as cache key
         # Why:
         # - Your sheet names are: 'Sheet1', 'Snapshots', 'HistoryFull'
         # - There is no worksheet called 'History'
         # - Using cache_key='History' can cache empty reads under the wrong key.
-        # ============================================================
         _ws_title = getattr(sheet, "title", "") or "Sheet1"
         _cache_key = f"History::{_ws_title}"
-        # ============================================================
 
         # Get all rows (skip header)
         values = []
@@ -5526,12 +4972,9 @@ def get_history(limit: int = MAX_HISTORY_ITEMS) -> List[Dict]:
             pass
             values = []
 
-        # ============================================================
-        # PATCH GH_FALLBACK1 (ADDITIVE): One direct-read retry if cached read is empty
         # Why:
         # - If a prior transient read/429 produced an empty cached value,
         #   evolution may temporarily see no history even though rows exist.
-        # ============================================================
         if not values or len(values) < 2:
             try:
                 direct = sheet.get_all_values()
@@ -5539,11 +4982,9 @@ def get_history(limit: int = MAX_HISTORY_ITEMS) -> List[Dict]:
                     values = direct
             except Exception:
                 pass
-        # ============================================================
 
         all_rows = values[1:] if values and len(values) >= 2 else []
 
-        # PATCH FIX2D66G (ADDITIVE): if Sheets read is empty but we have session history (e.g., write failed), use it
         try:
             if (not all_rows) and st.session_state.get('analysis_history'):
                 return st.session_state.get('analysis_history', [])
@@ -5551,9 +4992,6 @@ def get_history(limit: int = MAX_HISTORY_ITEMS) -> List[Dict]:
             pass
 
 
-        # ============================================================
-        # PATCH GH_RL1 (ADDITIVE): Rate-limit fallback for History reads
-        # ============================================================
         try:
             if (not all_rows) and globals().get("_SHEETS_LAST_READ_ERROR"):
                 if ("RESOURCE_EXHAUSTED" in str(_SHEETS_LAST_READ_ERROR)
@@ -5562,7 +5000,6 @@ def get_history(limit: int = MAX_HISTORY_ITEMS) -> List[Dict]:
                     return st.session_state.get('analysis_history', [])
         except Exception:
             pass
-        # ============================================================
 
         # Parse and return most recent
         history = []
@@ -5678,24 +5115,14 @@ def get_history_options() -> List[Tuple[str, int]]:
         options.append((label, actual_index))
     return options
 
-# =========================================================
 # 1. CONFIGURATION & API KEY VALIDATION
-# =========================================================
 
 def load_api_keys():
     """Load and validate API keys from secrets or environment"""
 
-    # =====================================================================
-    # PATCH FIX41AFC5 (ADDITIVE): debug counters for schema-only rebuild eligibility hardening
-    # =====================================================================
     _fix41afc5_dbg2 = {"rejected_year_only": 0, "rejected_unitless": 0, "rejected_magnitude_other_unitless": 0}
-    # =====================================================================
 
-    # =====================================================================
-    # PATCH FIX41AFC5 (ADDITIVE): debug counters for rebuild eligibility hardening
-    # =====================================================================
     _fix41afc5_dbg = {"rejected_year_only": 0, "rejected_unitless": 0, "rejected_magnitude_other_unitless": 0}
-    # =====================================================================
     try:
         PERPLEXITY_KEY = st.secrets.get("PERPLEXITY_API_KEY") or os.getenv("PERPLEXITY_API_KEY", "")
         GEMINI_KEY = st.secrets.get("GEMINI_API_KEY") or os.getenv("GEMINI_API_KEY", "")
@@ -5726,9 +5153,7 @@ PERPLEXITY_URL = "https://api.perplexity.ai/chat/completions"
 #genai.configure(api_key=GEMINI_KEY)
 #gemini_model = genai.GenerativeModel('gemini-2.0-flash-exp')
 
-# =========================================================
 # 2. PYDANTIC MODELS
-# =========================================================
 
 class MetricDetail(BaseModel):
     """Individual metric with name, value, and unit"""
@@ -5797,9 +5222,7 @@ class LLMResponse(BaseModel):
     action: Optional[Action] = None
     model_config = ConfigDict(extra='ignore')
 
-# =========================================================
 # 3. PROMPTS
-# =========================================================
 
 RESPONSE_TEMPLATE = """
 {
@@ -5837,7 +5260,6 @@ RESPONSE_TEMPLATE = """
   "freshness": "Dec 2024"
 }
 """
-
 
 
 SYSTEM_PROMPT = f"""You are a professional market research analyst.
@@ -5984,9 +5406,7 @@ Focus on finding CHANGES to the metrics and entities listed above.
 User Question: {query}
 """
 
-# =========================================================
 # 4. MODEL LOADING
-# =========================================================
 
 @st.cache_resource(show_spinner="🔧 Loading AI models...")
 def load_models():
@@ -6005,9 +5425,7 @@ def load_models():
 
 domain_classifier, embedder = load_models()
 
-# =========================================================
 # 5. JSON REPAIR FUNCTIONS
-# =========================================================
 
 def repair_llm_response(data: dict) -> dict:
     """
@@ -6148,9 +5566,7 @@ def repair_llm_response(data: dict) -> dict:
         item["unit"] = unit.strip()
         return item
 
-    # -------------------------
     # primary_metrics normalization
-    # -------------------------
     metrics = data.get("primary_metrics")
 
     # list -> dict
@@ -6190,9 +5606,7 @@ def repair_llm_response(data: dict) -> dict:
     else:
         data["primary_metrics"] = {}
 
-    # -------------------------
     # list-like fields
-    # -------------------------
     data["top_entities"] = _to_list(data.get("top_entities"))
     data["trends_forecast"] = _to_list(data.get("trends_forecast"))
     data["key_findings"] = _to_list(data.get("key_findings"))
@@ -6200,9 +5614,7 @@ def repair_llm_response(data: dict) -> dict:
     # Ensure strings in key_findings
     data["key_findings"] = [str(x) for x in data["key_findings"] if x is not None and str(x).strip()]
 
-    # -------------------------
     # visualization_data legacy keys
-    # -------------------------
     if isinstance(data.get("visualization_data"), dict):
         viz = data["visualization_data"]
         if "labels" in viz and "chart_labels" not in viz:
@@ -6216,9 +5628,7 @@ def repair_llm_response(data: dict) -> dict:
         if "chart_values" in viz and not isinstance(viz["chart_values"], list):
             viz["chart_values"] = [viz["chart_values"]]
 
-    # -------------------------
     # benchmark_table numeric cleaning
-    # -------------------------
     if isinstance(data.get("benchmark_table"), list):
         cleaned_table = []
         for row in data["benchmark_table"]:
@@ -6254,14 +5664,10 @@ def repair_llm_response(data: dict) -> dict:
 
         data["benchmark_table"] = cleaned_table
 
-    # -------------------------
     # Remove action block entirely
-    # -------------------------
     data.pop("action", None)
 
-    # -------------------------
     # Minimal required top-level fields
-    # -------------------------
     if not isinstance(data.get("executive_summary"), str) or not data.get("executive_summary", "").strip():
         data["executive_summary"] = "No executive summary provided."
 
@@ -6444,8 +5850,6 @@ def parse_json_safely(json_str: str, context: str = "LLM") -> dict:
     return {}
 
 
-
-
 def parse_query_structure_safe(json_str: str, user_question: str) -> Dict:
     """
     Parse LLM-derived query structure with guaranteed deterministic fallback.
@@ -6502,10 +5906,8 @@ def extract_json_object(text: str) -> Optional[Dict]:
     return None
 
 
-# =========================================================
 # 6. WEB SEARCH FUNCTIONS
 #   SERPAPI STABILITY CONFIGURATION
-# =========================================================
 
 # Fixed parameters to prevent geo/personalization variance
 
@@ -6596,9 +5998,7 @@ def cache_search_results(query: str, results: List[Dict]):
         return
 
 
-# =========================================================
 # LLM RESPONSE CACHE - Prevents variance on identical inputs
-# =========================================================
 _llm_cache: Dict[str, Tuple[str, datetime]] = {}
 LLM_CACHE_TTL_HOURS = 24  # Cache LLM responses for 24 hours
 
@@ -6762,12 +6162,8 @@ def search_serpapi(query: str, num_results: int = 10) -> List[Dict]:
         return []
 
 
-
-# =====================================================================
-# PATCH INJ_DIAG_HELPERS (ADDITIVE): Injected-URL diagnostics helpers
 # - Pure helpers (no control-flow changes)
 # - Used to trace injected extra URLs across: UI -> intake -> scrape -> snapshots -> hashing -> rebuild
-# =====================================================================
 def _inj_diag_make_run_id(prefix: str = "run") -> str:
     """Short correlation id for a single analysis/evolution run."""
     try:
@@ -6783,12 +6179,9 @@ def _inj_diag_make_run_id(prefix: str = "run") -> str:
             return f"{prefix}_unknown"
 
 
-# =====================================================================
-# PATCH INJ_URL_CANON_V1 (ADDITIVE): Canonicalize injected URLs
 # - Strips common tracking/query parameters from injected URLs ONLY
 # - Keeps scheme/host/path; preserves non-tracking query params (sorted)
 # - Adds deterministic canonical form for stable admission/dedupe/hashing
-# =====================================================================
 def _canonicalize_injected_url(url: str) -> str:
     """Canonicalize injected URLs by stripping known tracking params.
 
@@ -6965,8 +6358,6 @@ def _inj_diag_hash_inputs_from_bsc(baseline_sources_cache: Any) -> list:
         return []
     return sorted(set(urls))
 
-# =====================================================================
-# PATCH INJ_HASH_V1 (ADDITIVE): optional inclusion of injected URLs in snapshot hash inputs
 # Default behavior is OFF to avoid disrupting locked fastpath.
 #
 # When enabled, injected URLs that were persisted (per diag_injected_urls.persisted*)
@@ -6979,7 +6370,6 @@ def _inj_diag_hash_inputs_from_bsc(baseline_sources_cache: Any) -> list:
 #   - Does NOT modify fastpath logic.
 #   - Does NOT change metric selection (synthetic records have no extracted_numbers).
 #   - Only activates when INCLUDE_INJECTED_URLS_IN_SNAPSHOT_HASH is True.
-# =====================================================================
 INCLUDE_INJECTED_URLS_IN_SNAPSHOT_HASH = False  # ✅ default OFF (locked fastpath safe)
 CODE_VERSION_INJ_HASH_V1 = "fix41r_inj_hash_optional_include"  # additive version marker
 
@@ -6995,8 +6385,6 @@ def _inj_hash_should_include() -> bool:
     except Exception:
         return bool(globals().get("INCLUDE_INJECTED_URLS_IN_SNAPSHOT_HASH", False))
 
-# =====================================================================
-# PATCH INJ_HASH_POLICY_ALIGN_V1 (Additive, policy-aligned)
 # Goal:
 #   - Align injected URL "new data" identity semantics with baseline sources:
 #       If an injected URL is PERSISTED as a successful snapshot, it should
@@ -7012,7 +6400,6 @@ def _inj_hash_should_include() -> bool:
 # Notes:
 #   - Fastpath logic is NOT modified.
 #   - This only affects hash identity input construction; metric selection remains unchanged.
-# =====================================================================
 INJECTED_URL_HASH_POLICY_ALIGN_WITH_BASELINE = True  # ✅ default ON (policy-aligned)
 
 def _inj_hash_policy_explicit_disable() -> bool:
@@ -7089,17 +6476,12 @@ def _inj_hash_add_synthetic_sources(
         except Exception:
             return ([], [], {})
 
-# =====================================================================
 
-
-# =====================================================================
-# PATCH FIX2D66_INJECTION_ADMISSION (ADDITIVE)
 # Purpose:
 # - Make injected URL admission deterministic & auditable across Analysis/Evolution.
 # - Promote UI raw/diag fields into web_context['extra_urls'] (the admission input).
 # - Synthesize a minimal web_context['diag_injected_urls'] when fetch_web_context was bypassed.
 # - Pure wiring/diagnostics only: no scraping, no selection changes.
-# =====================================================================
 _URL_RE_FIX2D66 = None
 
 def _fix2d66_extract_urls_from_text(text: str) -> list:
@@ -7182,7 +6564,6 @@ def _fix2d66_collect_injected_urls(web_context: dict, question_text: str = "") -
         return []
 
 
-
 def _fix2d66_promote_injected_urls(web_context: dict, question_text: str = "", stage: str = "") -> dict:
     """Promote injected URLs into web_context.extra_urls and ensure diag_injected_urls exists."""
     try:
@@ -7235,14 +6616,11 @@ def _fix2d66_promote_injected_urls(web_context: dict, question_text: str = "", s
     except Exception:
         return web_context
 
-# =====================================================================
-# PATCH INJ_TRACE_V1_HELPERS (ADDITIVE): canonical injected-URL lifecycle trace builder
 # Objective:
 # - Emit ONE canonical diagnostic payload in a fixed location for every run:
 #     results.debug.inj_trace_v1  (analysis outputs)
 #     results.debug.inj_trace_v1  (evolution outputs; mirrored from output.debug)
 # - Purely additive; does NOT alter fastpath logic or selection control flow.
-# =====================================================================
 def _inj_trace_v1_build(
     diag_injected_urls: dict,
     hash_inputs: list,
@@ -7295,7 +6673,6 @@ def _inj_trace_v1_build(
         }
 
 
-        # === PATCH EVO_INJ_ADMISSION_REASON_CODES_V1 START ===
         # Purpose: make evolution/analysis admission & selection drops explain themselves with stable reason codes.
         # Purely additive: diagnostics only (does not alter fastpath, hashing, scrape, or rebuild behavior).
         admission_rejection_reasons = {}
@@ -7362,7 +6739,6 @@ def _inj_trace_v1_build(
         except Exception:
             pass
             policy = {}
-        # === PATCH EVO_INJ_ADMISSION_REASON_CODES_V1 END ===
         return {
             "run_id": str(d.get("run_id") or ""),
             "stage": str(stage or ""),
@@ -7405,15 +6781,12 @@ def _inj_trace_v1_build(
     except Exception:
         return {"stage": str(stage or ""), "path": str(path or ""), "error": "inj_trace_build_failed"}
 
-# =====================================================================
-# PATCH FIX2D66_INJECTION_ADMISSION_HELPERS (ADDITIVE)
 # Purpose:
 # - Make injected URL admission deterministic and auditable across modes.
 # - Promote UI/raw diagnostic fields into web_context.extra_urls when missing.
 # - Build a minimal diag_injected_urls payload when fetch_web_context wasn't called
 #   (common on evolution replay/fastpath).
 # - Pure wiring + diagnostics: does NOT refetch, does NOT change selector logic.
-# =====================================================================
 
 def _fix2d66_extract_urls_from_text(text: str) -> list:
     try:
@@ -7534,10 +6907,7 @@ def _fix2d66_promote_injection_in_web_context(web_context: dict, question: str =
                 })
     except Exception:
         return wc
-# =====================================================================
 
-# =====================================================================
-# PATCH INJ_TRACE_V1_ENRICH_FROM_ARTIFACTS (ADDITIVE)
 # Purpose:
 # - Populate inj_trace_v1 attempted/persisted fields from *real* artifacts when
 #   the upstream diag_injected_urls payload is partial (common in baseline/no-injection
@@ -7547,7 +6917,6 @@ def _fix2d66_promote_injection_in_web_context(web_context: dict, question: str =
 # Artifacts supported:
 #   - baseline_sources_cache (BSC): list of per-url snapshot dicts
 #   - scraped_meta: dict keyed by url with status/status_detail/clean_text_len
-# =====================================================================
 
 def _inj_trace_v1_enrich_diag_from_bsc(diag: dict, baseline_sources_cache: list) -> dict:
     """Add attempted/persisted evidence into diag_injected_urls from baseline_sources_cache."""
@@ -7635,11 +7004,7 @@ def _inj_trace_v1_enrich_diag_from_scraped_meta(diag: dict, scraped_meta: dict, 
         return d
     except Exception:
         return diag if isinstance(diag, dict) else {}
-# =====================================================================
 
-# =====================================================================
-
-# =====================================================================
 
 def scrape_url(url: str) -> Optional[str]:
     """
@@ -7741,31 +7106,16 @@ def fetch_web_context(
     fallback_mode: bool = False,
     fallback_urls: list = None,
     existing_snapshots: Any = None,   # <-- ADDITIVE
-    # ============================================================
-    # PATCH FWC_EXTRA_URLS1 (ADDITIVE)
-    # ============================================================
     extra_urls: Any = None,
-    # ============================================================
-    # PATCH INJ_DIAG_FWC_ARGS (ADDITIVE): correlation + UI raw
-    # ============================================================
     diag_run_id: str = "",
     diag_extra_urls_ui_raw: Any = None,
-    # ============================================================
-    # PATCH FWC_IDENTITY_ONLY1 (ADDITIVE): admission-only mode (no scraping)
-    # ============================================================
     identity_only: bool = False,
-    # ============================================================
-    # PATCH FIX41AFC8 (ADDITIVE): force scrape extra_urls even if not admitted
     # - Default False: no behavior change.
     # - When True: normalized extra URLs will be appended to admitted list for scraping.
-    # ============================================================
     force_scrape_extra_urls: bool = False,
-    # ============================================================
-    # PATCH FIX41AFC13 (ADDITIVE): force admit extra_urls into admitted list (pre-admission override)
     # - Default False: no behavior change.
     # - When True: normalized extra URLs will be appended to admitted list (not just scrape list),
     #   enabling deterministic admission of injected URLs when delta exists.
-    # ============================================================
     force_admit_extra_urls: bool = False,
 ) -> dict:
 
@@ -7781,7 +7131,6 @@ def fetch_web_context(
     import re
     from datetime import datetime, timezone
 
-    # FIX2D66_PROMOTE_INJECTED_URLS_IN_ATTACH (ADDITIVE)
     try:
         _qtxt = str((analysis or {}).get('question') or (analysis or {}).get('query') or '')
         web_context = _fix2d66_promote_injected_urls(web_context or {}, question_text=_qtxt, stage='analysis_attach')
@@ -7828,10 +7177,7 @@ def fetch_web_context(
         "debug_counts": {},   # ✅ telemetry for dashboard + JSON debugging
     }
 
-    # ============================================================
-    # PATCH REFACTOR81_LAST_GOOD_SNAPSHOT_FALLBACK_TELEMETRY_V1 (ADDITIVE)
     # Record explicit last-good snapshot fallback usage (never silent).
-    # ============================================================
     def _record_last_good_fallback(_url: str) -> None:
         try:
             if not isinstance(_url, str) or not _url.strip():
@@ -7844,7 +7190,6 @@ def fetch_web_context(
         except Exception:
             pass
 
-    # ---- ADDITIVE: snapshot reuse lookup (Change #3) ----
     snap_lookup = {}
     try:
         def _snap_variants(u: str) -> list:
@@ -7973,7 +7318,6 @@ def fetch_web_context(
                 return None
 
     extractor_fp = get_extractor_fingerprint()
-    # ----------------------------------------------------
 
 
     q = (query or "").strip()
@@ -7982,9 +7326,7 @@ def fetch_web_context(
         out["status_detail"] = "empty_query"
         return out
 
-    # -----------------------------
     # 1) Search (SerpAPI) OR fallback_urls
-    # -----------------------------
     search_results = []
     urls_raw = []
 
@@ -8016,9 +7358,7 @@ def fetch_web_context(
                 if isinstance(u, str) and _is_probably_url(u.strip()):
                     urls_raw.append(u.strip())
 
-    # -----------------------------
     # 2) Compute "HQ" counts (like old version)
-    # -----------------------------
     total_found = len(search_results) if not fallback_mode else len(urls_raw)
     hq_count = 0
 
@@ -8038,9 +7378,7 @@ def fetch_web_context(
         pass
         hq_count = 0
 
-    # -----------------------------
     # 3) Sanitize + normalize + dedupe
-    # -----------------------------
     normed = []
     seen = set()
     for u in (urls_raw or []):
@@ -8061,8 +7399,6 @@ def fetch_web_context(
     n = max(1, min(12, n))
     admitted = normed[:n] if not fallback_mode else normed  # fallback_mode typically wants all
 
-    # =====================================================================
-    # PATCH FIX41AFC8 (ADDITIVE): Force-scrape normalized extra URLs even if admission filters drop them
     #
     # Why:
     # - In evolution injection scenarios, extra URLs may be deliberately outside the normal
@@ -8076,7 +7412,6 @@ def fetch_web_context(
     # Safety:
     # - Default is False (no change for normal runs).
     # - Never raises.
-    # =====================================================================
     try:
         if bool(force_scrape_extra_urls):
             _fx8_extras = []
@@ -8104,9 +7439,6 @@ def fetch_web_context(
         pass
 
 
-    # ============================================================
-    # PATCH FWC_EXTRA_URLS2 (ADDITIVE)
-    # ============================================================
     try:
         _extras_in = extra_urls or []
         _extras = []
@@ -8144,10 +7476,7 @@ def fetch_web_context(
         pass
 
 
-    # =====================================================================
-    # PATCH INJ_DIAG_FWC_STAGE (ADDITIVE): injected-URL stage checkpoints (A1-A3)
     # Records: UI->intake->admitted, and later enriches with scrape outcomes.
-    # =====================================================================
     try:
         _diag_run = str(diag_run_id or "") or _inj_diag_make_run_id("analysis")
         out["diag_run_id"] = out.get("diag_run_id") or _diag_run
@@ -8180,11 +7509,8 @@ def fetch_web_context(
         }
     except Exception:
         pass
-    # =====================================================================
 
 
-    # =====================================================================
-    # PATCH FIX41AFC13 (ADDITIVE): Pre-admission override for extra_urls (injection lane)
     #
     # Goal:
     # - When force_admit_extra_urls is True, ensure normalized extra_urls are INCLUDED in the
@@ -8194,7 +7520,6 @@ def fetch_web_context(
     # Safety:
     # - Default flag False => no behavior change.
     # - Never raises.
-    # =====================================================================
     try:
         if force_admit_extra_urls:
             _fix41afc13_extra = _inj_diag_norm_url_list(extra_urls) if extra_urls else []
@@ -8225,7 +7550,6 @@ def fetch_web_context(
                             })
     except Exception:
         pass
-    # =====================================================================
 
     out["sources"] = admitted
     out["web_sources"] = admitted
@@ -8258,9 +7582,6 @@ def fetch_web_context(
         out["status_detail"] = "empty_sources_after_filter"
         return out
 
-    # ============================================================
-    # PATCH FWC_IDENTITY_ONLY2 (ADDITIVE): identity-only early return
-    # ============================================================
     try:
         if bool(identity_only):
             out["status"] = out.get("status") or "ok"
@@ -8270,11 +7591,7 @@ def fetch_web_context(
         pass
 
 
-
-
-    # -----------------------------
     # 4) Scrape + extract numbers (snapshot-friendly scraped_meta)
-    # -----------------------------
     fn_fp = globals().get("fingerprint_text")
     fn_extract = globals().get("extract_numbers_with_context") or globals().get("extract_numeric_candidates") or globals().get("extract_numbers_from_text")
 
@@ -8315,13 +7632,10 @@ def fetch_web_context(
                 meta["status"] = "failed"
                 meta["status_detail"] = "failed:no_text"
 
-                # ============================================================
-                # PATCH REFACTOR75_LAST_GOOD_SNAPSHOT_FALLBACK_V1 (ADDITIVE)
                 # Why:
                 # - External flakiness can yield failed:no_text even for stable sources.
                 # - If existing_snapshots contains a last-good snapshot for this URL,
                 #   reuse its extracted_numbers with explicit provenance (never silent).
-                # ============================================================
                 try:
                     _prev = _get_prev_snapshot(url) if isinstance(snap_lookup, dict) else None
                     _prev_nums = _prev.get("extracted_numbers") if isinstance(_prev, dict) else None
@@ -8365,7 +7679,6 @@ def fetch_web_context(
                         continue
                 except Exception:
                     pass
-                # ================= END PATCH REFACTOR75_LAST_GOOD_SNAPSHOT_FALLBACK_V1
                 scraped_failed += 1
                 out["scraped_meta"][url] = meta
             else:
@@ -8387,7 +7700,6 @@ def fetch_web_context(
                     pass
                     meta["fingerprint"] = None
 
-                # ---- ADDITIVE: reuse extracted_numbers when unchanged (Change #3) ----
                 meta["extractor_fingerprint"] = extractor_fp
                 prev = _get_prev_snapshot(url) if isinstance(snap_lookup, dict) else None
                 if isinstance(prev, dict):
@@ -8413,7 +7725,6 @@ def fetch_web_context(
 
                             continue
                 meta["reused_snapshot"] = False
-                # ---------------------------------------------------------------
 
                 # numeric extraction (analysis-aligned if fn exists)
 
@@ -8551,7 +7862,6 @@ def fetch_web_context(
                                 except Exception:
                                     pass
 
-                    # ---- ADDITIVE: stable IDs + ordering (Change #2 / Part 1) ----
                     urlv = meta.get("url") or url
                     fpv = meta.get("fingerprint") or ""
 
@@ -8564,13 +7874,9 @@ def fetch_web_context(
 
                     meta["extracted_numbers"] = sort_snapshot_numbers(meta["extracted_numbers"])
                     meta["numbers_found"] = len(meta["extracted_numbers"])
-                    # --------------------------------------------------------------
 
-                # ============================================================
-                # PATCH REFACTOR81_LAST_GOOD_SNAPSHOT_FALLBACK_ON_ZERO_NUMBERS_V1 (ADDITIVE)
                 # If extraction yields zero numbers but a last-good snapshot has numbers,
                 # reuse them with explicit provenance (never silent).
-                # ============================================================
                 try:
                     if int(meta.get("numbers_found") or 0) <= 0:
                         _prev = _get_prev_snapshot(url) if callable(locals().get("_get_prev_snapshot")) else (snap_lookup.get(url) if isinstance(snap_lookup, dict) else None)
@@ -8607,7 +7913,6 @@ def fetch_web_context(
                                 pass
                 except Exception:
                     pass
-                # ================= END PATCH REFACTOR81_LAST_GOOD_SNAPSHOT_FALLBACK_ON_ZERO_NUMBERS_V1
 
                 out["scraped_meta"][url] = meta
                 out["scraped_content"][url] = cleaned
@@ -8620,10 +7925,7 @@ def fetch_web_context(
             meta["status"] = "failed"
             meta["status_detail"] = f"failed:exception:{type(e).__name__}"
 
-            # ============================================================
-            # PATCH REFACTOR75_LAST_GOOD_SNAPSHOT_FALLBACK_V1 (ADDITIVE)
             # Attempt snapshot fallback on scrape exceptions.
-            # ============================================================
             try:
                 _prev = _get_prev_snapshot(url) if isinstance(snap_lookup, dict) else None
                 _prev_nums = _prev.get("extracted_numbers") if isinstance(_prev, dict) else None
@@ -8665,7 +7967,6 @@ def fetch_web_context(
                     continue
             except Exception:
                 pass
-            # ================= END PATCH REFACTOR75_LAST_GOOD_SNAPSHOT_FALLBACK_V1
             scraped_failed += 1
             out["scraped_meta"][url] = meta
             out["errors"].append(meta["status_detail"])
@@ -8677,9 +7978,6 @@ def fetch_web_context(
                 pass
 
 
-    # =====================================================================
-    # PATCH INJ_DIAG_FWC_POSTSCRAPE (ADDITIVE): finalize scrape outcomes (A3)
-    # =====================================================================
     try:
         d = out.get("diag_injected_urls")
         if isinstance(d, dict):
@@ -8710,7 +8008,6 @@ def fetch_web_context(
                 d["set_hashes"]["persisted"] = _inj_diag_set_hash(persisted)
     except Exception:
         pass
-    # =====================================================================
 
     out["debug_counts"].update({
         "scraped_attempted": int(scraped_attempted),
@@ -8731,8 +8028,6 @@ def fetch_web_context(
 
     # status summarization
 
-    # =====================================================================
-    # PATCH FWC_EXTRA_URLS_TRACE2 (ADDITIVE): trace how injected URLs were handled
     # Why:
     # - When scenario B "extra URLs" are provided, it can be unclear whether they:
     #     (a) were normalized/deduped
@@ -8740,7 +8035,6 @@ def fetch_web_context(
     #     (c) were successfully scraped
     #     (d) actually entered the snapshot-hash pool used by analysis/evolution
     # - This patch records a deterministic, non-invasive trace in web_context only.
-    # =====================================================================
     try:
         if not isinstance(out.get("debug_counts"), dict):
             out["debug_counts"] = {}
@@ -8811,7 +8105,6 @@ def fetch_web_context(
         }
     except Exception:
         pass
-    # =====================================================================
     if scraped_ok_text == 0:
         out["status"] = "failed"
         out["status_detail"] = "no_usable_text"
@@ -8825,8 +8118,6 @@ def fetch_web_context(
     return out
 
 
-
-
 def unit_clean_first_letter(unit: str) -> str:
     """Normalize units to first letter (T/B/M/K/%), ignoring $ and spaces."""
     if not unit:
@@ -8834,9 +8125,7 @@ def unit_clean_first_letter(unit: str) -> str:
     u = unit.replace("$", "").replace(" ", "").strip().upper()
     return u[0] if u else ""
 
-# =========================================================
 # 7. LLM QUERY FUNCTIONS
-# =========================================================
 
 def query_perplexity(query: str, web_context: Dict, query_structure: Optional[Dict[str, Any]] = None) -> Optional[str]:
     """
@@ -9000,9 +8289,7 @@ def create_fallback_response(query: str, search_count: int, web_context: Dict) -
     return fallback.model_dump_json(exclude_none=True)
 
 
-# =========================================================
 # 7B. ANCHORED EVOLUTION QUERY
-# =========================================================
 
 def _ensure_metric_labels(metric_changes: list) -> list:
     """
@@ -9198,9 +8485,7 @@ def create_anchored_fallback(query: str, previous_data: Dict, web_context: Dict)
     }
     return json.dumps(fallback)
 
-# =========================================================
 # 8. VALIDATION & SCORING
-# =========================================================
 
 
 def parse_number_with_unit(val_str: str) -> float:
@@ -9354,9 +8639,7 @@ def numeric_consistency_with_sources_v2(primary_data: dict, web_context: dict) -
         if not isinstance(metrics, dict) or not metrics:
             return 50.0
 
-        # -----------------------------
         # Build evidence text corpus
-        # -----------------------------
         texts = []
 
         # 1) snippets
@@ -9384,9 +8667,7 @@ def numeric_consistency_with_sources_v2(primary_data: dict, web_context: dict) -
         if not evidence_text.strip():
             return 45.0  # no evidence stored
 
-        # -----------------------------
         # Extract numeric candidates from evidence text
-        # -----------------------------
         # Keep this broad; parse_number_with_unit will normalize.
         patterns = [
             r'\$?\s?\d{1,3}(?:,\d{3})*(?:\.\d+)?\s*[BbMmKk]\b',                 # 29.8B, 570K, 1.2M
@@ -9408,9 +8689,7 @@ def numeric_consistency_with_sources_v2(primary_data: dict, web_context: dict) -
         if not evidence_numbers:
             return 50.0
 
-        # -----------------------------
         # Verify each metric against evidence numbers (tolerance match)
-        # -----------------------------
         def _metric_candidates(m: dict) -> list:
             """Return list of candidate numeric values for a metric (range-aware)."""
             out = []
@@ -9494,7 +8773,6 @@ def numeric_consistency_with_sources_v2(primary_data: dict, web_context: dict) -
 
     except Exception:
         return 45.0
-
 
 
 def source_consensus(web_context: dict) -> float:
@@ -9616,10 +8894,8 @@ def calculate_final_confidence(
     # Ensure result is in valid range
     return round(max(0, min(100, final)), 1)
 
-# =========================================================
 # 8A. DETERMINISTIC DIFF ENGINE
 # Pure Python computation - no LLM variance
-# =========================================================
 
 @dataclass
 class MetricDiff:
@@ -9664,23 +8940,16 @@ class EvolutionDiff:
     stability_score: float  # 0-100
     summary_stats: Dict[str, int]
 
-# =========================================================
 # CANONICAL METRIC REGISTRY & SEMANTIC FINDING HASH
 # Add this section after the dataclass definitions (around line 1587)
-# =========================================================
 
-# ------------------------------------
 # CANONICAL METRIC REGISTRY
 # Removes LLM control over metric identity
-# ------------------------------------
 
 # Metric type definitions with aliases
-            # =========================
-# PATCH MR1 (ADDITIVE): de-ambiguate "sales" so unit-sales doesn't map to Revenue
 # - Remove standalone "sales" from Revenue aliases (too ambiguous)
 # - Add money-explicit revenue phrases instead ("sales revenue", "sales value", etc.)
 # - Add a couple of volume-style aliases under units_sold ("sales volume", "volume sales")
-            # =========================
 
 METRIC_REGISTRY = {
     # Market Size metrics
@@ -9740,24 +9009,16 @@ METRIC_REGISTRY = {
         "canonical_name": "Revenue",
         "aliases": [
             "revenue",
-            # =========================
-            # PATCH MR1 (CHANGED): removed ambiguous standalone alias "sales"
-            # =========================
             # "sales",
-            # =========================
             "total revenue", "annual revenue",
             "yearly revenue", "gross revenue",
 
-            # =========================
-            # PATCH MR1 (ADDITIVE): money-explicit sales phrasing (revenue-like)
-            # =========================
             "sales revenue",
             "revenue from sales",
             "sales value",
             "value of sales",
             "sales (value)",
             "turnover",  # common finance synonym
-            # =========================
         ],
         "unit_type": "currency",
         "category": "financial"
@@ -9781,12 +9042,8 @@ METRIC_REGISTRY = {
             "units sold", "unit sales", "volume", "units shipped",
             "shipments", "deliveries", "production volume",
 
-            # =========================
-            # PATCH MR1 (ADDITIVE): common unit-sales phrasing variants
-            # =========================
             "sales volume",
             "volume sales",
-            # =========================
         ],
         "unit_type": "count",
         "category": "volume"
@@ -9803,9 +9060,7 @@ METRIC_REGISTRY = {
         "category": "pricing"
     },
 
-    # -------------------------
     # Country / Macro metrics
-    # -------------------------
     "gdp": {
         "canonical_name": "GDP",
         "aliases": ["gdp", "gross domestic product", "economic output"],
@@ -9856,17 +9111,12 @@ METRIC_REGISTRY = {
     }
 }
 
-            # =========================
-# END PATCH MR1
-            # =========================
 
 # Year extraction pattern
 YEAR_PATTERN = re.compile(r'(20\d{2})')
 
-# ------------------------------------
 # DETERMINISTIC QUESTION SIGNALS
 # Drives metric table templates (no LLM)
-# ------------------------------------
 
 QUESTION_CATEGORY_TEMPLATES = {
     "country": [
@@ -9905,9 +9155,7 @@ def get_expected_metric_ids_for_category(category: str) -> List[str]:
     c_raw = (category or "unknown").strip()
     c = c_raw.lower().strip()
 
-    # -------------------------
     # New generalized templates
-    # -------------------------
     if c in {"entity_overview_country_light_v1", "entity_overview_country_v1"}:
         return [
             "population",
@@ -9969,9 +9217,7 @@ def get_expected_metric_ids_for_category(category: str) -> List[str]:
     if c in {"entity_overview_topic_v1", "generic_v1"}:
         return []
 
-    # -------------------------
     # Legacy categories (still supported)
-    # -------------------------
     if c == "country":
         return get_expected_metric_ids_for_category("ENTITY_OVERVIEW_COUNTRY_LIGHT_V1")
 
@@ -10013,9 +9259,7 @@ def classify_question_signals(query: str) -> Dict[str, Any]:
             "intents": []
         }
 
-    # -------------------------
     # 1) Extract years (deterministic)
-    # -------------------------
     years: List[int] = []
     try:
         year_matches = re.findall(r"\b(19|20)\d{2}\b", q_raw)
@@ -10028,9 +9272,7 @@ def classify_question_signals(query: str) -> Dict[str, Any]:
         pass
         years = []
 
-    # -------------------------
     # 2) Extract regions/countries (best-effort deterministic; spaCy if available)
-    # -------------------------
     regions: List[str] = []
     try:
         nlp = _try_spacy_nlp()
@@ -10060,9 +9302,7 @@ def classify_question_signals(query: str) -> Dict[str, Any]:
             regions = [h.title() if " " not in h else h.upper() if h in ("usa", "uk") else h.title() for h in hits[:6]]
             signals.append(f"regions_kw:{','.join(hits[:6])}")
 
-    # -------------------------
     # 3) Intent detection (domain-agnostic)
-    # -------------------------
     intent_patterns: Dict[str, List[str]] = {
         "market_size": ["market size", "tam", "total addressable market", "how big", "size of the market", "market value"],
         "growth_forecast": ["cagr", "forecast", "projection", "by 20", "growth rate", "expected to", "outlook", "trend"],
@@ -10087,9 +9327,7 @@ def classify_question_signals(query: str) -> Dict[str, Any]:
     if intents:
         signals.append(f"intents:{','.join(intents[:10])}")
 
-    # -------------------------
     # 4) Category decision (template driver)
-    # -------------------------
     # Keep it coarse: country vs industry vs company vs generic
     country_kw = [
         "gdp", "per capita", "population", "exports", "imports",
@@ -10128,9 +9366,7 @@ def classify_question_signals(query: str) -> Dict[str, Any]:
         category = "generic"
         signals.append("category_rule:no_template_keywords")
 
-    # -------------------------
     # 5) Expected metric IDs (category + intent)
-    # -------------------------
     expected_metric_ids: List[str] = []
     try:
         expected_metric_ids = get_expected_metric_ids_for_category(category) or []
@@ -10168,9 +9404,7 @@ def classify_question_signals(query: str) -> Dict[str, Any]:
     def _contains_any(needle_list: List[str]) -> bool:
         return any(k in q for k in needle_list)
 
-    # -------------------------
     # Determine intents
-    # -------------------------
     intents: List[str] = []
     for intent, kws in intent_triggers.items():
         if _contains_any(kws):
@@ -10179,9 +9413,7 @@ def classify_question_signals(query: str) -> Dict[str, Any]:
     if intents:
         signals.append("intents:" + ",".join(sorted(set(intents))))
 
-    # -------------------------
     # Determine entity_kind (best-effort heuristic)
-    # -------------------------
     is_marketish = _contains_any(market_entity_kw) or any(i in intents for i in ["size", "growth", "forecast", "share", "segments", "players", "regions"])
     is_companyish = _contains_any(company_entity_kw) and not _contains_any(country_entity_kw)
     is_countryish = _contains_any(country_entity_kw) and not is_companyish
@@ -10203,9 +9435,7 @@ def classify_question_signals(query: str) -> Dict[str, Any]:
         entity_kind = "topic_general"
         signals.append("entity_kind:topic_general")
 
-    # -------------------------
     # Determine scope
-    # -------------------------
     is_comparative = _contains_any(comparative_kw)
     is_forecasty = _contains_any(forecast_kw) or bool(YEAR_PATTERN.findall(q_raw))
 
@@ -10233,9 +9463,7 @@ def classify_question_signals(query: str) -> Dict[str, Any]:
             scope = "metrics_light"
             signals.append("scope:metrics_light")
 
-    # -------------------------
     # Map entity_kind -> category (backward compatible)
-    # -------------------------
     if entity_kind == "country":
         category = "country"
     elif entity_kind == "company":
@@ -10245,9 +9473,7 @@ def classify_question_signals(query: str) -> Dict[str, Any]:
     else:
         category = "generic"
 
-    # -------------------------
     # Choose generalized template + tiers
-    # -------------------------
     # Tier meanings:
     #  1 = high extractability (size/growth/forecast)
     #  2 = medium (players/regions/basic segments)
@@ -10269,9 +9495,7 @@ def classify_question_signals(query: str) -> Dict[str, Any]:
         metric_template_id = "ENTITY_OVERVIEW_TOPIC_V1"
         metric_tiers_enabled = []
 
-    # -------------------------
     # Build expected_metric_ids dynamically from intents (domain-agnostic)
-    # -------------------------
     # Slot -> metric id mapping (kept generic; avoids tourism specialization)
     # If you later add more canonical IDs, expand these mappings.
     market_slot_to_id = {
@@ -10384,9 +9608,7 @@ def classify_question_signals(query: str) -> Dict[str, Any]:
     seen = set()
     expected_metric_ids = [x for x in expected_metric_ids if not (x in seen or seen.add(x))]
 
-    # -------------------------
     # Preferred source classes (generic)
-    # -------------------------
     if category == "country":
         preferred_source_classes = ["official_stats", "government", "reputable_org", "reference"]
     elif category == "company":
@@ -10439,9 +9661,6 @@ def get_canonical_metric_id(metric_name: str) -> Tuple[str, str]:
     years = YEAR_PATTERN.findall(metric_name)
     year_suffix = "_".join(sorted(years)) if years else ""
 
-    # =========================
-    # PATCH CM1 (ADDITIVE): intent signals to prevent "sales" -> "revenue" mis-maps
-    # =========================
     name_words = set(name_normalized.split())
 
     # Explicit money intent (strong)
@@ -10463,15 +9682,11 @@ def get_canonical_metric_id(metric_name: str) -> Tuple[str, str]:
     # normalize joined token cases like "sales volume"
     joined = name_normalized.replace(" ", "")
     has_unit_intent = bool(name_words & unit_tokens) or any(t in joined for t in ["salesvolume", "unitsold", "vehiclesold"])
-    # =========================
 
     # Find best matching registry entry
     best_match_id = None
     best_match_score = 0.0
 
-    # =========================
-    # PATCH CM2 (ADDITIVE): helper to identify revenue-like registry targets
-    # =========================
     def _is_revenue_like(metric_id: str, config: dict) -> bool:
         mid = (metric_id or "").lower()
         cname = str((config or {}).get("canonical_name") or "").lower()
@@ -10481,7 +9696,6 @@ def get_canonical_metric_id(metric_name: str) -> Tuple[str, str]:
         if any(k in mid for k in ["revenue", "market_value", "market_size", "valuation"]):
             return True
         return False
-    # =========================
 
     for metric_id, config in METRIC_REGISTRY.items():
         for alias in config["aliases"]:
@@ -10492,7 +9706,6 @@ def get_canonical_metric_id(metric_name: str) -> Tuple[str, str]:
 
             name_no_year = YEAR_PATTERN.sub("", name_normalized).strip()
 
-            # ---- base score from your existing logic ----
             score = 0.0
 
             # Exact match
@@ -10511,12 +9724,9 @@ def get_canonical_metric_id(metric_name: str) -> Tuple[str, str]:
                     overlap = len(alias_words & name_words_local) / len(alias_words | name_words_local)
                     score = max(score, overlap)
 
-            # =========================
-            # PATCH CM3 (ADDITIVE): disambiguation penalties/guards
             # - Block "sales" -> revenue when no money intent
             # - Block unit-intent -> revenue-like
             # - Require explicit money intent for revenue-like (soft guard, not hard stop)
-            # =========================
             if score > 0.0:
                 revenue_like = _is_revenue_like(metric_id, config)
 
@@ -10535,7 +9745,6 @@ def get_canonical_metric_id(metric_name: str) -> Tuple[str, str]:
                 # Conversely: if target is NOT revenue-like but name has money intent, slight penalty
                 if (not revenue_like) and has_money_intent and ("sales" in name_no_year.split()) and not has_unit_intent:
                     score *= 0.85
-            # =========================
 
             if score > best_match_score:
                 best_match_id = metric_id
@@ -10571,9 +9780,7 @@ def get_canonical_metric_id(metric_name: str) -> Tuple[str, str]:
 
     return (fallback_id, metric_name)
 
-# ------------------------------------
 # GEO + PROXY TAGGING (DETERMINISTIC)
-# ------------------------------------
 
 import re
 from typing import Dict, Any, Tuple, List, Optional
@@ -10638,7 +9845,6 @@ def infer_geo_scope(*texts: str) -> Dict[str, str]:
     return {"geo_scope": "unknown", "geo_name": ""}
 
 
-# ---- Proxy labeling ----
 # "Proxy" = adjacent metric that can help approximate the target but isn't the target definition.
 # You can expand these sets deterministically.
 
@@ -10796,7 +10002,6 @@ def merge_group_proxy(group: List[Dict[str, Any]]) -> Dict[str, Any]:
         "proxy_target": best.get("proxy_target", ""),
     }
 
-# =========================
 # FIX2D59 — Canonical Identity Resolver v1
 #
 # Exact identity tuple definition (v1):
@@ -10827,7 +10032,6 @@ def merge_group_proxy(group: List[Dict[str, Any]]) -> Dict[str, Any]:
 #
 # Note:
 #   This resolver is intended to be used by BOTH Analysis and Evolution finalizers.
-# =========================
 
 def normalize_metric_token_time_scope_v1(metric_token: str, time_scope: str = '') -> tuple:
     """Split embedded time tokens out of metric_token into time_scope (v1).
@@ -10899,10 +10103,6 @@ def build_identity_tuple_v1(*, metric_token: str, time_scope: str = '', geo_scop
     }
 
 
-
-
-
-
 def canonicalize_metrics(
     metrics: Dict,
     metric_schema: Dict = None,
@@ -10930,11 +10130,8 @@ def canonicalize_metrics(
     if not isinstance(metrics, dict):
         return {}
 
-    # =========================
-    # PATCH C1 (ADDITIVE): safe helpers for canonical numeric fields
     # - Prefer existing normalize_unit_tag/unit_family/canonicalize_numeric_candidate if present.
     # - Never breaks if those helpers are missing.
-    # =========================
     def _safe_normalize_unit_tag(u: str) -> str:
         try:
             fn = globals().get("normalize_unit_tag")
@@ -10945,7 +10142,6 @@ def canonicalize_metrics(
         # minimal fallback (kept conservative)
         uu = (u or "").strip()
         ul = uu.lower().replace(" ", "")
-        # PATCH FIX2D58B (ADDITIVE): handle composite phrases like 'million units'
         # - Legacy extracted units often arrive as phrases (e.g., 'million units', 'billion USD').
         # - We deterministically map magnitude words even when other tokens are present.
         if 'trillion' in ul or ul.endswith('tn') or ' tn' in (uu.lower()):
@@ -10994,7 +10190,6 @@ def canonicalize_metrics(
             return "magnitude"
         # currency not reliably derived here (handled elsewhere)
         return ""
-    # =========================
 
     def infer_metric_dimension(metric_name: str, unit_raw: str) -> str:
         n = (metric_name or "").lower()
@@ -11014,7 +10209,6 @@ def canonicalize_metrics(
         if any(t in n for t in unit_tokens) or any(t in u for t in ["unit", "units", "vehicle", "vehicles", "pcs", "pieces"]):
             return "unit_sales"
 
-        # PATCH FIX2D58G (ADDITIVE): sales-like names + magnitude/count unit evidence => unit_sales
         # Handles cases like 'Global EV Sales 2024' with unit 'million units' where name contains 'sales'
         # but unit tokens may not include 'units' in the name itself.
         if ('sales' in n or 'ev sales' in n) and (
@@ -11070,8 +10264,6 @@ def canonicalize_metrics(
         original_name = metric.get("name", key)
         canonical_id, canonical_name = get_canonical_metric_id(original_name)
 
-        # =========================
-        # PATCH CM1 (ADDITIVE): registry-guided dimension hint
         # - If the canonical base metric is in METRIC_REGISTRY, use its unit_type
         #   as a strong prior for dimension classification.
         # - This reduces mislabel drift like "Revenue" being assigned as unit_sales
@@ -11080,20 +10272,14 @@ def canonicalize_metrics(
         # NOTE (conflict fix, additive):
         # - Your prior code risked UnboundLocalError due to base_id scoping.
         # - We keep your legacy behavior, but guard it and define base_id upfront.
-        # =========================
 
         registry_unit_type = ""
 
-        # ---- PATCH CM1.A (ADDITIVE): define base_id upfront to prevent UnboundLocalError ----
         base_id = ""
-        # -------------------------------------------------------------------------------
 
         try:
-            # =========================
-            # PATCH CM1.B (BUGFIX + ADDITIVE): registry base_id extraction
             # - canonical_id may contain underscores inside the base id (e.g., "market_size_2025")
             # - Find the LONGEST registry key that is a prefix of canonical_id.
-            # =========================
             try:
                 reg = globals().get("METRIC_REGISTRY")
                 cid = str(canonical_id or "")
@@ -11111,20 +10297,15 @@ def canonicalize_metrics(
                 pass
                 # keep safe defaults
                 pass
-            # =========================
 
-            # -------------------------------------------------------------------
-            # PATCH CM1.C (ADDITIVE): legacy code preserved, but guarded
             # - This block is redundant with CM1.B, but we keep it as requested.
             # - Guard prevents:
             #   (1) base_id undefined
             #   (2) overwriting registry_unit_type already computed above
-            # -------------------------------------------------------------------
             if not registry_unit_type:
                 reg = globals().get("METRIC_REGISTRY")
                 if base_id and isinstance(reg, dict) and base_id in reg and isinstance(reg[base_id], dict):
                     registry_unit_type = (reg[base_id].get("unit_type") or "").strip().lower()
-            # -------------------------------------------------------------------
 
         except Exception:
             pass
@@ -11145,35 +10326,24 @@ def canonicalize_metrics(
                 registry_dim_hint = ""
         else:
             registry_dim_hint = ""
-        # =========================
 
         raw_unit = (metric.get("unit") or "").strip()
 
-        # =========================
-        # PATCH C2 (ADDITIVE): compute unit_tag/unit_family without changing existing unit behavior
         # - We keep your existing unit_norm logic for backwards compatibility.
         # - But we ALSO attach unit_tag + unit_family so downstream can gate deterministically.
-        # =========================
         unit_tag = metric.get("unit_tag") or _safe_normalize_unit_tag(raw_unit)
         unit_family_tag = metric.get("unit_family") or _safe_unit_family(unit_tag)
-        # =========================
 
         unit_norm = raw_unit.upper()  # keep original behavior (do not change)
 
-        # =========================
-        # PATCH TRACE1 (ADDITIVE): canonical key mint trace
         # - Adds an auditable trace showing *how* dimension + canonical_key were minted.
         # - This is intentionally local (no new dependencies) and additive only.
         # - Downstream UI/JSON can surface these fields to diagnose drift (e.g., __unknown).
-        # =========================
         dim_inferred = infer_metric_dimension(str(original_name), raw_unit)
         dim = dim_inferred
 
-        # =========================
-        # PATCH CM1 (ADDITIVE): apply registry hint as override / guardrail
         # - If registry says currency/percent, force that dimension.
         # - If registry says count, prevent accidental "currency"/"percent".
-        # =========================
         _trace_dim_override = ""
         if registry_dim_hint in ("currency", "percent"):
             dim = registry_dim_hint
@@ -11183,16 +10353,12 @@ def canonicalize_metrics(
             if dim in ("currency", "percent"):
                 dim = "count"
                 _trace_dim_override = "registry_guard"
-        # =========================
 
         _ident = build_identity_tuple_v1(metric_token=canonical_id, dimension=dim, unit_family=unit_family_tag, unit_tag=unit_tag, geo_scope=str(metric.get('geo_scope') or ''), time_scope='')
         _res = resolve_canonical_identity_v1(_ident, metric_schema)
         canonical_key = str(_res.get('canonical_key') or f"{canonical_id}__{dim}")
 
-        # =========================
-        # PATCH TRACE1.B (ADDITIVE): attach trace onto metric_enriched.debug.key_mint_trace
         # NOTE: metric_enriched is created below; stash trace ingredients now.
-        # =========================
         _key_mint_trace = {
             "mint_fn": "canonicalize_metrics",
             "canonical_id": canonical_id,
@@ -11240,12 +10406,9 @@ def canonicalize_metrics(
             str(metric.get("source_url", "")),
         )
 
-        # =========================
-        # PATCH C3 (ADDITIVE): canonicalize numeric fields on the candidate metric dict
         # - If canonicalize_numeric_candidate exists, it will attach:
         #   unit_tag/unit_family/base_unit/multiplier_to_base/value_norm
         # - If not, we attach minimal fields ourselves (still additive).
-        # =========================
         metric_enriched = dict(metric)  # never mutate caller's dict
         try:
             fn_can = globals().get("canonicalize_numeric_candidate")
@@ -11265,7 +10428,6 @@ def canonicalize_metrics(
                 metric_enriched["debug"]["key_mint_trace"] = _key_mint_trace
         except Exception:
             pass
-        # =========================
 
         candidates.append({
             "canonical_id": canonical_id,
@@ -11298,10 +10460,7 @@ def canonicalize_metrics(
             g = group[0]
             m = g["metric"]
 
-            # =========================
-            # PATCH C4 (ADDITIVE): keep canonical numeric & semantic fields on output row
             # (only adds keys; does not remove/rename existing keys)
-            # =========================
             out_row = {
                 **m,
                 "name": g["canonical_name"],
@@ -11323,7 +10482,6 @@ def canonicalize_metrics(
                 if k in m and k not in out_row:
                     out_row[k] = m.get(k)
             canonicalized[ckey] = out_row
-            # =========================
             continue
 
         # Merge duplicates within SAME dimension-safe canonical_key
@@ -11352,11 +10510,8 @@ def canonicalize_metrics(
         base_metric["original_names"] = orig_names
         base_metric["raw_values"] = raw_vals
 
-        # =========================
-        # PATCH C5 (ADDITIVE): optional canonical range using value_norm if present
         # - Keeps your existing "range" untouched.
         # - Adds "range_norm" when we can compute it.
-        # =========================
         vals_norm = []
         for g in group:
             mm = g.get("metric") if isinstance(g, dict) else {}
@@ -11365,10 +10520,7 @@ def canonicalize_metrics(
                     vals_norm.append(float(mm.get("value_norm")))
                 except Exception:
                     pass
-        # =========================
 
-        # =====================================================================
-        # PATCH ANCHOR_VAL1 (ADDITIVE): set metric value from selected evidence candidate
         # Why:
         # - Avoid median/aggregate drift between analysis and evolution.
         # - If we already chose a specific evidence candidate (candidate_id/anchor_hash),
@@ -11376,7 +10528,6 @@ def canonicalize_metrics(
         # Determinism:
         # - Select the evidence row with highest confidence if present, else first.
         # - No re-fetching, no new extraction; uses existing evidence payload only.
-        # =====================================================================
         _anchored_value_set = False
         try:
             _ev = base_metric.get("evidence")
@@ -11449,18 +10600,14 @@ def canonicalize_metrics(
                 "n": len(vn),
                 "unit": base_metric.get("base_unit") or base_metric.get("unit") or "",
             }
-        # =========================
 
         canonicalized[ckey] = base_metric
 
     return canonicalized
 
 
-# =========================
-# PATCH FIX2D58B (ADDITIVE): quarantine unknown/under-specified canonical keys
 # - Do NOT allow dimension=='unknown' or missing unit_family to enter primary_metrics_canonical.
 # - Preserve them under primary_metrics_provisional with full debug trace for audit.
-# =========================
 def _fix2d58b_split_primary_metrics_canonical(pmc: dict):
     try:
         if not isinstance(pmc, dict):
@@ -11497,12 +10644,8 @@ def _fix2d58b_split_primary_metrics_canonical(pmc: dict):
         return pmc if isinstance(pmc, dict) else {}, {}
 
 
-# =========================
-# PATCH FIX2D60 (ADDITIVE): enforce schema-only canonical store (Analysis)
 # - After FIX2D59 rekeying, primary_metrics_canonical must contain ONLY schema-bound keys.
 # - Any PROVISIONAL/UNSPECIFIED rows are moved into primary_metrics_provisional.
-# =========================
-
 
 
 def freeze_metric_schema(canonical_metrics: Dict) -> Dict:
@@ -11518,11 +10661,8 @@ def freeze_metric_schema(canonical_metrics: Dict) -> Dict:
     if not isinstance(canonical_metrics, dict):
         return frozen
 
-    # =========================
-    # PATCH F1 (ADDITIVE): prefer shared normalize_unit_tag/unit_family helpers if present
     # This improves consistency with extractor + attribution gating.
     # Falls back safely to old heuristics.
-    # =========================
     def _normalize_unit_safe(u: str) -> str:
         try:
             fn = globals().get("normalize_unit_tag")
@@ -11567,7 +10707,6 @@ def freeze_metric_schema(canonical_metrics: Dict) -> Dict:
         if any(t in u for t in ["b", "bn", "billion", "m", "mn", "million", "k", "thousand", "t", "trillion"]):
             return "magnitude"
         return "other"
-    # =========================
 
     for ckey, m in canonical_metrics.items():
         if not isinstance(m, dict):
@@ -11577,11 +10716,7 @@ def freeze_metric_schema(canonical_metrics: Dict) -> Dict:
         name = m.get("name")
         unit = (m.get("unit") or "").strip()
 
-        # =========================
-        # PATCH F2 (ADDITIVE): compute unit_family using dimension-first logic
-        # =========================
         uf = _unit_family_safe(unit, dim_hint=dim)
-        # =========================
 
         # Keywords: name + dimension token to prevent cross-dimension matches later
         kws = extract_context_keywords(name or "") or []
@@ -11590,16 +10725,12 @@ def freeze_metric_schema(canonical_metrics: Dict) -> Dict:
         if uf and uf not in kws:
             kws.append(uf)
 
-        # =========================
-        # PATCH F3 (ADDITIVE): preserve schema unit more safely
         # - Keep your existing behavior in 'unit' (backward compatible),
         #   BUT also add 'unit_tag' which is the canonicalized unit used downstream.
         # - This avoids the "SGD -> S" schema corruption that breaks currency gating.
-        # =========================
         unit_tag = _normalize_unit_safe(unit)
         # Keep existing 'unit' output to avoid breaking consumers:
         unit_out = unit_clean_first_letter(unit.upper())
-        # =========================
 
         frozen[ckey] = {
             "canonical_key": ckey,
@@ -11610,19 +10741,13 @@ def freeze_metric_schema(canonical_metrics: Dict) -> Dict:
             # Existing field kept exactly (backward compatible)
             "unit": unit_out,
 
-            # =========================
-            # PATCH F3 (ADDITIVE): extra stable fields (non-breaking additions)
-            # =========================
             "unit_tag": unit_tag,          # e.g., "%", "M", "B", "TWh"
             "unit_family": uf,             # e.g., "currency", "percent", "magnitude"
-            # =========================
 
             "keywords": kws[:30],
         }
 
 
-# =====================================================================
-# PATCH FIX2U_EV_CHARGERS_SCHEMA_V1 (ADDITIVE)
 # Purpose:
 #   Extend frozen schema with new canonical keys for EV charging infrastructure
 #   (e.g., global EV chargers by 2040) so injected charger content can be
@@ -11631,7 +10756,6 @@ def freeze_metric_schema(canonical_metrics: Dict) -> Dict:
 #   - Purely additive: does not modify existing schema entries
 #   - Dimension uses "count" so existing unit-family logic treats it as magnitude
 #   - unit_tag uses "M" (million-scale counts) but unit_family remains "magnitude"
-# =====================================================================
 
 def _fix2u_extend_metric_schema_ev_chargers(metric_schema_frozen: dict) -> dict:
     """Add EV charger infrastructure canonical keys to frozen schema (additive)."""
@@ -11698,17 +10822,11 @@ def _fix2u_extend_metric_schema_ev_chargers(metric_schema_frozen: dict) -> dict:
 
     return metric_schema_frozen
 
-# =====================================================================
-# END PATCH FIX2U_EV_CHARGERS_SCHEMA_V1
-# =====================================================================
 
     return frozen
 
-# =====================================================================
-# PATCH FIX2V_EV_CHARGERS_CAGR_SCHEMA_V1 (ADDITIVE)
 #   - Adds a canonical slot for charger infrastructure CAGR (2026->2040)
 #   - Keeps semantics single-sourced under metric_schema_frozen
-# =====================================================================
 def _fix2v_extend_metric_schema_ev_chargers_cagr(metric_schema_frozen: dict) -> dict:
     """Add charger CAGR schema key additively (safe no-op if already present)."""
     try:
@@ -11738,14 +10856,9 @@ def _fix2v_extend_metric_schema_ev_chargers_cagr(metric_schema_frozen: dict) -> 
         return metric_schema_frozen
     except Exception:
         return metric_schema_frozen
-# =====================================================================
-# END PATCH FIX2V_EV_CHARGERS_CAGR_SCHEMA_V1
 
-# =====================================================================
-# PATCH FIX2AB_GLOBAL_EV_SALES_YTD_2025_SCHEMA_V1 (ADDITIVE)
 #   - Adds a canonical slot for Global EV sales (YTD 2025) in unit_sales
 #   - Intended for deterministic diff testing using Rhomotion-style sources
-# =====================================================================
 def _fix2ab_extend_metric_schema_global_ev_sales_ytd_2025(metric_schema_frozen: dict) -> dict:
     """Add Global EV Sales (YTD 2025) schema key additively (safe no-op if already present)."""
     try:
@@ -11776,18 +10889,9 @@ def _fix2ab_extend_metric_schema_global_ev_sales_ytd_2025(metric_schema_frozen: 
         return metric_schema_frozen
     except Exception:
         return metric_schema_frozen
-# =====================================================================
-# END PATCH FIX2AB_GLOBAL_EV_SALES_YTD_2025_SCHEMA_V1
-# =====================================================================
 
 
-# =====================================================================
-
-
-
-# =========================================================
 # RANGE + SOURCE ATTRIBUTION (DETERMINISTIC, NO LLM)
-# =========================================================
 
 def stable_json_hash(obj: Any) -> str:
     import hashlib, json
@@ -11821,12 +10925,9 @@ def sort_snapshot_numbers(numbers: List[Dict]) -> List[Dict]:
       - Falls back to normalize_unit_tag() if available
     """
 
-    # =========================
-    # PATCH SS1 (ADDITIVE): safe unit normalizer
     # - Prefer normalize_unit() if it exists
     # - Else fall back to normalize_unit_tag() if present
     # - Else just return stripped unit
-    # =========================
     _norm_unit_fn = globals().get("normalize_unit")
     _norm_tag_fn = globals().get("normalize_unit_tag")
 
@@ -11843,7 +10944,6 @@ def sort_snapshot_numbers(numbers: List[Dict]) -> List[Dict]:
                 return str(_norm_tag_fn(u) or "")
         except Exception:
             return u
-    # =========================
 
     def k(n: Dict[str, Any]):
         n = n or {}
@@ -11875,9 +10975,6 @@ def sort_evidence_records(records: List[Dict]) -> List[Dict]:
       - Adds fetched_at as tie-breaker if present (non-breaking)
     """
 
-    # =========================
-    # PATCH SE1 (ADDITIVE): add fetched_at tie-breaker (optional)
-    # =========================
     def k(r: Dict[str, Any]):
         r = r or {}
         return (
@@ -11885,16 +10982,12 @@ def sort_evidence_records(records: List[Dict]) -> List[Dict]:
             str(r.get("fingerprint") or ""),
             str(r.get("fetched_at") or ""),
         )
-    # =========================
 
     return sorted((records or []), key=k)
 
 def sort_metric_anchors(anchors: List[Dict]) -> List[Dict]:
-    # =========================
-    # PATCH MA2 (ADDITIVE): canonical-first stable sort
     # - Prefer canonical_key (new)
     # - Fall back to metric_id/metric_name (legacy)
-    # =========================
     return sorted(
         (anchors or []),
         key=lambda a: (
@@ -11904,10 +10997,6 @@ def sort_metric_anchors(anchors: List[Dict]) -> List[Dict]:
             str((a or {}).get("source_url") or ""),
         ),
     )
-
-
-
-
 
 
 def to_billions(value: float, unit_tag: str) -> Optional[float]:
@@ -11951,20 +11040,12 @@ def extract_numbers_from_scraped_sources(
         if not content or not isinstance(content, str) or len(content) < 200:
             continue
 
-        # =========================
-        # PATCH 1 (ADDITIVE): pass source_url through (improves anchor stability)
-        # =========================
         nums = extract_numbers_with_context(content, source_url=url)
-        # =========================
 
         for n in nums:
-            # =========================
-            # PATCH 1 (ADDITIVE): prefer extractor-provided unit_tag if present; else normalize
-            # =========================
             unit_tag = n.get("unit_tag")
             if not unit_tag:
                 unit_tag = normalize_unit_tag(n.get("unit", ""))
-            # =========================
 
             row = {
                 "url": url,
@@ -11974,19 +11055,12 @@ def extract_numbers_from_scraped_sources(
                 "context": (n.get("context") or ""),
             }
 
-            # =========================
-            # PATCH 3 (ADDITIVE): preserve measure association tags if extractor provides them
-            # =========================
             if "measure_kind" in n:
                 row["measure_kind"] = n.get("measure_kind")
             if "measure_assoc" in n:
                 row["measure_assoc"] = n.get("measure_assoc")
-            # =========================
 
-            # =========================
-            # PATCH 1 (ADDITIVE): preserve extra fields if extractor provides them
             # (backwards compatible: we only add keys, never remove)
-            # =========================
             for k in [
                 "unit", "is_junk", "junk_reason", "anchor_hash",
                 "start_idx", "end_idx", "context_snippet",
@@ -11994,17 +11068,13 @@ def extract_numbers_from_scraped_sources(
             ]:
                 if k in n:
                     row[k] = n.get(k)
-            # =========================
 
-            # ============================================================
-            # PATCH 9 (ADDITIVE): enforce canonical numeric fields uniformly
             # Why:
             #   - Some candidates may not carry unit_family/base_unit/value_norm yet
             #   - We want every candidate (analysis + evolution) to have the same
             #     canonical fields so diff + span logic is stable and drift-free.
             #
             # This is additive and safe to call multiple times.
-            # ============================================================
             try:
                 fn_can = globals().get("canonicalize_numeric_candidate")
                 if callable(fn_can):
@@ -12014,7 +11084,6 @@ def extract_numbers_from_scraped_sources(
             except Exception:
                 pass
 
-            # --- ADDITIVE: ensure canonical keys exist even if canonicalize failed ---
             row.setdefault("unit_family", unit_family(row.get("unit_tag", "") or ""))
             row.setdefault("base_unit", row.get("unit_tag", "") or "")
             row.setdefault("multiplier_to_base", 1.0)
@@ -12023,8 +11092,6 @@ def extract_numbers_from_scraped_sources(
                     row["value_norm"] = float(row.get("value"))
                 except Exception:
                     pass
-            # ------------------------------------------------------------------------
-            # ============================================================
 
             candidates.append(row)
 
@@ -12036,14 +11103,10 @@ def attribute_span_to_sources(
     metric_unit: str,
     scraped_content: Dict[str, str],
     rel_tol: float = 0.08,
-    # =========================
-    # PATCH S1 (ADDITIVE): optional schema inputs (non-breaking)
     # - If provided, we enforce schema-first gating for drift stability.
     # - If not provided, we fall back to existing heuristic behavior.
-    # =========================
     canonical_key: str = "",
     metric_schema: Dict[str, Any] = None,
-    # =========================
 ) -> Dict[str, Any]:
     """
     Build a deterministic span (min/mid/max) for a metric, and attribute min/max to sources.
@@ -12065,17 +11128,10 @@ def attribute_span_to_sources(
 
     metric_l = (metric_name or "").lower()
 
-    # =========================
-    # PATCH S2 (ADDITIVE): resolve schema entry (if available)
-    # =========================
     schema_entry = None
     if isinstance(metric_schema, dict) and canonical_key and isinstance(metric_schema.get(canonical_key), dict):
         schema_entry = metric_schema.get(canonical_key)
-    # =========================
 
-    # =========================
-    # PATCH S3 (ADDITIVE): schema-derived expectations with safe fallbacks
-    # =========================
     schema_unit_family = ""
     schema_dimension = ""
     schema_unit = ""
@@ -12106,11 +11162,7 @@ def attribute_span_to_sources(
     if not currencyish and any(x in metric_l for x in ["revenue", "turnover", "valuation", "market value", "market size",
                                                        "profit", "earnings", "ebitda", "capex", "opex"]):
         currencyish = True
-    # =========================
 
-    # =========================
-    # PATCH S4 (ADDITIVE): expected measure_kind (schema-first with fallback)
-    # =========================
     expected_kind = None
 
     if expected_family == "percent":
@@ -12127,11 +11179,7 @@ def attribute_span_to_sources(
         "deliveries", "shipments", "registrations", "volume"
     ]):
         expected_kind = "count_units"
-    # =========================
 
-    # =========================
-    # PATCH S5 (ADDITIVE): year-ish suppression helpers (unchanged behavior)
-    # =========================
     metric_is_yearish = any(k in metric_l for k in ["year", "years", "fy", "fiscal", "calendar", "timeline", "target year"])
 
     def _looks_like_year_value(v) -> bool:
@@ -12143,11 +11191,7 @@ def attribute_span_to_sources(
 
     def _ctx_has_year_range(ctx: str) -> bool:
         return bool(re.search(r"\b(19|20)\d{2}\s*(?:-|–|—|to)\s*(19|20)\d{2}\b", ctx or "", flags=re.I))
-    # =========================
 
-    # =========================
-    # PATCH S6 (ADDITIVE): currency evidence check (used only when currencyish)
-    # =========================
     def _has_currency_evidence(raw: str, ctx: str) -> bool:
         r = (raw or "")
         c = (ctx or "").lower()
@@ -12165,13 +11209,9 @@ def attribute_span_to_sources(
         if any(k in c for k in strong_kw):
             return True
         return False
-    # =========================
 
-    # =========================================================================
-    # PATCH S11 (ADDITIVE): deterministic candidate_id for tie-breaking
     # - Stable across runs, depends only on stable fields
     # - Used ONLY as final tie-breaker (won't change non-tie outcomes)
-    # =========================================================================
     def _candidate_id(x: dict) -> str:
         try:
             url = str(x.get("url") or x.get("source_url") or "")
@@ -12191,7 +11231,6 @@ def attribute_span_to_sources(
             return hashlib.sha1(s.encode("utf-8", errors="ignore")).hexdigest()
         except Exception:
             return ""
-    # =========================================================================
 
     for c in all_candidates:
         ctx = c.get("context", "")
@@ -12265,11 +11304,7 @@ def attribute_span_to_sources(
             "ctx_score": float(ctx_score),
         }
 
-        # =========================
-        # PATCH S11 (ADDITIVE): attach candidate_id (safe extra field)
-        # =========================
         row.setdefault("candidate_id", _candidate_id(row))
-        # =========================
 
         filtered.append(row)
 
@@ -12281,9 +11316,6 @@ def attribute_span_to_sources(
         }
 
     # Deterministic selection: value_norm then ctx_score then url then candidate_id
-    # =========================================================================
-    # PATCH S12 (ADDITIVE): candidate_id as final tie-breaker
-    # =========================================================================
     def min_key(x):
         return (
             float(x["value_norm"]),
@@ -12299,7 +11331,6 @@ def attribute_span_to_sources(
             str(x.get("url", "")),
             str(x.get("candidate_id", "")),
         )
-    # =========================================================================
 
     min_item = sorted(filtered, key=min_key)[0]
     max_item = sorted(filtered, key=max_key)[0]
@@ -12328,12 +11359,9 @@ def attribute_span_to_sources(
             "measure_assoc": it.get("measure_assoc"),
             "value_norm": it.get("value_norm"),
             "candidate_id": it.get("candidate_id"),
-            # PATCH EVID_AH1 (ADDITIVE): carry anchor_hash for evolution matching
             "anchor_hash": it.get("anchor_hash"),
-            # PATCH EVID_AH2 (ADDITIVE): carry stable span fields when present
             "start_idx": it.get("start_idx"),
             "end_idx": it.get("end_idx"),
-            # PATCH EVID_AH3 (ADDITIVE): carry normalized value basis when present
             "value_norm": it.get("value_norm"),
             "base_unit": it.get("base_unit"),
             "multiplier_to_base": it.get("multiplier_to_base"),  # PATCH S11: exposed for transparency
@@ -12374,16 +11402,11 @@ def attribute_span_to_sources(
     }
 
 
-
 def add_range_and_source_attribution_to_canonical_metrics(
     canonical_metrics: Dict[str, Any],
     web_context: dict,
-    # =========================
-    # PATCH R1 (ADDITIVE): optional schema-first inputs
     # If provided, attribution uses frozen schema to avoid semantic/unit leakage.
-    # =========================
     metric_schema: Dict[str, Any] = None,
-    # =========================
 ) -> Dict[str, Any]:
     """
     Enrich canonical metrics with deterministic range + source attribution.
@@ -12404,11 +11427,7 @@ def add_range_and_source_attribution_to_canonical_metrics(
     if not isinstance(scraped, dict):
         scraped = {}
 
-    # =========================
-    # PATCH R2 (ADDITIVE): resolve schema dict safely
-    # =========================
     schema = metric_schema if isinstance(metric_schema, dict) else {}
-    # =========================
 
     for ckey, m in canonical_metrics.items():
         if not isinstance(m, dict):
@@ -12417,11 +11436,8 @@ def add_range_and_source_attribution_to_canonical_metrics(
         metric_name = m.get("name") or m.get("original_name") or str(ckey)
         metric_unit = m.get("unit") or ""
 
-        # =========================
-        # PATCH R3 (BUGFIX): schema-first wiring (no undefined prev_response/ckey)
         # - canonical_key is the dict key (ckey)
         # - metric_schema is the frozen schema dict (if provided)
-        # =========================
         span_pack = attribute_span_to_sources(
             metric_name=metric_name,
             metric_unit=metric_unit,
@@ -12429,7 +11445,6 @@ def add_range_and_source_attribution_to_canonical_metrics(
             canonical_key=str(ckey),
             metric_schema=schema,
         )
-        # =========================
 
         mm = dict(m)
 
@@ -12447,13 +11462,8 @@ def add_range_and_source_attribution_to_canonical_metrics(
     return enriched
 
 
-
-
-
-# ------------------------------------
 # SEMANTIC FINDING HASH
 # Removes wording-based churn from findings comparison
-# ------------------------------------
 
 # Semantic components to extract from findings
 FINDING_PATTERNS = {
@@ -12802,10 +11812,8 @@ def compute_component_similarity(comp1: Dict, comp2: Dict) -> float:
     return score
 
 
-# ------------------------------------
 # UPDATED METRIC DIFF COMPUTATION
 # Using canonical IDs
-# ------------------------------------
 
 def compute_metric_diffs_canonical(old_metrics: Dict, new_metrics: Dict) -> List[MetricDiff]:
     """
@@ -12828,9 +11836,7 @@ def compute_metric_diffs_canonical(old_metrics: Dict, new_metrics: Dict) -> List
         old_unit = old_span.get("unit") or old_m.get("unit", "")
         old_val = old_span.get("mid")
 
-        # -------------------------
         # Direct canonical ID match
-        # -------------------------
         if old_id in new_canonical:
             new_m = new_canonical[old_id]
             matched_new_ids.add(old_id)
@@ -12864,9 +11870,7 @@ def compute_metric_diffs_canonical(old_metrics: Dict, new_metrics: Dict) -> List
             ))
             continue  # important: don't fall into base-ID matching
 
-        # -------------------------
         # Base ID match (strip years)
-        # -------------------------
         base_id = re.sub(r'_\d{4}(?:_\d{4})*$', '', old_id)
         found = False
 
@@ -12947,9 +11951,7 @@ def compute_metric_diffs_canonical(old_metrics: Dict, new_metrics: Dict) -> List
     return diffs
 
 
-# ------------------------------------
 # NUMERIC PARSING (DETERMINISTIC)
-# ------------------------------------
 
 def parse_to_float(value: Any) -> Optional[float]:
     """
@@ -12996,7 +11998,6 @@ def parse_to_float(value: Any) -> Optional[float]:
         return float(cleaned.strip()) * multiplier
     except (ValueError, TypeError):
         return None
-
 
 
 def _fmt_currency_first(raw: str, unit: str) -> str:
@@ -13160,9 +12161,7 @@ def compute_percent_change(old_val: Optional[float], new_val: Optional[float]) -
         return None if new_val == 0 else float('inf')
     return round(((new_val - old_val) / abs(old_val)) * 100, 2)
 
-# ------------------------------------
 # NAME MATCHING (DETERMINISTIC)
-# ------------------------------------
 
 def normalize_name(name: str) -> str:
     """Normalize name for matching"""
@@ -13198,13 +12197,11 @@ def find_best_match(name: str, candidates: List[str], threshold: float = 0.7) ->
             best_match = candidate
     return best_match
 
-# =========================================================
 # DETERMINISTIC QUERY STRUCTURE EXTRACTION
 # - Classify query into a known category (country / industry / etc.)
 # - Extract main question + "side questions" deterministically
 # - Optional: spaCy dependency parse (if installed)
 # - Optional: embedding similarity (if sentence-transformers/sklearn installed)
-# =========================================================
 
 SIDE_CONNECTOR_PATTERNS = [
     r"\bimpact of\b",
@@ -13301,9 +12298,7 @@ def detect_query_category(query: str) -> Dict[str, Any]:
     conf = min(best_hits / 6.0, 1.0) if best_hits > 0 else 0.0
     return {"category": best_cat, "confidence": round(conf, 2), "matched_signals": best_matched[:8]}
 
-# =========================================================
 # 3A+. LAYERED QUERY STRUCTURE PARSER (Deterministic -> NLP -> Embeddings -> LLM fallback)
-# =========================================================
 
 _QUERY_SPLIT_PATTERNS = [
     r"\bas well as\b",
@@ -13441,7 +12436,6 @@ def _split_clauses_deterministic(q: str) -> List[str]:
         out.append(c2)
 
     return out
-
 
 
 def _dedupe_clauses(clauses: List[str]) -> List[str]:
@@ -14035,9 +13029,7 @@ def compute_entity_diffs(old_entities: List, new_entities: List) -> List[EntityD
     diffs.sort(key=lambda x: x.new_rank if x.new_rank else 999)
     return diffs
 
-# ------------------------------------
 # FINDING DIFF COMPUTATION
-# ------------------------------------
 
 def compute_finding_diffs(old_findings: List[str], new_findings: List[str]) -> List[FindingDiff]:
     """
@@ -14101,10 +13093,8 @@ def compute_finding_diffs(old_findings: List[str], new_findings: List[str]) -> L
 
     return diffs
 
-# =========================================================
 # 8C. DETERMINISTIC SOURCE EXTRACTION
 # Extract metrics/entities directly from web snippets - NO LLM
-# =========================================================
 
 def extract_metrics_from_sources(web_context: Dict) -> Dict:
     """
@@ -14314,9 +13304,7 @@ def extract_entities_from_sources(web_context: Dict) -> List[Dict]:
 
     return entities
 
-# ------------------------------------
 # STABILITY SCORE COMPUTATION
-# ------------------------------------
 
 def compute_stability_score(
     metric_diffs: List[MetricDiff],
@@ -14356,9 +13344,7 @@ def compute_stability_score(
     weighted_sum = sum(s[1] * s[2] for s in scores)
     return round(weighted_sum / total_weight, 1)
 
-# ------------------------------------
 # MAIN DIFF COMPUTATION
-# ------------------------------------
 
 def compute_evolution_diff(old_analysis: Dict, new_analysis: Dict) -> EvolutionDiff:
     """
@@ -14429,9 +13415,7 @@ def compute_evolution_diff(old_analysis: Dict, new_analysis: Dict) -> EvolutionD
         summary_stats=summary_stats
     )
 
-# ------------------------------------
 # LLM EXPLANATION (ONLY INTERPRETS DIFFS)
-# ------------------------------------
 
 def generate_diff_explanation_prompt(diff: EvolutionDiff, query: str) -> str:
     """
@@ -14546,9 +13530,7 @@ def get_llm_explanation(diff: EvolutionDiff, query: str) -> Dict:
     }
 
 
-# =========================================================
 # 8B. EVOLUTION DASHBOARD RENDERING
-# =========================================================
 
 def render_evolution_results(diff: EvolutionDiff, explanation: Dict, query: str):
     """Render deterministic evolution results"""
@@ -14589,9 +13571,6 @@ def render_evolution_results(diff: EvolutionDiff, explanation: Dict, query: str)
 
     # Interpretation
 
-    # =====================================================================
-    # PATCH FIX39 (ADDITIVE): enforce unit-required gate at render time
-    # =====================================================================
     try:
         # best effort: use schema carried on diff (if any) else global latest schema
         schema = getattr(diff, "metric_schema_frozen", None)
@@ -14692,11 +13671,9 @@ def render_evolution_results(diff: EvolutionDiff, explanation: Dict, query: str)
         st.write(f"🆕 {stats['findings_added']} new")
 
 
-# =========================================================
 # 8D. SOURCE-ANCHORED EVOLUTION
 # Re-fetch the SAME sources from previous analysis for true stability
 # Enhanced fetch_url_content function to use scrapingdog as fallback
-# =========================================================
 
 def _extract_pdf_text_from_bytes(pdf_bytes: bytes, max_pages: int = 6, max_chars: int = 7000) -> Optional[str]:
     """
@@ -14717,7 +13694,6 @@ def _extract_pdf_text_from_bytes(pdf_bytes: bytes, max_pages: int = 6, max_chars
         return joined[:max_chars]
     except Exception:
         return None
-
 
 
 def fetch_url_content(url: str) -> Optional[str]:
@@ -14765,7 +13741,6 @@ def fetch_url_content(url: str) -> Optional[str]:
     return None
 
 
-
 def fetch_url_content_with_status(url: str, timeout: int = 25, force_pdf: bool = False):
     """
     Fetch URL content and return (text, status_detail).
@@ -14808,7 +13783,6 @@ def fetch_url_content_with_status(url: str, timeout: int = 25, force_pdf: bool =
         "Pragma": "no-cache",
     }
 
-    # ---------- 1) Direct fetch ----------
     try:
         resp = requests.get(url, timeout=timeout, headers=headers, allow_redirects=True)
 
@@ -14899,7 +13873,6 @@ def fetch_url_content_with_status(url: str, timeout: int = 25, force_pdf: bool =
                 return None, f"exception:{type(e).__name__}"
 
 
-
         # Text/HTML
         text = resp.text or ""
         # If empty or suspiciously short, attempt ScrapingDog (optional)
@@ -14954,7 +13927,6 @@ def get_extractor_fingerprint() -> str:
     return "extract_v4_pdf_tables_forcepdf_2026-01-29"
 
 
-
 def extract_numbers_from_text(text: str) -> List[Dict]:
     """
     Backward-compatible wrapper.
@@ -14997,13 +13969,10 @@ def _yureeka_now_iso_utc() -> str:
             return ""
 
 
-
-# =============================================================================
 # REFACTOR26: Centralized source_url attribution helpers (schema-preserving)
 # - Goal: ensure row-level injection gating can reliably attribute a current metric
 #   to its source URL (production vs injected), even when source_url lives only
 #   inside evidence/provenance structures.
-# =============================================================================
 
 def _refactor26_extract_metric_source_url_v1(_m: dict):
     """Best-effort extraction of a metric's source URL without changing schema."""
@@ -15149,7 +14118,6 @@ def _yureeka_humanize_seconds_v1(delta_seconds) -> str:
         return " ".join(parts)
     except Exception:
         return ""
-
 
 
 def _normalize_number_to_parse_base(value: float, unit: str) -> float:
@@ -15423,7 +14391,6 @@ def _truncate_for_sheets(s: str, max_chars: int = 45000) -> str:
     return head + "\n...\n[TRUNCATED FOR GOOGLE SHEETS]\n...\n" + tail
 
 
-
 def _summarize_heavy_fields_for_sheets(obj: dict) -> dict:
     """
     Summarize fields that commonly exceed the per-cell limit while keeping debug utility.
@@ -15475,13 +14442,10 @@ def _summarize_heavy_fields_for_sheets(obj: dict) -> dict:
         else:
             out["scraped_content"] = {"_summary": True, "type": str(type(sc))}
 
-    # =====================================================================
-    # PATCH SS2 (ADDITIVE, REQUIRED): summarize nested heavy fields under out["results"]
     # Why:
     # - Your biggest payload is typically results.baseline_sources_cache (full snapshots)
     # - The previous summarizer only handled top-level keys, so Sheets payload still exceeded limits
     # - This keeps the saved JSON smaller AND keeps json.loads(get_history) working reliably
-    # =====================================================================
     try:
         r = out.get("results")
         if isinstance(r, dict):
@@ -15508,10 +14472,8 @@ def _summarize_heavy_fields_for_sheets(obj: dict) -> dict:
             out["results"] = r2
     except Exception:
         pass
-    # =====================================================================
 
     return out
-
 
 
 def make_sheet_safe_json(obj: dict, max_chars: int = 45000) -> str:
@@ -15551,10 +14513,7 @@ def make_sheet_safe_json(obj: dict, max_chars: int = 45000) -> str:
     if isinstance(s, str) and len(s) <= int(max_chars or 45000):
         return s
 
-    # =========================
-    # PATCH SS1 (BUGFIX, REQUIRED): valid JSON wrapper when oversized
     # - Never return mid-string truncations that break json.loads in get_history().
-    # =========================
     try:
         preview_len = max(0, int(max_chars or 45000) - 700)  # leave room for wrapper fields
         wrapper = {
@@ -15574,13 +14533,10 @@ def make_sheet_safe_json(obj: dict, max_chars: int = 45000) -> str:
             wrapper["timestamp"] = obj.get("timestamp")
             wrapper["code_version"] = obj.get("code_version") or (obj.get("primary_response") or {}).get("code_version")
 
-            # =========================
-            # PATCH SS1B (ADDITIVE, REQUIRED FOR SNAPSHOT REHYDRATION):
             # Carry snapshot pointers even when the payload is wrapped.
             # Without these fields, evolution cannot rehydrate full snapshots
             # from the Snapshots worksheet (or local fallback) and will fail
             # the snapshot gate with "No valid snapshots".
-            # =========================
             try:
                 _ssh = obj.get("source_snapshot_hash") or (obj.get("results") or {}).get("source_snapshot_hash")
                 _ref = obj.get("snapshot_store_ref") or (obj.get("results") or {}).get("snapshot_store_ref")
@@ -15594,13 +14550,10 @@ def make_sheet_safe_json(obj: dict, max_chars: int = 45000) -> str:
         return '{"_sheets_safe":true,"_sheet_write":{"truncated":true,"mode":"sheets_safe_wrapper","note":"wrapper failed"}}'
 
 
-# =====================================================================
-# PATCH ES1D (ADDITIVE): external snapshot store (local file-based)
 # Purpose:
 #   - Store full baseline_sources_cache outside Google Sheets when rows
 #     are too large (Sheets wrapper / preview mode).
 #   - Allow deterministic rehydration for evolution (no refetch).
-# =====================================================================
 def _snapshot_store_dir() -> str:
     import os
     d = os.path.join(os.getcwd(), "snapshot_store")
@@ -15657,9 +14610,6 @@ def load_full_snapshots_local(snapshot_store_ref: str) -> list:
     except Exception:
         return []
 
-# =====================================================================
-# PATCH ES1E (ADDITIVE): deterministic source_snapshot_hash helper
-# =====================================================================
 def compute_source_snapshot_hash(baseline_sources_cache: list) -> str:
     import hashlib
     pairs = []
@@ -15673,22 +14623,15 @@ def compute_source_snapshot_hash(baseline_sources_cache: list) -> str:
     pairs.sort()
     sig = "|".join([f"{u}#{fp}" for (u, fp) in pairs])
     return hashlib.sha256(sig.encode("utf-8")).hexdigest() if sig else ""
-# =====================================================================
-# =====================================================================
-# PATCH SS6 (ADDITIVE): build full baseline_sources_cache from evidence_records
 # Why:
 # - Sheets-safe summarization may replace baseline_sources_cache/extracted_numbers
 #   with summary dicts. However, evidence_records often remains available and is
 #   already deterministic, snapshot-derived data.
 # - This helper reconstructs the minimal snapshot shape needed for
 #   source-anchored evolution WITHOUT re-fetching or heuristic matching.
-# =====================================================================
 
-            # =========================
-# PATCH A (ADD): Snapshot hash v2 (stable, content-weighted)
 # - Keeps v1 compute_source_snapshot_hash() for backward compatibility.
 # - v2 includes url + status + fingerprint + (anchor_hash,value_norm,unit_tag) tuples (bounded) for stronger identity.
-            # =========================
 def compute_source_snapshot_hash_v2(baseline_sources_cache: list, max_items_per_source: int = 120) -> str:
     import hashlib
     import json
@@ -15917,9 +14860,6 @@ def build_baseline_sources_cache_from_evidence_records(evidence_records):
         pass
 
 
-    # =====================================================================
-    # PATCH FIX41AFC5 (ADDITIVE): attach eligibility-hardening debug counters
-    # =====================================================================
     try:
         if isinstance(rebuilt, dict):
             rebuilt.setdefault("_fix41afc5_debug", {})
@@ -15927,7 +14867,6 @@ def build_baseline_sources_cache_from_evidence_records(evidence_records):
                 rebuilt["_fix41afc5_debug"].update(dict(_fix41afc5_dbg2))
     except Exception:
         pass
-    # =====================================================================
 
     return rebuilt
 def _sheets_now_ts():
@@ -15974,7 +14913,6 @@ def sheets_get_all_values_cached(ws, cache_key: str):
     if cached is not None:
         return cached
     try:
-        # === PATCH SHEETS_CACHE1 (CONFLICT FIX, MINIMAL): call the underlying worksheet read ===
         # Previous draft accidentally recursed into itself and referenced an undefined variable.
         # This is a direct execution conflict fix (no behavior change intended beyond correctness).
         values = ws.get_all_values() if ws else []
@@ -15990,8 +14928,6 @@ def sheets_get_all_values_cached(ws, cache_key: str):
             return []
         raise
 
-# =====================================================================
-# PATCH SS2 (ADDITIVE): Google Sheets snapshot store (separate worksheet)
 # Purpose:
 #   - Persist full baseline_sources_cache inside the same Spreadsheet
 #     but in a dedicated worksheet (tab), chunked across rows.
@@ -15999,7 +14935,6 @@ def sheets_get_all_values_cached(ws, cache_key: str):
 # Notes:
 #   - Write-once semantics by source_snapshot_hash.
 #   - Chunking and reassembly are deterministic (part_index ordering).
-# =====================================================================
 def get_google_spreadsheet():
     """Connect to Google Spreadsheet (cached connection if available)."""
     try:
@@ -16087,13 +15022,10 @@ def store_full_snapshots_to_sheet(baseline_sources_cache: list, source_snapshot_
             pass
 
         payload = json.dumps(baseline_sources_cache, ensure_ascii=False, default=str)
-        # =============================================================
-        # REFACTOR42 (ADDITIVE): compress very large snapshot payloads to
         # reduce write volume / API calls (helps avoid rate limits).
         # Storage format:
         #   payload_part begins with 'zlib64:' then base64(zlib(json_bytes))
         # Backward compatible: loader detects/decompresses when prefix present.
-        # =============================================================
         try:
             if isinstance(payload, str) and len(payload) > 120000:
                 _raw = payload.encode("utf-8", errors="strict")
@@ -16379,8 +15311,6 @@ def load_full_snapshots_from_sheet(source_snapshot_hash: str, worksheet_title: s
     except Exception:
         return []
 
-# =====================================================================
-# PATCH HF4 (ADDITIVE): HistoryFull payload rehydration support
 # Why:
 # - Evolution may receive a sheets-safe wrapper that omits primary_response,
 #   metric_schema_frozen, metric_anchors, etc.
@@ -16388,9 +15318,7 @@ def load_full_snapshots_from_sheet(source_snapshot_hash: str, worksheet_title: s
 #   we can deterministically load the full analysis payload (no re-fetch).
 # Notes:
 # - Additive only. Safe no-op if sheet/tab not present.
-# =====================================================================
 
-# ===================== PATCH HF_WRITE1 (ADDITIVE) =====================
 
 def write_full_history_payload_to_sheet(analysis_id: str, payload: str, worksheet_title: str = "HistoryFull", chunk_size: int = 20000) -> bool:
     """Write a full analysis payload (string) into HistoryFull as chunked rows keyed by analysis_id.
@@ -16458,7 +15386,6 @@ def write_full_history_payload_to_sheet(analysis_id: str, payload: str, workshee
     except Exception:
         return False
 
-# =================== END PATCH HF_WRITE1 (ADDITIVE) ===================
 
 def load_full_history_payload_from_sheet(analysis_id: str, worksheet_title: str = "HistoryFull") -> dict:
     """
@@ -16510,9 +15437,6 @@ def load_full_history_payload_from_sheet(analysis_id: str, worksheet_title: str 
             except Exception:
                 return None
 
-        # -----------------------------------------------------------------
-        # PATCH HF_LOAD_V2_COLS (ADDITIVE): map to real sheet headers + legacy
-        # -----------------------------------------------------------------
         c_id = _col("analysis_id")
         if c_id is None:
             c_id = _col("id")
@@ -16532,7 +15456,6 @@ def load_full_history_payload_from_sheet(analysis_id: str, worksheet_title: str 
             c_payload = len(header) - 1  # last-ditch fallback
 
         c_sha = _col("sha256")
-        # -----------------------------------------------------------------
 
         target_id = str(analysis_id).strip()
         if not target_id:
@@ -16590,10 +15513,7 @@ def load_full_history_payload_from_sheet(analysis_id: str, worksheet_title: str 
         if not parts_with_sha:
             return {}
 
-        # -----------------------------------------------------------------
-        # PATCH HF_LOAD_V2_BUCKET (ADDITIVE): if duplicates exist, pick best sha bucket
         # Score = (unique part_index count, total payload length)
-        # -----------------------------------------------------------------
         parts = []          # list[(pidx, chunk)]
         chosen_sha = ""     # sha bucket selected (if any)
         chosen_total = None # total_parts inferred for chosen bucket (if any)
@@ -16641,7 +15561,6 @@ def load_full_history_payload_from_sheet(analysis_id: str, worksheet_title: str 
             except Exception:
                 pass
                 chosen_total = None
-        # -----------------------------------------------------------------
 
         # Sort parts deterministically by part_index; None last
         def _sort_key(t):
@@ -16650,11 +15569,8 @@ def load_full_history_payload_from_sheet(analysis_id: str, worksheet_title: str 
 
         parts.sort(key=_sort_key)
 
-        # -----------------------------------------------------------------
-        # PATCH HF_LOAD_V3_COMPLETE (ADDITIVE): completeness check when total_parts known
         # - If total_parts is known and we have part_index values, require 0..total-1.
         # - If incomplete, return {} (do not attempt parse on partial payload).
-        # -----------------------------------------------------------------
         try:
             if isinstance(chosen_total, int) and chosen_total > 0:
                 idxs = [p for (p, _c) in parts if isinstance(p, int)]
@@ -16665,18 +15581,14 @@ def load_full_history_payload_from_sheet(analysis_id: str, worksheet_title: str 
                         return {}
         except Exception:
             pass
-        # -----------------------------------------------------------------
 
         # Stitch chunks
         full_json_str = "".join([chunk for _, chunk in parts]).strip()
         if not full_json_str:
             return {}
 
-        # -----------------------------------------------------------------
-        # PATCH HF_LOAD_V3_SHA (ADDITIVE): verify sha256 when present
         # - If chosen_sha exists, compare against sha256(stitched_bytes).
         # - If mismatch, return {} (treat as corrupted / wrong bucket).
-        # -----------------------------------------------------------------
         try:
             if isinstance(chosen_sha, str) and chosen_sha:
                 import hashlib
@@ -16685,16 +15597,12 @@ def load_full_history_payload_from_sheet(analysis_id: str, worksheet_title: str 
                     return {}
         except Exception:
             pass
-        # -----------------------------------------------------------------
 
         import json
         try:
             obj = json.loads(full_json_str)
             if isinstance(obj, dict):
-                # -----------------------------------------------------------------
-                # PATCH HF_LOAD_V3_META (ADDITIVE): optional debug stamp (harmless)
                 # Only attaches when parse succeeded.
-                # -----------------------------------------------------------------
                 try:
                     obj["_rehydration_debug"] = {
                         "worksheet": str(worksheet_title or ""),
@@ -16705,12 +15613,10 @@ def load_full_history_payload_from_sheet(analysis_id: str, worksheet_title: str 
                     }
                 except Exception:
                     pass
-                # -----------------------------------------------------------------
                 return obj
             return {}
         except Exception:
             pass
-            # PATCH HF_LOAD_V2_SALVAGE (ADDITIVE): common salvage for leading/trailing junk
             try:
                 # Try to isolate first "{" and last "}" if accidental prefix/suffix exists
                 a = full_json_str.find("{")
@@ -16744,7 +15650,6 @@ def fingerprint_text(text: str) -> str:
     return hashlib.md5(normalized.encode("utf-8")).hexdigest()[:12]
 
 def attach_source_snapshots_to_analysis(analysis: dict, web_context: dict) -> dict:
-    # PATCH FIX2D66: promote injected URLs from UI/raw fields into web_context for deterministic admission
     try:
         _q = str((analysis or {}).get('question') or '')
         _fix2d66_promote_injection_in_web_context(web_context, question=_q)
@@ -16763,7 +15668,6 @@ def attach_source_snapshots_to_analysis(analysis: dict, web_context: dict) -> di
     import re
     from datetime import datetime, timezone
 
-    # FIX2D66_PROMOTE_INJECTED_URLS_IN_ATTACH (ADDITIVE)
     try:
         _qtxt = str((analysis or {}).get('question') or (analysis or {}).get('query') or '')
         web_context = _fix2d66_promote_injected_urls(web_context or {}, question_text=_qtxt, stage='analysis_attach')
@@ -16787,23 +15691,16 @@ def attach_source_snapshots_to_analysis(analysis: dict, web_context: dict) -> di
         except Exception:
             return ""
 
-    # =========================================================================
-    # PATCH N1 (ADDITIVE): stable anchor_hash fallback helper for snapshots
     # - Does NOT change existing behavior if anchor_hash already present.
-    # =========================================================================
     def _sha1(s: str) -> str:
         try:
             import hashlib
             return hashlib.sha1((s or "").encode("utf-8", errors="ignore")).hexdigest()
         except Exception:
             return ""
-    # =========================================================================
 
-    # =========================================================================
-    # PATCH N2 (ADDITIVE): optional canonicalizer hook for snapshot numbers
     # - Ensures unit_tag/unit_family/base_unit/value_norm are present when possible.
     # - No behavior change if helper missing.
-    # =========================================================================
     _canon_fn = globals().get("canonicalize_numeric_candidate")
     def _maybe_canonicalize(n: dict) -> dict:
         try:
@@ -16811,7 +15708,6 @@ def attach_source_snapshots_to_analysis(analysis: dict, web_context: dict) -> di
                 return _canon_fn(dict(n))
         except Exception:
             return dict(n)
-    # =========================================================================
 
     def _parse_num(value, unit_hint=""):
         try:
@@ -16881,9 +15777,7 @@ def attach_source_snapshots_to_analysis(analysis: dict, web_context: dict) -> di
             return (x or "").strip()
 
 
-    # -----------------------------
     # Build baseline_sources_cache from scraped_meta (snapshot-friendly)
-    # -----------------------------
     baseline_sources_cache = []
     scraped_meta = (web_context or {}).get("scraped_meta") or {}
     if isinstance(scraped_meta, dict):
@@ -16904,14 +15798,11 @@ def attach_source_snapshots_to_analysis(analysis: dict, web_context: dict) -> di
                 "fetched_at": meta.get("fetched_at") or _now_iso(),
                 "fingerprint": meta.get("fingerprint") or _fingerprint(content),
 
-                # =====================================================================
-                # PATCH N1 (+ N2) (ADDITIVE): preserve full candidate record in snapshots
                 # - This is critical for:
                 #   * range gating (metric-aware)
                 #   * schema-first attribution
                 #   * evolution rebuild (anchor_hash + value_norm + unit_family)
                 # - Backward compatible: only adds keys; existing keys unchanged.
-                # =====================================================================
                 "extracted_numbers": [
                     (lambda nn: {
                         "value": nn.get("value"),
@@ -16929,38 +15820,30 @@ def attach_source_snapshots_to_analysis(analysis: dict, web_context: dict) -> di
 
                         "source_url": nn.get("source_url") or url,
 
-                        # ---- Additive: junk tagging & deterministic offsets ----
                         "is_junk": nn.get("is_junk"),
                         "junk_reason": nn.get("junk_reason"),
                         "start_idx": nn.get("start_idx"),
                         "end_idx": nn.get("end_idx"),
 
-                        # ---- Additive: normalized unit fields (if already present or canonicalized) ----
                         "unit_tag": nn.get("unit_tag"),
                         "unit_family": nn.get("unit_family"),
                         "base_unit": nn.get("base_unit"),
                         "multiplier_to_base": nn.get("multiplier_to_base"),
                         "value_norm": nn.get("value_norm"),
 
-                        # ---- Additive: semantic association tags (if present) ----
                         "measure_kind": nn.get("measure_kind"),
                         "measure_assoc": nn.get("measure_assoc"),
                     })(_maybe_canonicalize(n))
                     for n in nums
                     if isinstance(n, dict)
                 ]
-                # =====================================================================
             })
 
     if baseline_sources_cache:
 
-        # ---- ADDITIVE: stable ordering of snapshots (Change #2) ----
         for s in (baseline_sources_cache or []):
             if isinstance(s, dict) and isinstance(s.get("extracted_numbers"), list):
 
-                # =========================================================================
-                # PATCH N3 (ADDITIVE): guard sort_snapshot_numbers if not defined
-                # =========================================================================
                 try:
                     if "sort_snapshot_numbers" in globals() and callable(globals()["sort_snapshot_numbers"]):
                         s["extracted_numbers"] = sort_snapshot_numbers(s["extracted_numbers"])
@@ -16972,7 +15855,6 @@ def attach_source_snapshots_to_analysis(analysis: dict, web_context: dict) -> di
                         )
                 except Exception:
                     pass
-                # =========================================================================
 
                 s["numbers_found"] = len(s["extracted_numbers"])
 
@@ -16980,15 +15862,11 @@ def attach_source_snapshots_to_analysis(analysis: dict, web_context: dict) -> di
             baseline_sources_cache,
             key=lambda x: str((x or {}).get("url") or "")
         )
-        # -----------------------------------------------------------
 
-        # =====================================================================
-        # PATCH INJ_HASH_V1_APPLY (ADDITIVE): optionally include injected URLs in snapshot hash identity
         # - Adds *synthetic* url-only source records for injected URLs that were
         #   persisted (per diag) but are missing from baseline_sources_cache.
         # - Default OFF; only activates when INCLUDE_INJECTED_URLS_IN_SNAPSHOT_HASH is enabled.
         # - Does NOT alter fastpath logic or metric selection (synthetic has no numbers).
-        # =====================================================================
         _inj_hash_added = []
         _inj_hash_reasons = {}
         try:
@@ -17012,17 +15890,13 @@ def attach_source_snapshots_to_analysis(analysis: dict, web_context: dict) -> di
             pass
             _inj_hash_added = []
             _inj_hash_reasons = {}
-        # =====================================================================
 
         analysis["baseline_sources_cache"] = baseline_sources_cache
         analysis.setdefault("results", {})
         if isinstance(analysis["results"], dict):
 
-            # =====================================================================
-            # PATCH INJ_DIAG_ATTACH_SNAPSHOTS (ADDITIVE): propagate injected-URL trace into analysis
             # - Captures persisted snapshot URLs + exact hash input URL set (A4-A5)
             # - Does NOT alter any gating/selection logic.
-            # =====================================================================
             try:
                 _diag = {}
                 if isinstance(web_context, dict):
@@ -17070,24 +15944,17 @@ def attach_source_snapshots_to_analysis(analysis: dict, web_context: dict) -> di
                         })
 
 
-                        # =====================================================================
-                        # PATCH INJ_TRACE_V1_EMIT_ANALYSIS (ADDITIVE): always emit canonical trace
                         # Location: analysis.results.debug.inj_trace_v1
-                        # =====================================================================
                         try:
 
-                            # =====================================================================
-                            # PATCH INJ_TRACE_V1_ENRICH_ANALYSIS_ARTIFACTS (ADDITIVE)
                             # Ensure inj_trace_v1 shows attempted/persisted evidence even when
                             # upstream diag_injected_urls is partial (e.g., baseline/no-injection).
                             # Diagnostics only.
-                            # =====================================================================
                             try:
                                 if isinstance(_diag, dict):
                                     _diag = _inj_trace_v1_enrich_diag_from_bsc(_diag, baseline_sources_cache)
                             except Exception:
                                 pass
-                            # =====================================================================
 
                             _trace = _inj_trace_v1_build(
                                 diag_injected_urls=_diag if isinstance(_diag, dict) else {},
@@ -17104,18 +15971,14 @@ def attach_source_snapshots_to_analysis(analysis: dict, web_context: dict) -> di
                                 analysis["results"]["debug"]["inj_trace_v1"].update(_trace)
                         except Exception:
                             pass
-                        # =====================================================================
 
             except Exception:
                 pass
-            # =====================================================================
 
         analysis["results"]["baseline_sources_cache"] = baseline_sources_cache
 
 
-    # -----------------------------
     # RANGE capture for canonical metrics
-    # -----------------------------
     pmc = analysis.get("primary_response", {}).get("primary_metrics_canonical") if isinstance(analysis.get("primary_response"), dict) else analysis.get("primary_metrics_canonical")
     schema = analysis.get("primary_response", {}).get("metric_schema_frozen") if isinstance(analysis.get("primary_response"), dict) else analysis.get("metric_schema_frozen")
 
@@ -17214,9 +16077,6 @@ def attach_source_snapshots_to_analysis(analysis: dict, web_context: dict) -> di
                         m["value_range_display"] = f"{vmin:g}–{vmax:g} {unit_disp}".strip()
                     except Exception:
                         pass
-    # =====================================================================
-    # PATCH FIX2B_RANGE2 (ADDITIVE): override legacy snapshot_candidates range with schema-unit evidence range
-    # =====================================================================
     try:
         _res = analysis.get("results") if isinstance(analysis, dict) else None
         if isinstance(_res, dict):
@@ -17251,11 +16111,8 @@ def attach_source_snapshots_to_analysis(analysis: dict, web_context: dict) -> di
                     pass
     except Exception:
         pass
-    # =====================================================================
 
 
-    # =====================================================================
-    # PATCH FIX2B_RANGE3 (ADDITIVE): Schema-unit value_range rebuild for primary_metrics_canonical
     #
     # Why:
     # - We observed value_range values scaled as if converted to billions (e.g., 17.8M -> 0.0178)
@@ -17267,7 +16124,6 @@ def attach_source_snapshots_to_analysis(analysis: dict, web_context: dict) -> di
     # - Rebuild value_range from baseline_sources_cache extracted_numbers, treating candidate.value_norm
     #   as schema units (NO double scaling), constrained to the metric's chosen source_url.
     # - Pure post-processing: NO IO, NO refetch, NO hashing changes.
-    # =====================================================================
     try:
         import re
         _pr = analysis.get("primary_response") if isinstance(analysis, dict) else None
@@ -17373,10 +16229,7 @@ def attach_source_snapshots_to_analysis(analysis: dict, web_context: dict) -> di
                     pass
     except Exception:
         pass
-    # =====================================================================
 
-    # =====================================================================
-    # PATCH FIX2B_RANGE4 (ADDITIVE): late override of snapshot_candidates range builder (schema-unit semantics)
     #
     # Location:
     # - This runs AFTER the legacy "snapshot_candidates" range builder blocks above.
@@ -17390,7 +16243,6 @@ def attach_source_snapshots_to_analysis(analysis: dict, web_context: dict) -> di
     # Notes:
     # - Downstream-only post-processing. Does NOT affect selection, only range/min/max display.
     # - Safe even when evidence is missing: it simply no-ops.
-    # =====================================================================
     try:
         _pr = analysis.get("primary_response") if isinstance(analysis, dict) else None
         _pmc = _pr.get("primary_metrics_canonical") if isinstance(_pr, dict) else None
@@ -17468,17 +16320,8 @@ def attach_source_snapshots_to_analysis(analysis: dict, web_context: dict) -> di
                             pass
     except Exception:
         pass
-    # =====================================================================
 
 
-
-    # =====================================================================
-
-
-    # =====================================================================
-
-    # =====================================================================
-    # PATCH FIX2D43 (ADD): Serialization correction — bridge primary_response fields
     # - attach_source_snapshots_to_analysis receives the *top-level* output dict,
     #   where schema/pmc live under primary_response.
     # - Prior FIX2D31/FIX2D38 baseline_schema_metrics_v1 builder reads analysis.*
@@ -17486,7 +16329,6 @@ def attach_source_snapshots_to_analysis(analysis: dict, web_context: dict) -> di
     # - This shim mirrors metric_schema_frozen / primary_metrics_canonical / metric_anchors
     #   from primary_response into top-level analysis so the existing builder executes.
     # - Additive only: does not change selector semantics.
-    # =====================================================================
     try:
         _pr = analysis.get('primary_response')
         if isinstance(_pr, dict):
@@ -17498,12 +16340,8 @@ def attach_source_snapshots_to_analysis(analysis: dict, web_context: dict) -> di
                 analysis['metric_anchors'] = _pr.get('metric_anchors')
     except Exception:
         pass
-    # =====================================================================
 
 
-    # =====================================================================
-    # =====================================================================
-    # PATCH FIX2D65D (ADD): Ensure metric_schema_frozen is always serialized
     #
     # Problem observed:
     # - Some Analysis runs (especially narrative questions) emit no metric_schema_frozen at all.
@@ -17514,7 +16352,6 @@ def attach_source_snapshots_to_analysis(analysis: dict, web_context: dict) -> di
     # - Always ensure metric_schema_frozen exists at top-level analysis output.
     # - Seed deterministically using known schema extension functions when missing/empty.
     # - No fetch, no heuristic matching.
-    # =====================================================================
     try:
         _schema0 = analysis.get('metric_schema_frozen')
         if not isinstance(_schema0, dict) or not _schema0:
@@ -17540,10 +16377,8 @@ def attach_source_snapshots_to_analysis(analysis: dict, web_context: dict) -> di
                 pass
     except Exception:
         pass
-    # =====================================================================
 
 
-# PATCH FIX2D65B (ADD): Force canonical pipeline when injected URLs exist
     #
     # Problem:
     # - Some narrative / market-size queries return no primary_metrics in primary_response.
@@ -17557,7 +16392,6 @@ def attach_source_snapshots_to_analysis(analysis: dict, web_context: dict) -> di
     #
     # Safety:
     # - No refetch, no heuristic matching. Additive only.
-    # =====================================================================
     try:
         # Collect injected URLs from UI/diagnostic fields only (plus explicit internal marker fallback)
         # to avoid misclassifying production source lists as "injected".
@@ -17597,15 +16431,12 @@ def attach_source_snapshots_to_analysis(analysis: dict, web_context: dict) -> di
             analysis["metric_schema_frozen"] = _schema_seed
     except Exception:
         pass
-    # =====================================================================
 
-    # PATCH FIX2D31 (ADD): Option A — schema-align Analysis primary_metrics_canonical
     # - When metric_schema_frozen exists in Analysis, rebuild primary_metrics_canonical
     #   by running the authoritative Analysis selector (_analysis_canonical_final_selector_v1)
     #   constrained to the frozen schema keys, over the same baseline candidate universe.
     # - This makes Analysis emit schema-aligned baseline metrics so Evolution injection can overlap
     #   and Diff Panel V2 can activate without weakening semantics.
-    # =====================================================================
     try:
         _core = analysis
         schema = _core.get("metric_schema_frozen")
@@ -17729,7 +16560,6 @@ def attach_source_snapshots_to_analysis(analysis: dict, web_context: dict) -> di
                     sel_trace[ckey] = {"blocked_reason": "selector_exception", "error": str(_e)[:200]}
 
             # FIX2D38: Always build a schema-keyed baseline map for diffing.
-            # Even when no schema metric wins selection (new_pmc empty), we still emit a baseline_schema_metrics_v1
             # by filling missing schema keys from flat candidates as proxy baselines. This ensures the prev universe
             # is schema-keyed and numeric where possible, so baseline diffing can activate.
             baseline_schema = {}
@@ -18024,26 +16854,17 @@ def attach_source_snapshots_to_analysis(analysis: dict, web_context: dict) -> di
                 pass
     except Exception:
         pass
-    # =====================================================================
-    # PATCH V1 (ADDITIVE): analysis & schema version stamping
     # - Pure metadata, NO logic impact
     # - Allows downstream drift attribution:
     #     * pipeline changes vs source changes
-    # =====================================================================
     analysis.setdefault("analysis_pipeline_version", "v7_41_endstate_wip_1")
     analysis.setdefault("metric_identity_version", "canon_v2_dim_safe")
     analysis.setdefault("schema_freeze_version", 1)
-    # =====================================================================
 
-    # =========================
-    # VERSION STAMP (ADDITIVE)
-    # =========================
     analysis.setdefault("code_version", _yureeka_get_code_version())
-    # =========================
 
 
     return analysis
-
 
 
 def normalize_unit(unit: str) -> str:
@@ -18331,7 +17152,6 @@ def _build_source_snapshots_from_web_context(web_context: dict) -> list:
             return False
 
 
-
     def _tokenize(s: str) -> list:
         toks = re.findall(r"[a-z0-9]+", (s or "").lower())
         stop = {"the","and","or","of","in","to","for","by","from","with","on","at","as","a","an","is","are","this","that"}
@@ -18340,10 +17160,7 @@ def _build_source_snapshots_from_web_context(web_context: dict) -> list:
     def _looks_like_year_only(n: dict) -> bool:
         try:
             raw = str(n.get("raw") or "").strip()
-            # =====================================================================
-            # PATCH YEAR2 (ADDITIVE): handle years stored as numeric/float strings
             # - If raw is empty or looks like '2024.0', normalize to '2024' for checks.
-            # =====================================================================
             try:
                 if (not raw) or (raw and raw.replace('.', '', 1).isdigit() and '.' in raw):
                     vraw = n.get('value_norm') if n.get('value_norm') is not None else n.get('value')
@@ -18352,7 +17169,6 @@ def _build_source_snapshots_from_web_context(web_context: dict) -> list:
                         raw = str(iv)
             except Exception:
                 pass
-            # =====================================================================
             unit = str(n.get("unit") or "").strip()
             ctx = str(n.get("context") or n.get("context_snippet") or "").strip()
             # exactly 4 digits year and nothing else
@@ -18413,7 +17229,6 @@ def _build_source_snapshots_from_web_context(web_context: dict) -> list:
             if not isinstance(n, dict):
                 continue
 
-            # ---- Hard gate: year-only suppression ----
             if _looks_like_year_only(n):
                 continue
 
@@ -18426,10 +17241,8 @@ def _build_source_snapshots_from_web_context(web_context: dict) -> list:
             ctx_s = ctx if isinstance(ctx, str) else ""
             ctx_s = ctx_s.strip()
 
-            # ---- Hard gate: chrome/nav rejection (soft) ----
             chrome_ctx = _is_chrome_ctx(ctx_s)
 
-            # ---- Light topic gate (soft): require some overlap with query tokens ----
             # This is intentionally mild: it *downweights* rather than drops everything.
             ctx_toks = set(_tokenize(ctx_s))
             tok_overlap = len(q_toks.intersection(ctx_toks)) if q_toks and ctx_toks else 0
@@ -18478,7 +17291,6 @@ def _build_source_snapshots_from_web_context(web_context: dict) -> list:
         })
 
     return out
-
 
 
 def _build_source_snapshots_from_baseline_cache(baseline_cache: list) -> list:
@@ -18689,11 +17501,8 @@ def _yureeka_diff_metrics_by_name_wrap1(prev_response: dict, cur_response: dict)
         except Exception:
             return None
 
-    # =========================================================================
-    # PATCH D1 (ADDITIVE): canonical numeric extractor
     # - Prefer value_norm/base_unit when present (analysis/evolution alignment)
     # - Fall back to existing parse_num(value, unit) when canonical fields missing
-    # =========================================================================
     def get_canonical_value_and_unit(m: dict):
         """
         Returns: (val: float|None, unit: str)
@@ -18720,15 +17529,12 @@ def _yureeka_diff_metrics_by_name_wrap1(prev_response: dict, cur_response: dict)
                 pass
 
         # 2) legacy parse path
-        # =================================================================
-        # PATCH V27_DISABLE_NUMERIC_INFERENCE_FOR_CURRENT (ADDITIVE)
         # When canonical-for-render is active, do NOT infer/parse numbers from
         # free-form raw strings for CURRENT-side metrics. We only trust
         # schema-canonical value_norm emitted by the rebuild layer.
         #
         # Activation: cur_response['_disable_numeric_inference_v27'] == True
         # Safety: render/diff-layer only. Does not touch fastpath/hashing/etc.
-        # =================================================================
         try:
             if isinstance(cur_response, dict) and cur_response.get("_disable_numeric_inference_v27"):
                 u = str(m.get("unit") or "").strip()
@@ -18738,17 +17544,13 @@ def _yureeka_diff_metrics_by_name_wrap1(prev_response: dict, cur_response: dict)
         u = str(m.get("unit") or "").strip()
         v = parse_num(m.get("value"), u)
         return v, u
-    # =========================================================================
 
-    # =========================================================================
-    # PATCH D0 (ADDITIVE): anchor helpers (drift=0 stability)
     # NOTE (IMPORTANT):
     # - Anchor_hash equality should NOT force "unchanged" if numeric values differ.
     #   It means "we matched the same evidence anchor" (identity/matching), not
     #   that the metric's value necessarily didn't change.
     # - This patch keeps anchor_same, but uses it only for match_confidence +
     #   diagnostics, not as a classification override.
-    # =========================================================================
     def _get_anchor_hash_from_metric(m: dict):
         try:
             if isinstance(m, dict):
@@ -18792,13 +17594,9 @@ def _yureeka_diff_metrics_by_name_wrap1(prev_response: dict, cur_response: dict)
                         return str(ah2)
         except Exception:
             return None
-    # =========================================================================
 
-    # =========================================================================
-    # PATCH MA2 (ADDITIVE): wire metric_anchors into row fields
     # - Populate context_snippet/source_url from prev_response.metric_anchors[ckey] when available
     # - Output enrichment only
-    # =========================================================================
     def _get_prev_anchor_obj(prev_resp: dict, ckey: str):
         try:
             ma = (prev_resp or {}).get("metric_anchors")
@@ -18864,7 +17662,6 @@ def _yureeka_diff_metrics_by_name_wrap1(prev_response: dict, cur_response: dict)
             conf = None
 
         return src, ctx, conf
-    # =========================================================================
 
     def prettify_ckey(ckey: str) -> str:
         ckey = str(ckey or "").strip()
@@ -18931,10 +17728,7 @@ def _yureeka_diff_metrics_by_name_wrap1(prev_response: dict, cur_response: dict)
 
         return prettify_ckey(ckey)
 
-    # =========================================================================
-    # PATCH D3 (ADDITIVE): schema-driven tolerances (optional)
     # - If schema provides abs_eps/rel_eps use them, else default.
-    # =========================================================================
     def get_eps_for_metric(prev_resp: dict, ckey: str):
         ae = ABS_EPS
         re_ = REL_EPS
@@ -18955,20 +17749,16 @@ def _yureeka_diff_metrics_by_name_wrap1(prev_response: dict, cur_response: dict)
                             pass
         except Exception:
             return ae, re_
-    # =========================================================================
 
     prev_response = prev_response if isinstance(prev_response, dict) else {}
     cur_response = cur_response if isinstance(cur_response, dict) else {}
 
-    # =====================================================================
-    # PATCH AI_ANCHMAP1 (ADDITIVE): normalize metric_anchors shape (list -> dict)
     # Why:
     # - Some pipelines persist metric_anchors as a list of records:
     #     [{"canonical_key": ..., "anchor_hash": ..., ...}, ...]
     # - Diff expects a dict mapping canonical_key -> anchor object.
     # Determinism:
     # - Pure reshaping; no new anchors invented.
-    # =====================================================================
     def _coerce_metric_anchors_to_dict(resp: dict):
         try:
             if not isinstance(resp, dict):
@@ -18993,14 +17783,11 @@ def _yureeka_diff_metrics_by_name_wrap1(prev_response: dict, cur_response: dict)
 
     prev_response = _coerce_metric_anchors_to_dict(prev_response)
     cur_response = _coerce_metric_anchors_to_dict(cur_response)
-    # =====================================================================
 
     prev_can = prev_response.get("primary_metrics_canonical")
     cur_can = cur_response.get("primary_metrics_canonical")
 
-    # =========================
     # Path A: canonical-first
-    # =========================
     if isinstance(prev_can, dict) and isinstance(cur_can, dict) and prev_can:
         metric_changes = []
         unchanged = increased = decreased = found = 0
@@ -19017,7 +17804,6 @@ def _yureeka_diff_metrics_by_name_wrap1(prev_response: dict, cur_response: dict)
 
             # ✅ HARD STOP: canonical key missing in current => not_found (no name fallback)
             if ckey not in cur_can or not isinstance(cur_can.get(ckey), dict):
-                # PATCH MA2 (ADDITIVE): fill row fields from metric_anchors where possible
                 _src, _ctx, _aconf = _anchor_meta(prev_response, cur_response, ckey, pm, {})
 
                 metric_changes.append({
@@ -19040,32 +17826,23 @@ def _yureeka_diff_metrics_by_name_wrap1(prev_response: dict, cur_response: dict)
 
             cur_raw = cm.get("raw") if cm.get("raw") is not None else cm.get("value")
 
-            # =========================================================================
-            # PATCH D0 (ADDITIVE): anchor identity (do NOT force unchanged)
-            # =========================================================================
             prev_ah = _get_prev_anchor_hash(prev_response, ckey, pm)
             cur_ah = _get_cur_anchor_hash(cur_response, ckey, cm)
             anchor_same = bool(prev_ah and cur_ah and str(prev_ah) == str(cur_ah))
-            # =========================================================================
 
-            # PATCH D2 (ADDITIVE): use canonical values for diff when available
             prev_val, prev_unit_cmp = get_canonical_value_and_unit(pm)
             cur_val, cur_unit_cmp = get_canonical_value_and_unit(cm)
 
-            # PATCH D3 (ADDITIVE): metric-specific tolerances (schema overrides)
             abs_eps, rel_eps = get_eps_for_metric(prev_response, ckey)
 
             change_type = "unknown"
             change_pct = None
 
-            # =========================================================================
-            # PATCH D0B (ADDITIVE, REQUIRED): numeric-first classification even if anchors match
             # Why:
             # - anchor_same means "we matched the same evidence anchor"
             # - It MUST NOT short-circuit classification to "unchanged" when values differ.
             # - This fixes the exact bug you observed: prev_value_norm != cur_value_norm
             #   while change_type incorrectly says "unchanged".
-            # =========================================================================
             if prev_val is not None and cur_val is not None:
                 if abs(prev_val - cur_val) <= max(abs_eps, abs(prev_val) * rel_eps):
                     change_type = "unchanged"
@@ -19085,9 +17862,7 @@ def _yureeka_diff_metrics_by_name_wrap1(prev_response: dict, cur_response: dict)
                 change_type = "unchanged"
                 change_pct = 0.0
                 unchanged += 1
-            # =========================================================================
 
-            # PATCH D4 (ADDITIVE): unit mismatch flag (debug only)
             unit_mismatch = False
             try:
                 if prev_unit_cmp and cur_unit_cmp and str(prev_unit_cmp) != str(cur_unit_cmp):
@@ -19096,10 +17871,8 @@ def _yureeka_diff_metrics_by_name_wrap1(prev_response: dict, cur_response: dict)
                 pass
                 unit_mismatch = False
 
-            # PATCH MA2 (ADDITIVE): fill row fields from metric_anchors where possible
             _src, _ctx, _aconf = _anchor_meta(prev_response, cur_response, ckey, pm, cm)
 
-            # PATCH D0C (ADDITIVE): match_confidence reflects anchor identity
             match_conf = 92.0
             try:
                 if anchor_same:
@@ -19141,9 +17914,7 @@ def _yureeka_diff_metrics_by_name_wrap1(prev_response: dict, cur_response: dict)
 
         return metric_changes, unchanged, increased, decreased, found
 
-    # =========================
     # Path B: legacy name fallback
-    # =========================
     prev_metrics = prev_response.get("primary_metrics") or {}
     cur_metrics = cur_response.get("primary_metrics") or {}
     if not isinstance(prev_metrics, dict):
@@ -19197,7 +17968,6 @@ def _yureeka_diff_metrics_by_name_wrap1(prev_response: dict, cur_response: dict)
         change_type = "unknown"
         change_pct = None
 
-        # PATCH D0B mirrors canonical path: numeric-first, anchor fallback only if numeric missing
         if prev_val is not None and cur_val is not None:
             if abs(prev_val - cur_val) <= max(ABS_EPS, abs(prev_val) * REL_EPS):
                 change_type = "unchanged"
@@ -19532,9 +18302,6 @@ def _fallback_match_from_snapshots(prev_numbers: dict, snapshots: list, anchors_
     return out_changes
 
 
-
-# =====================================================================
-# REFACTOR61 (ADDITIVE): Restore a minimal Diff Panel V2 row builder
 # Why:
 # - REFACTOR59/60 downsizing removed legacy Diff Panel V2 builder defs.
 # - compute_source_anchored_diff expects a callable v2 entrypoint to populate
@@ -19546,8 +18313,6 @@ def _fallback_match_from_snapshots(prev_numbers: dict, snapshots: list, anchors_
 # - Provide a small, deterministic, schema-agnostic canonical-first join row builder:
 #   build_diff_metrics_panel_v2__rows_refactor47(prev_response, cur_response) -> (rows, summary)
 # - Keep strict unit comparability (no silent nonsense deltas).
-# - No schema/key-grammar changes. Purely diff/render wiring.
-# =====================================================================
 
 def _refactor61__unwrap_pmc(obj):
     """Best-effort unwrap for primary_metrics_canonical across historical payload shapes."""
@@ -19671,11 +18436,8 @@ def build_diff_metrics_panel_v2__rows_refactor47(prev_response: dict, cur_respon
                     cu = pu
             except Exception:
                 pass
-            # ============================================================
-            # PATCH REFACTOR81_SCHEMA_UNIT_FILL_FOR_MISSING_ROWS_V1 (ADDITIVE)
             # If schema is known and both units are empty, fill from schema when safe.
             # (Avoid currency placeholder unit 'U' to prevent misleading display.)
-            # ============================================================
             try:
                 if (not str(pu).strip()) and (not str(cu).strip()) and isinstance(schema, dict):
                     sch = schema.get(ckey) if isinstance(schema.get(ckey), dict) else None
@@ -19854,7 +18616,6 @@ def _fix2dXX_hotfix_percent_year_token_sanitize_pmc_v1(
     return out
 
 
-
 def _fix2d86_sanitize_pmc_percent_year_tokens_v1(pmc: dict, metric_schema_frozen: dict, label: str):
     """
     FIX2D86 HOTFIX:
@@ -19952,8 +18713,6 @@ def _fix2d86_sanitize_pmc_percent_year_tokens_v1(pmc: dict, metric_schema_frozen
     return out, dbg
 
 
-
-
 def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) -> dict:
     """
     Tight source-anchored evolution:
@@ -19966,7 +18725,6 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
     import re
     from datetime import datetime, timezone
 
-    # FIX2D66_PROMOTE_INJECTED_URLS_IN_ATTACH (ADDITIVE)
     try:
         _qtxt = str((analysis or {}).get('question') or (analysis or {}).get('query') or '')
         web_context = _fix2d66_promote_injected_urls(web_context or {}, question_text=_qtxt, stage='analysis_attach')
@@ -19994,12 +18752,9 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
         except Exception:
             return None
 
-    # ============================================================
-    # PATCH CSR_UNWRAP1 (ADDITIVE): robust nested retrieval helpers
     # Why:
     # - Some runs store rebuild essentials under primary_response or results.primary_response
     # - Evolution may look only at top-level keys, causing schema=0 / anchors=0
-    # ============================================================
     def _get_nested(d, path, default=None):
         try:
             x = d
@@ -20017,10 +18772,7 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
             if v is not None:
                 return v
         return default
-    # ============================================================
 
-    # =====================================================================
-    # PATCH FIX41U (ADDITIVE): Evolution-side injected-URL diag prewire + replay visibility
     # Objective:
     # - Ensure compute_source_anchored_diff can ALWAYS populate web_context.diag_injected_urls
     #   even when the caller only supplies:
@@ -20031,7 +18783,6 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
     #   analysis run had (if any) as "replayed_from_analysis_norm" for diagnostics only.
     # Safety:
     # - Purely additive diagnostics. Does NOT alter fastpath logic or hashing inputs.
-    # =====================================================================
     def _fix41u_extract_injected_from_prev(prev: dict) -> dict:
         try:
             if not isinstance(prev, dict):
@@ -20096,21 +18847,13 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                 _d.setdefault("replayed_from_analysis_norm", list(_fix41u_replayed))
     except Exception:
         pass
-    # =====================================================================
-    # END PATCH FIX41U
-    # =====================================================================
 
 
-    # =====================================================================
-
-    # =====================================================================
-    # REFACTOR89 (ADDITIVE): Robust PMC locator + Diff Panel V2 unwrap helper
     # Why:
     # - Diff Panel V2 previously called an undefined helper and silently fell back to {}
     #   which then prevented baseline fallback from ever running ({} is a dict).
     # - Provide one deterministic locator for baseline/current primary_metrics_canonical
     #   across the common payload shapes (top-level, primary_response, results, etc.).
-    # =====================================================================
     def _refactor89_locate_pmc_dict(obj) -> dict:
         try:
             if not isinstance(obj, dict):
@@ -20144,8 +18887,6 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
     # Diff Panel V2 expects this name; define it so it can never NameError.
     def _diffpanel_v2__unwrap_primary_metrics_canonical(obj) -> dict:
         return _refactor89_locate_pmc_dict(obj)
-    # =====================================================================
-    # PATCH HF5 (ADDITIVE): rehydrate previous_data from HistoryFull if wrapper
     # Why:
     # - Some UI/Sheets paths provide a summarized wrapper that lacks primary_response,
     #   metric_schema_frozen, metric_anchors, baseline_sources_cache, etc.
@@ -20154,11 +18895,9 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
     # NOTE:
     # - Do NOT write to `output` here (output not built yet). We stash flags
     #   and attach them after `output = {...}` is created.
-    # =====================================================================
     _prev_rehydrated = False
     _prev_rehydrated_ref = ""
 
-    # REFACTOR89 (ADDITIVE): capture wrapper-level baseline probe (pre-rehydrate)
     _refactor89_prev_keys_sample_pre = []
     _refactor89_prev_pmc_count_pre = 0
     _refactor89_prev_pmc_keys_sample_pre = []
@@ -20222,13 +18961,8 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                         _prev_rehydrated_ref = _ref
     except Exception:
         pass
-    # =====================================================================
 
 
-
-    # =====================================================================
-    # REFACTOR89 (ADDITIVE): deterministic FIX24 rehydrate fallback when PMC still missing
-    # =====================================================================
     try:
         if isinstance(previous_data, dict):
             _pmc_now = _refactor89_locate_pmc_dict(previous_data)
@@ -20247,10 +18981,6 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                             _prev_rehydrated_ref = "fix24_get_prev_full_payload"
     except Exception:
         pass
-    # =====================================================================
-    # =====================================================================
-    # REFACTOR89 (ADDITIVE): prev_payload_probe_v1 (baseline hydration diagnostics)
-    # =====================================================================
     _refactor89_prev_payload_probe_v1 = {}
     try:
         _pmc_post = _refactor89_locate_pmc_dict(previous_data) if isinstance(previous_data, dict) else {}
@@ -20273,9 +19003,7 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
             "rehydrated_prev_ok": bool(_prev_rehydrated),
             "rehydrated_ref": str(_prev_rehydrated_ref or ""),
         }
-    # =====================================================================
 
-    # ---------- Pull baseline snapshots (VALID only) ----------
     snapshot_origin = "none"
     baseline_sources_cache = []
 
@@ -20297,9 +19025,6 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
         pass
         baseline_sources_cache = []
 
-    # =====================================================================
-    # PATCH ES1B (ADDITIVE): broaden snapshot discovery (legacy storage shapes)
-    # =====================================================================
     try:
         if (not baseline_sources_cache) and isinstance(previous_data, dict):
             pr = previous_data.get("primary_response") or {}
@@ -20363,9 +19088,6 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
     except Exception:
         pass
 
-    # =====================================================================
-    # PATCH SS6C (ADDITIVE): evidence_records fallback for snapshots (evolution-time)
-    # =====================================================================
     try:
         if (not baseline_sources_cache) and isinstance(previous_data, dict):
             _er = None
@@ -20379,11 +19101,7 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                 snapshot_origin = "evidence_records_rebuild"
     except Exception:
         pass
-    # =====================================================================
 
-    # =====================================================================
-    # PATCH ES1C (ADDITIVE): validate snapshot shape & prepare debug metadata
-    # =====================================================================
     _snapshot_debug = None
     try:
         _raw_len = int(len(baseline_sources_cache)) if isinstance(baseline_sources_cache, list) else 0
@@ -20407,7 +19125,6 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
         }
     except Exception:
         pass
-    # =====================================================================
 
     # 3) reconstruct from web_context.scraped_meta (if provided)
     if (not baseline_sources_cache) and isinstance(web_context, dict):
@@ -20471,7 +19188,6 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
         pass
         invalid_count = 0
 
-    # ---------- Prepare stable default output ----------
     output = {
         "status": "success",
         "message": "",
@@ -20495,24 +19211,17 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
         "generated_at": _now(),
     }
 
-    # =====================================================================
-    # REFACTOR89 (ADDITIVE): attach baseline rehydration probe
-    # =====================================================================
     try:
         output.setdefault("debug", {})
         if isinstance(output.get("debug"), dict) and isinstance(locals().get("_refactor89_prev_payload_probe_v1"), dict):
             output["debug"]["prev_payload_probe_v1"] = dict(locals().get("_refactor89_prev_payload_probe_v1") or {})
     except Exception:
         pass
-    # =====================================================================
 
 
-    # =====================================================================
-    # PATCH FIX35 (ADDITIVE): emit origin + hash debugging for process-of-elimination
     # - Always stamp CODE_VERSION into output
     # - Create output['debug'] container (non-breaking)
     # - Track fastpath eligibility + reason in a deterministic way
-    # =====================================================================
     try:
         output["code_version"] = _yureeka_get_code_version()
     except Exception:
@@ -20652,7 +19361,6 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
         pass
 
 
-
     try:
         if not isinstance(output.get("debug"), dict):
             output["debug"] = {}
@@ -20676,21 +19384,15 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
     except Exception:
         pass
 
-    # =====================================================================
-    # PATCH SS6 (ADDITIVE, REQUIRED): last-chance snapshot rehydration
-    # =====================================================================
     try:
         if not baseline_sources_cache and isinstance(previous_data, dict):
             _ref = previous_data.get("snapshot_store_ref") or (previous_data.get("results") or {}).get("snapshot_store_ref")
             _hash = previous_data.get("source_snapshot_hash") or (previous_data.get("results") or {}).get("source_snapshot_hash")
 
-            # ============================================================
-            # PATCH FIX41I_SS6_STABLE (ADDITIVE): prefer v2/stable snapshot refs & hashes
             # Why:
             # - Analysis now emits stable/v2 snapshot hashes (source_snapshot_hash_v2 / _stable) and
             #   snapshot_store_ref_v2 pointing at the same Snapshots row key.
             # - Evolution must prefer these fields to keep fastpath alignment intact.
-            # ============================================================
             try:
                 _ref_v2 = previous_data.get("snapshot_store_ref_v2") or previous_data.get("snapshot_store_ref_stable")
                 if (not _ref_v2) and isinstance(previous_data.get("results"), dict):
@@ -20708,7 +19410,6 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                     _hash = _hash_stable  # prefer stable hash
             except Exception:
                 pass
-            # ============================================================
 
             if isinstance(_ref, str) and _ref.startswith("gsheet:"):
                 parts = _ref.split(":")
@@ -20732,11 +19433,8 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                 output["valid_snapshot_count"] = len(baseline_sources_cache)
     except Exception:
         pass
-    # =====================================================================
 
 
-    # =====================================================================
-    # PATCH REFACTOR39_SNAPSHOT_STORE_FALLBACK (ADDITIVE)
     # Purpose:
     # - During HistoryFull persistence we may omit baseline_sources_cache to avoid Sheets cell limits,
     #   and instead persist snapshots in the Snapshots worksheet / local snapshot store with a ref/hash.
@@ -20746,7 +19444,6 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
     # Behavior:
     # - If baseline_sources_cache is empty after normal discovery, attempt to load snapshots deterministically.
     # - Still strict: if we cannot load snapshots, we remain snapshot-gated (no fabricated matches).
-    # =====================================================================
     _snapshot_store_debug = {}
     try:
         if (not baseline_sources_cache) and isinstance(previous_data, dict):
@@ -20888,7 +19585,6 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                 _snapshot_debug["valid_count"] = int(len(baseline_sources_cache))
     except Exception:
         pass
-    # =====================================================================
 
     # If no valid snapshots, return "not_found"
     if not baseline_sources_cache:
@@ -20904,28 +19600,20 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
         output["status"] = "failed"
         output["message"] = "No valid snapshots available for source-anchored evolution. (Snapshot store fallback attempted; no re-fetch / no heuristic matching performed.)"
         output["interpretation"] = "Snapshot-gated: evolution refused to fabricate matches without valid cached source text."
-        # PATCH FIX2D20 (ADD): trace year-like commits in primary_metrics_canonical
         _fix2d20_trace_year_like_commits(output, stage=str((output or {}).get('debug',{}).get('stage') or 'evolution'), callsite='compute_source_anchored_diff_return')
         return output    # ---------- Use your existing deterministic metric diff helper ----------
     prev_response = (previous_data or {}).get("primary_response", {}) or {}
 
-    # =====================================================================
-    # PATCH HF6 (ADDITIVE): tolerate previous_data being the primary_response itself
-    # =====================================================================
     try:
         if (not isinstance(prev_response, dict) or not prev_response) and isinstance(previous_data, dict):
             if isinstance(previous_data.get("primary_metrics_canonical"), dict) or isinstance(previous_data.get("metric_schema_frozen"), dict):
                 prev_response = previous_data
     except Exception:
         pass
-    # =====================================================================
 
     prev_metrics = prev_response.get("primary_metrics_canonical") or prev_response.get("primary_metrics") or {}
 
-    # ============================================================
-    # PATCH CSR_INPUTS1 (ADDITIVE): normalize prev schema/anchors/canon
     # (safe alias for prior `prev_analysis` usage)
-    # ============================================================
     prev_analysis = previous_data  # PATCH CSR_INPUTS1_ALIAS (ADDITIVE)
     try:
         prev_schema = _first_present(prev_analysis, [
@@ -20958,12 +19646,8 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                 pass
     except Exception:
         pass
-    # ============================================================
 
 
-
-    # =====================================================================
-    # PATCH FIX2D73 (ADDITIVE): ensure prev_response carries baseline canonical metrics
     # Why:
     # - Diff Panel V2 consumes prev_response.primary_metrics_canonical.
     # - HistoryFull rehydrate can place canonical metrics under nested containers
@@ -20972,7 +19656,6 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
     # - If prev_canon exists, copy into prev_response.primary_metrics_canonical when missing.
     # - Also expose at top-level previous_data.primary_metrics_canonical (debug/compat).
     # - Record debug counts for closure verification.
-    # =====================================================================
     try:
         if isinstance(prev_response, dict):
             if (not isinstance(prev_response.get("primary_metrics_canonical"), dict)) or (not prev_response.get("primary_metrics_canonical")):
@@ -20997,7 +19680,6 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                 })
     except Exception:
         pass
-    # =====================================================================
     # Ensure schema/anchors are available inside prev_response (additive copies)
     try:
         if isinstance(prev_response, dict) and not isinstance(prev_response.get("metric_schema_frozen"), dict):
@@ -21012,8 +19694,6 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
     except Exception:
         pass
 
-    # =====================================================================
-    # PATCH FIX31 (ADDITIVE): authoritative fast-path when sources + data unchanged
     #
     # Principle:
     #   If the source snapshot inputs are proven unchanged, do NOT perform any
@@ -21028,7 +19708,6 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
     #     canonical metrics dict exists, we set current_metrics to prev_metrics
     #     and force anchors to be ignored by short-circuiting _get_metric_anchors().
     #   - This is purely additive and does not remove legacy paths.
-    # =====================================================================
     _fix31_authoritative_reuse = False
     try:
         import json as _fix31_json
@@ -21069,11 +19748,8 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
             payload = _fix31_stable_dumps(rows).encode("utf-8", errors="ignore")
             return _fix31_hashlib.sha256(payload).hexdigest()
 
-        # =========================
-        # PATCH FIX37 (ADD): stable snapshot hash for fastpath alignment
         # - Use the SAME hash function as analysis (compute_source_snapshot_hash_v2) whenever possible.
         # - Falls back to legacy compute_source_snapshot_hash, then to the reduced fingerprint.
-        # =========================
         def _fix37_snapshot_hash_stable(bsc):
             try:
                 if isinstance(bsc, list) and bsc:
@@ -21095,9 +19771,6 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
         _prev_hash = None
         _prev_hash_stable = None
         if isinstance(previous_data, dict):
-            # =========================
-            # PATCH FIX37 (ADD): prefer stable hash keys when available
-            # =========================
             _prev_hash_stable = previous_data.get("source_snapshot_hash_stable") or previous_data.get("source_snapshot_hash_v2")
             try:
                 if not _prev_hash_stable and isinstance(previous_data.get("results"), dict):
@@ -21105,7 +19778,6 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
             except Exception:
                 pass
             _prev_hash = _prev_hash_stable or previous_data.get("source_snapshot_hash")
-            # PATCH FIX41I_FASTPATH_PREF (ADDITIVE): explicit preferred hash (stable/v2 first)
             _prev_hash_pref = _prev_hash_stable or previous_data.get("source_snapshot_hash_stable") or previous_data.get("source_snapshot_hash_v2") or _prev_hash
 
             try:
@@ -21114,15 +19786,11 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
             except Exception:
                 pass
 
-# PATCH FIX36 (ADDITIVE): populate explicit fastpath ineligibility reasons
         # - Record current/previous hashes even on mismatch
         # - Explain which prerequisite failed (no_prev_hash / no_prev_metrics / no_snapshots / hash_mismatch)
-        # ============================================================
         _fix36_cur_hash = None
         _fix36_reason = ""
 
-        # =====================================================================
-        # PATCH FIX41AFC15 (ADDITIVE): Pre-hash merge of injected URL delta into baseline_sources_cache
         #
         # Why:
         # - In your latest evolution JSON, fastpath was correctly bypassed due to injected delta,
@@ -21141,7 +19809,6 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
         # - Purely additive.
         # - No effect when no injected URLs are present OR all injected URLs already exist in
         #   baseline_sources_cache.
-        # =====================================================================
         try:
             _fx15_wc = web_context if isinstance(web_context, dict) else {}
             _fx15_extra = []
@@ -21219,8 +19886,6 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
         except Exception:
             pass
 
-        # =====================================================================
-        # PATCH FIX41AFC16 (ADDITIVE): If injected URL placeholders exist, actually fetch+extract them
         #
         # Observed gap (from evolution JSON):
         #   - Injected URLs were present in ui/intake/hash_inputs, but remained:
@@ -21238,7 +19903,6 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
         #   - No effect when no injected URLs are present.
         #   - Only touches rows that are injected placeholders (status == injected_pending) OR
         #     URLs that are injected_delta (not already in baseline).
-        # =====================================================================
         try:
             _fx16_wc = web_context if isinstance(web_context, dict) else {}
             _fx16_extra = []
@@ -21431,8 +20095,6 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
             pass
 
 
-        # =====================================================================
-        # PATCH FIX41AFC17 (ADDITIVE): Pin fetched injected snapshots into canonical snapshot plumbing
         #
         # Observed gap (from evolution JSON after FIX41AFC16):
         #   - Injected URL reaches intake/admitted/attempted/hash_inputs, but snapshot_debug remains empty
@@ -21447,7 +20109,6 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
         #   - Purely additive wiring.
         #   - No effect if baseline_sources_cache is missing.
         #   - Does not alter hashing logic; only ensures snapshots are attached consistently.
-        # =====================================================================
         try:
             if isinstance(baseline_sources_cache, list) and baseline_sources_cache and isinstance(web_context, dict):
                 # Provide canonical aliases for current pool (additive; downstream may read any of these)
@@ -21494,7 +20155,6 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                     pass
         except Exception:
             pass
-        # =====================================================================
 
         try:
             if not (isinstance(baseline_sources_cache, list) and baseline_sources_cache):
@@ -21510,8 +20170,6 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                 else:
                     _fix36_reason = "hash_match_and_prev_metrics_present"
 
-            # =====================================================================
-            # PATCH EVO_FASTPATH_BYPASS_ON_INJECTED_URL_DELTA_V1 (ADDITIVE)
             # Intent:
             #   If the Evolution UI supplies injected URLs that are NOT already part of the
             #   baseline source universe, bypass fastpath eligibility even when hashes match.
@@ -21523,7 +20181,6 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
             #     - If injected_delta (normalized_injected_urls - normalized_baseline_urls) is non-empty
             #       and fastpath would otherwise be eligible, force _fix36_reason to a bypass reason so
             #       fastpath_eligible becomes False and rebuild path can run.
-            # =====================================================================
             try:
                 _evo_wc = web_context if isinstance(web_context, dict) else {}
                 _evo_diag = _evo_wc.get("diag_injected_urls") if isinstance(_evo_wc.get("diag_injected_urls"), dict) else {}
@@ -21541,8 +20198,6 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                         _evo_extra_urls = list(_v2)
 
 
-                # =====================================================================
-                # PATCH EVO_FASTPATH_BYPASS_INJ_DELTA_V2 (ADDITIVE):
                 #   Robustly recover injected/extra URLs for bypass detection even when
                 #   diag_injected_urls is not populated yet (common on replay/fastpath).
                 #   Sources (in order):
@@ -21552,7 +20207,6 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                 #   This is diagnostic-only: we ONLY use this to decide whether to bypass
                 #   fastpath when hashes otherwise match, so injected URLs can be admitted
                 #   via the rebuild path and become first-class inputs.
-                # =====================================================================
                 try:
                     if not _evo_extra_urls:
                         _v3 = _evo_wc.get("diag_extra_urls_ui")
@@ -21593,14 +20247,11 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                 except Exception:
                     pass
 
-                # =====================================================================
-                # PATCH FIX41AFC2 (ADDITIVE): Ensure rebuild/fetch path receives injected URLs
                 #   If we recovered injected URLs from Streamlit diagnostic fields (e.g.,
                 #   diag_extra_urls_ui_raw) and web_context["extra_urls"] is empty, wire the
                 #   recovered list into web_context["extra_urls"] so downstream admission/
                 #   fetch/persist logic can see the same universe deterministically.
                 #   No effect on no-injection runs.
-                # =====================================================================
                 try:
                     if isinstance(_evo_wc, dict):
                         _wc_extra = _evo_wc.get("extra_urls")
@@ -21626,13 +20277,9 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                 _evo_base_set = set(_inj_diag_norm_url_list(_evo_base_urls)) if _evo_base_urls else set()
 
                 _evo_inj_delta = sorted(list(_evo_inj_set - _evo_base_set)) if _evo_inj_set else []
-                # =====================================================================
-                # PATCH FIX41AFC2 (ADDITIVE): Latch bypass decision for later fastpath checks
                 #   We persist a simple boolean flag in locals so the downstream FIX31
                 #   authoritative reuse check can be disabled without refactoring.
-                # =====================================================================
                 _fix41af_inj_delta_present = bool(_evo_inj_delta)
-
 
 
                 # Only bypass when hashes match and we would otherwise take fastpath
@@ -21658,7 +20305,6 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                     output["debug"]["fix35"]["source_snapshot_hash_current_alg"] = "fix37_stable_v2_preferred"
                 if isinstance(_prev_hash, str) and _prev_hash:
                     output["debug"]["fix35"]["source_snapshot_hash_previous"] = (_prev_hash_pref if isinstance(locals().get("_prev_hash_pref"), str) and locals().get("_prev_hash_pref") else _prev_hash)
-                # PATCH FIX37 (ADD): also expose stable-hash candidate if available
                 try:
                     if isinstance(_prev_hash_stable, str) and _prev_hash_stable:
                         output["debug"]["fix35"]["source_snapshot_hash_previous_stable"] = _prev_hash_stable
@@ -21666,16 +20312,12 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                     pass
         except Exception:
             pass
-        # ============================================================
 
         # Only attempt fast-path if we have snapshots AND prior canonical metrics to reuse
         if isinstance(baseline_sources_cache, list) and baseline_sources_cache and isinstance(prev_metrics, dict) and prev_metrics:
-            # ============================================================
-            # PATCH FIX38 (ADDITIVE): align FIX31 authoritative reuse with FIX37 stable hash
             # - Previously FIX31 compared a v1 fingerprint against prev source_snapshot_hash,
             #   which could mismatch even when data was unchanged.
             # - We now prefer the same stable/v2 hash used by analysis & FIX37 debug.
-            # ============================================================
             _cur_hash_v1 = _fix31_snapshot_fingerprint(baseline_sources_cache)
             try:
                 _cur_hash = _fix37_snapshot_hash_stable(baseline_sources_cache)
@@ -21686,8 +20328,6 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
             # Prefer stable/v2 previous hash if present
             _prev_hash_pref = previous_data.get("source_snapshot_hash_stable") or previous_data.get("source_snapshot_hash_v2") or _prev_hash
 
-            # =====================================================================
-            # PATCH FIX42 (ADDITIVE): prefer "current" snapshot pool when provided
             #
             # Goal:
             #   When hashes are unequal, rebuild should run on the SAME snapshot pool
@@ -21703,7 +20343,6 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
             #   - If force_rebuild is asserted by UI/web_context, always use current pool.
             #   - Else, only switch to current pool if its stable hash != previous hash.
             #   - If hashes match, we keep existing behavior (but either pool is equivalent).
-            # =====================================================================
             _fix42_used_current_pool = False
             _fix42_reason = ""
             _fix42_cur_pool_hash = None
@@ -21755,16 +20394,12 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                         output["debug"]["fix42"]["current_pool_hash_stable"] = _fix42_cur_pool_hash
             except Exception:
                 pass
-            # =====================================================================
 
 
-            # =====================================================================
-            # PATCH FIX41AFC2 (ADDITIVE): Enforce fastpath bypass on injected URL delta
             #   If an injected URL delta exists, we MUST NOT take FIX31 authoritative
             #   reuse (fastpath replay), even if hashes match. We do this additively by
             #   temporarily blanking _prev_hash_pref so the existing hash-match check
             #   remains unchanged for normal runs.
-            # =====================================================================
             _fix41af_prev_hash_pref_saved = None
             try:
                 if bool(locals().get("_fix41af_inj_delta_present")):
@@ -21781,9 +20416,6 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
 
             if isinstance(_prev_hash_pref, str) and _prev_hash_pref and _cur_hash == _prev_hash_pref:
                 _fix31_authoritative_reuse = True
-                # =====================================================================
-                # PATCH FIX41AFC2 (ADDITIVE): Restore _prev_hash_pref after bypass guard
-                # =====================================================================
                 try:
                     if _fix41af_prev_hash_pref_saved is not None:
                         _prev_hash_pref = _fix41af_prev_hash_pref_saved
@@ -21815,20 +20447,13 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                     output["debug"]["fix35"]["fastpath_reason"] = "fastpath_not_taken_or_exception"
         except Exception:
             pass
-    # =====================================================================
 
     # Build a minimal current metrics dict from snapshots:
     current_metrics = {}
-    # ============================================================
-    # PATCH FIX31 (ADDITIVE): assign authoritative reused metrics now
-    # ============================================================
     try:
 
-        # =====================================================================
-        # PATCH FIX41AFC2 (ADDITIVE): Ensure _prev_hash_pref restored if bypass guard blanked it
         #   (covers the case where hash-match condition was false and the inline restore
         #   inside the if-body did not execute).
-        # =====================================================================
         try:
             if locals().get("_fix41af_prev_hash_pref_saved") is not None and not _prev_hash_pref:
                 _prev_hash_pref = locals().get("_fix41af_prev_hash_pref_saved")
@@ -21843,21 +20468,16 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                 pass
     except Exception:
         pass
-    # ============================================================
 
 
     # Prefer metric_anchors to rebuild current_metrics (snapshot-gated)
     def _get_metric_anchors(prev: dict) -> dict:
-        # ============================================================
-        # PATCH FIX31 (ADDITIVE): if authoritative reuse is active, ignore anchors entirely
         # so the reused, schema-gated metrics remain untouched.
-        # ============================================================
         try:
             if _fix31_authoritative_reuse:
                 return {}
         except Exception:
             pass
-        # ============================================================
 
         if not isinstance(prev, dict):
             return {}
@@ -21959,10 +20579,7 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
         output["message"] = output.get("message") or "Valid snapshots exist, but metric rebuild returned empty. Continuing (no refetch, no heuristic)."
         # Keep current_metrics as empty dict; downstream code should handle it.
         current_metrics = {}
-        # PATCH FIX2D20 (ADD): trace year-like commits in primary_metrics_canonical
         _fix2d20_trace_year_like_commits(output, stage=str((output or {}).get('debug',{}).get('stage') or 'evolution'), callsite='compute_source_anchored_diff_return')
-    # =====================================================================
-    # PATCH FIX41AFC19 (ADDITIVE): Anchor-first FIX16 rebuild override (schema parity)
     #
     # Why:
     # - Latest evo JSON shows current metrics can be selected from non-matching units
@@ -21984,7 +20601,6 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
     # Non-negotiables:
     # - Does NOT alter fastpath logic.
     # - Only activates when fastpath is not taken (i.e., not authoritative reuse).
-    # =====================================================================
     try:
         _fix41afc19_applied = False
         _fix41afc19_reason = ""
@@ -22003,14 +20619,11 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                 or None
             )
 
-            # =====================================================================
-            # PATCH PH2B_S2 (ADDITIVE): Robust pool resolution for canonical rebuild
             # - Some pipelines store the post-attach merged pool under different locals()
             #   names (or only inside nested objects). If the pool is missed, FIX41AFC19
             #   appears "not applied" even on rebuild runs.
             # - We search locals() for any list-like baseline_sources_cache* variants and
             #   choose the largest plausible pool as a safe fallback.
-            # =====================================================================
             if _fix41afc19_pool is None:
                 try:
                     _cand_pools = []
@@ -22026,7 +20639,6 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                         _fix41afc19_reason = (_fix41afc19_reason or "") + "|ph2b_s2_pool_fallback:" + str(_cand_pools[0][0])
                 except Exception:
                     pass
-            # =====================================================================
 
             # Prefer Analysis-canonical rebuild (Phase 2B hard-wire) when present; else fall back to FIX16 schema-only rebuild
             _fix41afc19_fn = globals().get("rebuild_metrics_from_snapshots_analysis_canonical_v1")
@@ -22066,10 +20678,7 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
             output["debug"]["fix41afc19"]["rebuilt_count"] = int(locals().get("_fix41afc19_rebuilt_count") or 0)
     except Exception:
         pass
-    # =====================================================================
 
-    # =====================================================================
-    # PATCH V19_HARDWIRE_EVO_CANONICAL (ADDITIVE)
     # Objective:
     # - Ensure Evolution diff "current" side is built from the same canonical semantics as Analysis
     #   by forcing a best-effort canonical rebuild for DISPLAY/DIFF, even when earlier logic
@@ -22079,7 +20688,6 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
     #   (3) debug.evo_winner_trace_v1 for key EV metrics (winner provenance + top3 candidate glimpse)
     # Safety:
     # - Additive-only. Does not modify hashing inputs or snapshot attach. Affects only what diff renders.
-    # =====================================================================
     _fix41afc19_attempted_v19 = False
     _fix41afc19_skip_reason_v19 = ""
     _fix41afc19_pool_count_v19 = 0
@@ -22097,7 +20705,6 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
         if (not _already_applied) or (_already_count <= 0):
             _fix41afc19_attempted_v19 = True
 
-            # PATCH FIX2D3 START: Harden FIX41AFC19 v19 pool resolution + callable lookup
             # Resolve the best available snapshot pool (post-attach merged universe)
             # NOTE: Different callers store the "current" snapshot pool under different names.
             # We intentionally scan a wide set of candidate keys and pick the largest non-empty list.
@@ -22194,7 +20801,6 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                 except Exception:
                     return None
 
-            # END PATCH FIX2D3
 
             _fn = _fix2d3_resolve_callable("rebuild_metrics_from_snapshots_analysis_canonical_v1")
             _fn_name = "rebuild_metrics_from_snapshots_analysis_canonical_v1"
@@ -22203,7 +20809,6 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                 _fn_name = "rebuild_metrics_from_snapshots_schema_only_fix16"
 
 
-            # PATCH FIX2D2_FALLBACK_REBUILD_FN_NAMES (ADDITIVE):
             # Some branches expose only the legacy names. Accept them as safe fallbacks
             # so 'fn_missing' doesn't mask a usable rebuild implementation.
             if not callable(_fn):
@@ -22254,10 +20859,7 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
 
         # Apply display override (used by diff below)
         locals()["current_metrics"] = current_metrics_for_display  # keep variable name used by downstream diff
-        # ============================================================
-        # PATCH START: FIX2D9_SCHEMA_ANCHORED_REBUILD_CALLSITE_V1
         # Purpose: Override current_metrics_for_display with schema-anchored rebuild
-        # ============================================================
         try:
             _fix2d9_over, _fix2d9_diag = _fix2d9_schema_anchored_rebuild_current_metrics_v1(
                 prev_response=prev_response,
@@ -22278,16 +20880,10 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                     pass
         except Exception:
             pass
-        # ============================================================
-        # PATCH END: FIX2D9_SCHEMA_ANCHORED_REBUILD_CALLSITE_V1
-        # ============================================================
-        # ============================================================
-        # PATCH START: FIX2D7_EXEC_STAMP_AND_PROPAGATE_V1
         # Purpose:
         #   - Stamp exec code version + join mode into results.debug
         #   - Propagate current_metrics_for_display into results.primary_metrics_canonical
         #     so downstream render/diff can populate the 'Current' column.
-        # ============================================================
         try:
             output.setdefault('results', {}).setdefault('debug', {})
             output['results']['debug']['__exec_code_version'] = globals().get('CODE_VERSION')
@@ -22316,16 +20912,12 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                     }
         except Exception:
             pass
-        # ============================================================
-        # PATCH END: FIX2D7_EXEC_STAMP_AND_PROPAGATE_V1
-        # ============================================================
 
         try:
             _fix41afc19_keys_sample_v19 = _fix41afc19_keys_sample_v19 or (list(current_metrics_for_display.keys())[:10] if isinstance(current_metrics_for_display, dict) else [])
         except Exception:
             pass
 
-        # ---------------- Diagnostic (3): winner provenance trace for key EV metrics ----------------
         # Heuristic: pick the known canonical keys if present, else infer from schema/keys.
         _key_candidates = [
             "units_sold_2024__unit_sales",
@@ -22343,7 +20935,6 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
 
             cur_canon = current_metrics_for_display if isinstance(current_metrics_for_display, dict) else {}
 
-            # PATCH FIX2D4 (ADD): explicit key overlap diagnostics (prev vs current)
             try:
                 if isinstance(output.get("debug"), dict):
                     output["debug"]["key_overlap_v1"] = _emit_key_overlap_debug_v1(
@@ -22481,7 +21072,6 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
     except Exception:
         pass
 
-    # ---------------- Diagnostic (2): FIX41AFC19 truth table ----------------
     try:
         if isinstance(output.get("debug"), dict):
             output["debug"].setdefault("fix41afc19", {})
@@ -22500,9 +21090,6 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                 output["debug"]["evo_winner_trace_v1"] = _fix41afc19_winner_trace_v19
     except Exception:
         pass
-    # =====================================================================
-    # =====================================================================
-    # PATCH V20_CANONICAL_FOR_RENDER (ADDITIVE): make Evolution dashboard derive
     # "Current" from a canonical-for-render payload (analysis-aligned) WITHOUT
     # touching fastpath/hashing/snapshot-attach.
     #
@@ -22521,7 +21108,6 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
     # Diagnostics:
     # - output.debug.canonical_for_render_v1
     # - output.debug.canonical_for_render_row_audit_v1
-    # =====================================================================
     _canonical_for_render_applied = False
     _canonical_for_render_reason = ""
     _canonical_for_render_fn = ""
@@ -22572,8 +21158,6 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
             pass
 
 
-        # =====================================================================
-        # PATCH V30_CANONICAL_FOR_RENDER_SEED_DISABLE (ADDITIVE)
         # Goal:
         # - Stop seeding canonical_for_render from current_metrics because current_metrics may already
         #   contain year-like / unitless / junk winners (e.g., "2.0 B", "-6441").
@@ -22584,7 +21168,6 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
         # - If prev_response carries a frozen schema, disable the seed by default.
         # - Allow opt-out via env var EVO_CANONICAL_FOR_RENDER_ALLOW_SEED=1.
         # - Emit a small trace later via _canonical_for_render_reason tag.
-        # =====================================================================
         try:
             _allow_seed = str(os.getenv("EVO_CANONICAL_FOR_RENDER_ALLOW_SEED", "") or "").strip() in ("1", "true", "True", "yes", "YES")
             _has_schema = isinstance(prev_response, dict) and isinstance(prev_response.get("metric_schema_frozen") or {}, dict) and bool(prev_response.get("metric_schema_frozen"))
@@ -22594,7 +21177,6 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
         except Exception:
             pass
 
-        # PATCH V21_CANONICAL_FOR_RENDER_SUSPICION (ADDITIVE):
         # Even when current_metrics has "enough" keys, it can still be junk (year-like/unitless winners).
         # Detect suspicious existing canonical dict and force a render-only rebuild in that case.
         def _v21_yearlike(x):
@@ -22686,7 +21268,6 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                 _canonical_for_render_count = int(len(canonical_for_render))
                 _canonical_for_render_keys_sample = list(sorted(list(canonical_for_render.keys())))[:12]
                 _canonical_for_render_replaced_current_metrics = True
-                # PATCH V22_CANONICAL_FOR_RENDER_FN_GUARD (ADDITIVE): ensure fn label is never empty when rebuild succeeded
                 try:
                     if not str(_canonical_for_render_fn or "").strip():
                         _canonical_for_render_fn = "unknown_rebuild_fn"
@@ -22704,8 +21285,6 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
         _canonical_for_render_reason = "exception_fallback_existing"
 
 
-    # =====================================================================
-    # PATCH V28_FORCE_ANCHOR_PICK_FOR_RENDER (ADDITIVE)
     # Problem observed:
     # - canonical_for_render rebuild may select junk numbers from the frozen pool
     #   (e.g., GlobeNewswire footer "2B" or email fragments "-6441") when anchors
@@ -22723,7 +21302,6 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
     # Diagnostics:
     # - output.debug.canonical_for_render_anchor_enforce_v28 (summary)
     # - per-metric cm["diag"]["v28_anchor_enforced"] (when applied)
-    # =====================================================================
     _v28_anchor_enforce = {
         "attempted": False,
         "schema_keys": 0,
@@ -22860,18 +21438,12 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                     except Exception:
                         pass
                         continue
-# ============================================================
-# ============================================================
-# ============================================================
-    # ============================================================
 
 
     except Exception:
         pass
 
 
-    # ============================================================
-    # PATCH START: FIX2D11_RENDER_GATE_FALLBACK_UNANCHORED_V2B
     # Purpose:
     #   Render-gate fallback (UNION / demo mode only).
     #   If V28 anchor enforcement was attempted but produced zero hits,
@@ -22882,7 +21454,6 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
     #   - Render-only (does not affect canonicalisation, hashing, snapshots, fastpath)
     #   - UNION mode only
     #   - No new try/except blocks inside compute_source_anchored_diff
-    # ============================================================
 
     _fix2d11_join_mode = None
     if "_fix2d6_get_diff_join_mode_v1" in globals():
@@ -22912,22 +21483,13 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
             _v28_anchor_enforce["fix2d11_fallback_applied"] = False
             _v28_anchor_enforce["fix2d11_fallback_reason"] = "no_current_primary_metrics_canonical"
 
-    # ============================================================
-    # PATCH END: FIX2D11_RENDER_GATE_FALLBACK_UNANCHORED_V2B
-    # ============================================================
 
     try:
         if isinstance(output.get("debug"), dict):
             output["debug"]["canonical_for_render_anchor_enforce_v28"] = _v28_anchor_enforce
     except Exception:
         pass
-    # =====================================================================
-    # END PATCH V28_FORCE_ANCHOR_PICK_FOR_RENDER
-    # =====================================================================
 
-    # =====================================================================
-    # PATCH V29_CANONICAL_FOR_RENDER_SCHEMA_GATE_AND_JUNK_REJECT (ADDITIVE)
-    # =====================================================================
     # Problem:
     # - canonical_for_render can still select "junk" numerics (e.g., footer phone
     #   fragments like -6441 or marketing magnitudes like 2B) as Current, because
@@ -22950,7 +21512,6 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
     # Diagnostics:
     # - output.debug.canonical_for_render_schema_gate_v29 (summary)
     # - per-metric cm["diag"]["v29_schema_gate_*"] flags (when applied)
-    # =====================================================================
     _v29_schema_gate = {
         "attempted": False,
         "canonical_keys": 0,
@@ -23272,12 +21833,8 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
             output["debug"]["canonical_for_render_schema_gate_v29"] = _v29_schema_gate
     except Exception:
         pass
-    # =====================================================================
-    # END PATCH V29_CANONICAL_FOR_RENDER_SCHEMA_GATE_AND_JUNK_REJECT
-    # =====================================================================
 
 
-# PATCH V22_CANONICAL_FOR_RENDER_NORMALIZE (ADDITIVE): normalize canonical_for_render metric dicts so that
     # downstream row hydration does not overwrite Current with blanks when the rebuilt dict uses alternate fields.
     # - Derives value_norm/unit/raw from common alternate keys and evidence entries.
     # - Purely render-layer enrichment; does NOT alter selection/hashing.
@@ -23360,8 +21917,6 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
         pass
 
 
-    # =====================================================================
-    # PATCH V30_STRICT_SCHEMA_UNIT_GATE (ADDITIVE)
     # Goal:
     # - Apply an analysis-like schema/unit compatibility gate at render-time.
     # - Explicitly reject obviously incompatible unit evidence (e.g. "2.0 B" for a % metric,
@@ -23370,7 +21925,6 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
     # Notes:
     # - Render-only: does not affect extraction, snapshot attach, hashing, or fastpath replay.
     # - Best-effort: only runs if FIX16 helpers are present.
-    # =====================================================================
     _v30_strict_gate = {"attempted": False, "dropped": 0, "dropped_keys_sample": []}
     try:
         _v30_strict_gate["attempted"] = True
@@ -23434,13 +21988,10 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
         fn_diff = globals().get("diff_metrics_by_name")
         if callable(fn_diff):
             cur_resp_for_diff = {"primary_metrics_canonical": canonical_for_render}
-            # =====================================================================
-            # PATCH V34E_DIFF_METRIC_CHANGES_ANCHOR_INPUT (ADDITIVE)
             # Ensure the diff layer receives metric_anchors for CURRENT so that
             # v34 anchor-hash secondary join can resolve drifting canonical_keys.
             # - Deterministic, inference-free: only uses anchor_hash already present
             #   on canonical_for_render entries (if any).
-            # =====================================================================
             try:
                 _cur_metric_anchors = {}
                 if isinstance(canonical_for_render, dict):
@@ -23461,38 +22012,23 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                     cur_resp_for_diff["metric_anchors"] = _cur_metric_anchors
             except Exception:
                 pass
-            # =====================================================================
-            # END PATCH V34E_DIFF_METRIC_CHANGES_ANCHOR_INPUT
-            # =====================================================================
 
 
-            # =====================================================================
-            # PATCH V27_DISABLE_NUMERIC_INFERENCE_FLAG (ADDITIVE)
             # Signal to diff layer: when canonical-for-render is active, do NOT
             # infer/parse numeric values for CURRENT from free-form strings.
-            # =====================================================================
             try:
                 cur_resp_for_diff["_disable_numeric_inference_v27"] = True
             except Exception:
                 pass
-            # =====================================================================
-            # END PATCH V27_DISABLE_NUMERIC_INFERENCE_FLAG
-            # =====================================================================
-            # =====================================================================
-            # PATCH V24_STRICT_CKEY_FLAG (ADDITIVE)
             # When using canonical-for-render, force strict canonical_key identity matching in diff layer.
             # This prevents cross-metric substitution (e.g., 2.0 B / 170.0 / year values) from fallback matchers.
-            # =====================================================================
             try:
                 cur_resp_for_diff["_ph2b_strict_ckey_v24"] = True
             except Exception:
                 pass
             metric_changes, unchanged, increased, decreased, found = fn_diff(prev_response, cur_resp_for_diff)
-            # =====================================================================
-            # PATCH V34E_DIFF_JOIN_SUMMARY_SURFACE (ADDITIVE)
             # Surface v34 join summary (if produced by diff layer) into top-level debug
             # so it appears in the Evolution JSON for audit.
-            # =====================================================================
             try:
                 _dj = None
                 if isinstance(cur_resp_for_diff, dict):
@@ -23510,9 +22046,6 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                         pass
             except Exception:
                 pass
-            # =====================================================================
-            # END PATCH V34E_DIFF_JOIN_SUMMARY_SURFACE
-            # =====================================================================
 
 
         else:
@@ -23542,7 +22075,6 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                     _row_audit["rows_missing_canonical"] += 1
                     continue
 
-                # PATCH V22_ROW_HYDRATE_GUARD (ADDITIVE): only override if canonical metric has usable fields
                 # Prevents overwriting a previously non-empty current with blanks when canon metric is sparse.
                 _cm_vn = cm.get("value_norm")
                 _cm_unit = (cm.get("unit") or cm.get("unit_tag") or "").strip()
@@ -23589,7 +22121,6 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                 row["cur_unit_cmp"] = unit
                 row["current_value"] = raw
 
-                # PATCH V22_CLEAR_UNIT_MISMATCH_ON_CANON (ADDITIVE): if canonical-for-render provides
                 # a schema-aligned unit+value, clear any prior unit_mismatch that came from raw/fallback.
                 try:
                     if (vnorm is not None) and str(unit or "").strip():
@@ -23624,12 +22155,9 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                     row["diag"]["canonical_for_render_v1"]["reason"] = _canonical_for_render_reason
                     row["diag"]["canonical_for_render_v1"]["prior_current"] = prior
 
-                # =====================================================================
-                # PATCH V26_LOCK_CANONICAL_CURRENT_FIELDS (ADDITIVE)
                 # Goal: Once a row is hydrated from canonical-for-render, lock the "Current" fields
                 #       so later post-processing (heuristics/sanitizers) cannot overwrite them.
                 # This is render-only and does NOT affect hashing/fastpath/snapshot attach.
-                # =====================================================================
                 try:
                     row["_lock_current_v26"] = True
                     # ensure nested dict exists
@@ -23648,11 +22176,6 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                             }
                 except Exception:
                     pass
-                # =====================================================================
-                # END PATCH V26_LOCK_CANONICAL_CURRENT_FIELDS
-                # =====================================================================
-
-
 
 
                 # Determine if we actually changed the row
@@ -23672,9 +22195,6 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                 "fn": str(_canonical_for_render_fn or ""),
                 "rebuilt_count": int(_canonical_for_render_count or 0),
                 "keys_sample": list(_canonical_for_render_keys_sample or []),
-                # =====================================================================
-                # PATCH FIX2W_CANONICAL_FOR_RENDER_DIAG_EXT_V1 (ADDITIVE)
-                # =====================================================================
                 "diag_ext": (lambda: {
                     "current_metrics_count": int(len(current_metrics)) if isinstance(current_metrics, dict) else 0,
                     "baseline_sources_cache_current_rows": int(len(baseline_sources_cache_current)) if isinstance(baseline_sources_cache_current, list) else 0,
@@ -23684,17 +22204,13 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                     "web_context_fix2v_binding": (web_context.get("fix2v_candidate_binding_v1") or {}) if isinstance(web_context, dict) else {},
                     "reason_is_empty_rebuild": bool(str(_canonical_for_render_reason or "") in ("render_rebuild_failed_or_empty", "forced_render_rebuild_due_to_suspicious_existing_failed")),
                 })(),
-                # END PATCH FIX2W_CANONICAL_FOR_RENDER_DIAG_EXT_V1
                 "replaced_current_metrics_for_render": bool(_canonical_for_render_replaced_current_metrics),
             }
-            # ============================================================
-            # PATCH START: FIX2D5_MIRROR_CANONICAL_FOR_RENDER_V1
             # Purpose:
             #   Diff/dashboard diagnostics consume results.debug.*, but canonical_for_render_v1
             #   was attached to output.debug only. Mirror into output.results.debug to prevent
             #   false "missing_output_debug.canonical_for_render_v1" diagnoses.
             #   (Additive; no behavior change)
-            # ============================================================
             try:
                 if isinstance(output.get("results"), dict):
                     output["results"].setdefault("debug", {})
@@ -23702,37 +22218,27 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                         output["results"]["debug"]["canonical_for_render_v1"] = dict(output["debug"].get("canonical_for_render_v1") or {})
             except Exception:
                 pass
-            # ============================================================
-            # PATCH END: FIX2D5_MIRROR_CANONICAL_FOR_RENDER_V1
-            # ============================================================
 
 
             output["debug"]["canonical_for_render_row_audit_v1"] = _row_audit
     except Exception:
         pass
-    # =====================================================================
-    # END PATCH V20_CANONICAL_FOR_RENDER
-    # =====================================================================
 
 
-    # =====================================================================
     # REFACTOR56: Diff Panel V2 lastmile (downsizing)
     # Objective:
     # - Keep Diff Panel V2 as the authoritative producer of the metric changes table feed.
     # - Do not emit metric_changes_legacy (removed).
     # Safety:
     # - Render-only. No inference. No changes to hashing/fastpath/snapshots/extraction.
-    # =====================================================================
     _diff_v2_rows = []
     _diff_v2_summary = None
-    # =====================================================================
     # REFACTOR45: Diff Panel V2 hardening (RecursionError-safe)
     # - Always pass minimal, acyclic wrappers into the V2 builder.
     # - Capture traceback for any V2 builder failure.
     # - If V2 fails, DO NOT overwrite previously computed rows; otherwise
     #   synthesize strict canonical-join rows so the panel never goes empty
     #   when prev/cur canonical maps are present.
-    # =====================================================================
     try:
         import traceback as _tb
     except Exception:
@@ -24030,11 +22536,8 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
     output["message"] = "Source-anchored evolution completed (snapshot-gated, analysis-aligned)."
     output["interpretation"] = "Evolution used cached source snapshots only; no brute-force candidate harvesting."
 
-    # =====================================================================
-    # PATCH FIX35 (ADDITIVE): attach bad-current traces for unit-required metrics
     # - If a diff row shows a year-like integer as current for a unit-required metric,
     #   emit a compact trace: origin, schema unit_family, current fields, and top candidates.
-    # =====================================================================
     try:
         if isinstance(output.get("debug"), dict) and isinstance(output["debug"].get("fix35"), dict):
             bad_traces = {}
@@ -24148,11 +22651,8 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
     except Exception:
         pass
 
-    # =====================================================================
-    # PATCH INJ_TRACE_V1_EMIT_EVOLUTION (ADDITIVE): always emit canonical trace
     # - Mirrors to output.results.debug.inj_trace_v1 for a fixed location across modes
     # - Does NOT affect fastpath decisioning
-    # =====================================================================
     try:
         _wc_diag = {}
         if isinstance(web_context, dict):
@@ -24191,12 +22691,9 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
             _selected = []
 
         # For evolution, rebuild_pool is effectively the hash input URL universe available via snapshots
-        # =====================================================================
-        # PATCH INJ_HASH_V1_EVO (ADDITIVE): compute per-URL hash exclusion reasons in evolution
         # - If injected URLs exist but are not in hash_inputs, we record the most likely reason:
         #     * excluded_by_flag_default_off  (when inclusion switch is OFF)
         #     * missing_from_hash_inputs      (when switch ON but still absent)
-        # =====================================================================
         _evo_hash_reasons = {}
         try:
             _evo_persisted = []
@@ -24218,10 +22715,7 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
         except Exception:
             pass
             _evo_hash_reasons = {}
-        # =====================================================================
 
-        # =====================================================================
-        # PATCH INJ_TRACE_V1_EVO_ADMISSION_ALIGN_V1 (ADDITIVE)
         # Goal:
         # - Evolution often bypasses fetch_web_context(), so "admitted" may be unset even
         #   when URLs are actually in the current scrape/hash universe.
@@ -24232,7 +22726,6 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
         # - If diag.admitted is empty but hash_inputs are present, treat hash_inputs as
         #   admitted for trace purposes.
         # - Prefer any explicit FIX24 evo merge set if present (urls_after_merge_norm).
-        # =====================================================================
         try:
             if isinstance(_wc_diag, dict):
                 _ad = _inj_diag_norm_url_list(_wc_diag.get("admitted") or _wc_diag.get("extra_urls_admitted") or [])
@@ -24250,10 +22743,7 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                         _wc_diag.setdefault("admission_reason", "trace_fallback_to_hash_inputs_or_urls_after_merge")
         except Exception:
             pass
-        # =====================================================================
 
-        # =====================================================================
-        # PATCH INJ_TRACE_V1_EVO_REBUILD_SELECTED_FALLBACK_V1 (ADDITIVE)
         # Goal:
         # - In fastpath/replay or when current_metrics lacks source_url fields,
         #   rebuild_selected_norm can be empty, creating misleading pool_minus_selected.
@@ -24261,7 +22751,6 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
         # Diagnostics-only fallback:
         # - If rebuild_selected is empty but rebuild_pool/hash_inputs exists, treat
         #   selected as the full pool for trace purposes.
-        # =====================================================================
         try:
             if (not _selected) and _hash_inputs:
                 _selected = list(_inj_diag_norm_url_list(_hash_inputs))
@@ -24269,11 +22758,8 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                     _wc_diag.setdefault("rebuild_selected_reason", "trace_fallback_to_hash_inputs_no_current_metric_sources")
         except Exception:
             pass
-        # =====================================================================
 
 
-        # =====================================================================
-        # PATCH FIX41AFC12 (ADDITIVE): Admission-gate override for injected URLs + post-fetch trace
         #
         # Why:
         # - inj_trace_v1 shows injected URLs at intake but missing from admitted (unknown_rejected_pre_admission).
@@ -24287,7 +22773,6 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
         #
         # Safety:
         # - Purely additive; never raises; does not modify fastpath rules or hashing.
-        # =====================================================================
         try:
             _fx12_wc = web_context if isinstance(web_context, dict) else {}
             _fx12_diag = _wc_diag if isinstance(locals().get("_wc_diag"), dict) else (_fx12_wc.get("diag_injected_urls") if isinstance(_fx12_wc.get("diag_injected_urls"), dict) else {})
@@ -24326,7 +22811,6 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                         pass
         except Exception:
             pass
-        # =====================================================================
         _trace = _inj_trace_v1_build(
             diag_injected_urls=_wc_diag if isinstance(_wc_diag, dict) else {},
             hash_inputs=_hash_inputs,
@@ -24348,12 +22832,9 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
             if isinstance(output["results"].get("debug"), dict):
                 output["results"]["debug"]["inj_trace_v1"] = _trace
 
-                # =====================================================================
-                # PATCH FIX41AFC12_POSTFETCH (ADDITIVE): inj_trace_v2_postfetch
                 #
                 # Emit a second trace after best-effort enrichment from scraped_meta / baseline cache so that
                 # attempted/persisted deltas reflect the true post-fetch state (inj_trace_v1 may be earlier).
-                # =====================================================================
                 try:
                     _fx12_diag2 = dict(_wc_diag) if isinstance(_wc_diag, dict) else {}
                     try:
@@ -24384,11 +22865,9 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                     pass
 
 
-    # =====================================================================
     except Exception:
         pass
 
-    # PATCH FIX41AFC19_V25 (ADDITIVE): Dashboard "Current" source audit + row sample
     #
     # Why:
     # - Conclusively identify which structure the Evolution dashboard reads for
@@ -24400,15 +22879,12 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
     #     * states the dashboard read-path ("results.metric_changes[].current_value")
     #     * samples the first N metric_changes rows (canonical_key, current_value, unit hints, diag keys)
     # - Purely additive: no selection, hashing, or fastpath behavior changes.
-    # =====================================================================
     try:
         if isinstance(output, dict):
             _dbg = output.get("debug") if isinstance(output.get("debug"), dict) else {}
             if not isinstance(_dbg, dict):
                 _dbg = {}
             rows = output.get("metric_changes") or []
-            # =====================================================================
-            # PATCH FIX2D24 (ADDITIVE): Last-mile yearlike guard for dashboard "Current"
             #
             # Why:
             # - Even after schema-only rebuild hardening, dashboard "Current" may still
@@ -24422,7 +22898,6 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
             # - If current value is yearlike AND unit is empty AND metric is not a
             #   year-as-value metric, blank it (N/A) and attach diagnostics.
             # - Keep a compact trace in output.debug.fix2d24_yearlike_current_trace_v1.
-            # =====================================================================
             def _fix2d24_is_yearlike(v, raw=None):
                 try:
                     if v is None:
@@ -24502,8 +22977,6 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                         _r["current_value"] = "N/A"
                         _r["current_value_norm"] = None
                         _r["cur_value_norm"] = None
-                        # =====================================================================
-                        # PATCH FIX2D2L (AUTHORITATIVE): yearlike-current blocked => inference fallback + commit
                         # Why:
                         # - FIX2D24 correctly blocks unitless yearlike current values (e.g. 2024/2030)
                         #   but previously left Current as N/A. This patch immediately falls back to the
@@ -24513,7 +22986,6 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                         # - Score candidates with unit-family + keyword/context hints
                         # - Commit into current_value/current_value_norm/current_source/current_method
                         # - Attach explicit trace yearlike_current_blocked_then_inferred_v1
-                        # =====================================================================
                         try:
                             _r_diag = _r.get('diag') if isinstance(_r.get('diag'), dict) else {}
                             _blocked_vn = _cvn
@@ -24795,8 +23267,6 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                 pass
             _dbg["canonical_for_render_present_v25"] = bool(_dbg.get("canonical_for_render_v1"))
 
-            # =====================================================================
-            # PATCH FIX2AC_CANONICAL_FOR_RENDER_DIAGNOSE_V1 (ADDITIVE)
             # Why:
             # - We sometimes observe canonical_for_render_present_v25 == False and/or
             #   missing bound canonical entities in the dashboard, even when injection
@@ -24807,7 +23277,6 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
             #   why canonical_for_render did not run / did not apply / did not produce
             #   candidates / did not change any rows.
             # - Purely additive; does not change selection, hashing, or rendering.
-            # =====================================================================
             try:
                 _cfr_dbg = _dbg.get("canonical_for_render_v1") if isinstance(_dbg.get("canonical_for_render_v1"), dict) else None
 
@@ -24913,14 +23382,8 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                 }
             except Exception:
                 pass
-            # =====================================================================
-            # END PATCH FIX2AC_CANONICAL_FOR_RENDER_DIAGNOSE_V1
-            # =====================================================================
 
-            # =====================================================================
-            # PATCH V33_DIFF_PANEL_CANONICAL_PATHS_EMIT (ADDITIVE)
             # Surface which response-shape path diff used to hydrate "current".
-            # =====================================================================
             try:
                 _paths = None
                 try:
@@ -24936,16 +23399,10 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
             output["debug"] = _dbg
     except Exception:
         pass
-    # =====================================================================
-    # END PATCH FIX41AFC19_V25
-    # =====================================================================
 
 
-    # =====================================================================
-    # PATCH V26_RESTORE_LOCKED_CURRENT_FIELDS (ADDITIVE)
     # If any later code overwrote current_* fields, restore the locked canonical-for-render
     # fields right before returning the evolution output.
-    # =====================================================================
     try:
         _lock_dbg = {"rows_total": 0, "rows_locked": 0, "rows_restored": 0, "rows_missing_lock": 0, "restored_keys_sample": []}
         for _r in (output.get("metric_changes") or []):
@@ -24985,18 +23442,9 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
             output["debug"]["lock_current_v26"] = _lock_dbg
     except Exception:
         pass
-    # =====================================================================
-    # END PATCH V26_RESTORE_LOCKED_CURRENT_FIELDS
-    # =====================================================================
 
 
-    # PATCH FIX2D20 (ADD): trace year-like commits in primary_metrics_canonical
-
-
-
-    # =====================================================================
     # REFACTOR56: enforce removal of legacy metric_changes output (safety rail)
-    # =====================================================================
     try:
         output.pop("metric_changes_legacy", None)
     except Exception:
@@ -25005,7 +23453,6 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
     _fix2d20_trace_year_like_commits(output, stage=str((output or {}).get('debug',{}).get('stage') or 'evolution'), callsite='compute_source_anchored_diff_return')
 
 
-    # =====================================================================
     # REFACTOR66: De-duplicate nested output['results'] mirror (footprint control)
     #
     # Problem:
@@ -25021,7 +23468,6 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
     #
     # Safety:
     # - Purely a payload-shape cleanup; does not change diffing, schema, or key grammar.
-    # =====================================================================
     try:
         _nested = output.get("results")
         if isinstance(_nested, dict) and _nested:
@@ -25065,13 +23511,9 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
             output["results"] = _light
     except Exception:
         pass
-    # =====================================================================
     # END REFACTOR66
-    # =====================================================================
 
 
-
-    # =====================================================================
     # REFACTOR70: Metric-changes + stability output bridge (safety rail)
     #
     # Why:
@@ -25083,7 +23525,6 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
     # - Mirror to output["metric_changes_v2"] for compatibility.
     # - Mirror stability_score to top-level when present.
     # - Never emit metric_changes_legacy.
-    # =====================================================================
     try:
         if isinstance(output, dict):
             _mc = None
@@ -25136,15 +23577,11 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
         pass
 
 
-
-    # ============================================================
-    # PATCH REFACTOR71_HARNESS_INVARIANTS_V1 (ADDITIVE)
     # Why:
     # - External source flakiness (e.g., failed:no_text) can silently reduce
     #   primary_metrics_canonical_count below the frozen schema size.
     # - This patch stamps a deterministic debug warning with missing keys
     #   and source failure summaries so the harness can't "silently degrade".
-    # ============================================================
     try:
         _schema_frozen = None
         try:
@@ -25385,14 +23822,8 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
             output["harness_warning_v1"] = " | ".join(_parts)
     except Exception:
         pass
-    # ================= END PATCH REFACTOR71_HARNESS_INVARIANTS_V1 =================
 
     return output
-
-# =================== END PATCH RMS_CORE1 (ADDITIVE) ===================
-
-
-
 
 
 def extract_context_keywords(metric_name: str) -> List[str]:
@@ -25486,7 +23917,6 @@ def extract_numbers_with_context(text, source_url: str = "", max_results: int = 
 
     raw = str(text)
 
-    # ---------- helpers ----------
     def _sha1(s: str) -> str:
         return hashlib.sha1((s or "").encode("utf-8", errors="ignore")).hexdigest()
 
@@ -25604,32 +24034,20 @@ def extract_numbers_with_context(text, source_url: str = "", max_results: int = 
                     return True
         return False
 
-    # -------------------------------------------------------------------------
-    # ADDITIVE (Patch A1): fix common "split year" artifact (e.g., "202 5" -> "2025")
     # Do this AFTER HTML->text and BEFORE regex extraction.
-    # -------------------------------------------------------------------------
 
-    # ---------- normalize to visible text ----------
     if _looks_html(raw):
         raw = _html_to_text(raw)
 
     # cap huge pages
     raw = raw[:250_000]
 
-    # ---- ADDITIVE: fix common "split year" artifact (e.g., "202 5" -> "2025") ----
     raw = re.sub(r"\b((?:19|20)\d)\s+(\d)\b", r"\1\2", raw)
-    # -----------------------------------------------------------------------------
 
-    # -------------------------------------------------------------------------
-    # PATCH A3 (ADDITIVE): year-range detector (tag-only, does NOT drop candidates)
-    # -------------------------------------------------------------------------
     def _is_year_range_context(ctx: str) -> bool:
         return bool(re.search(r"\b(19|20)\d{2}\s*(?:-|–|—|to)\s*(19|20)\d{2}\b", ctx or "", flags=re.I))
 
-    # -------------------------------------------------------------------------
-    # ADDITIVE (Patch A2): non-destructive junk tagger
     # - We DO NOT filter here; we tag and downstream excludes by default.
-    # -------------------------------------------------------------------------
     def _junk_tag(value: float, unit: str, raw_disp: str, ctx: str):
         """
         Non-destructive junk classifier.
@@ -25638,9 +24056,6 @@ def extract_numbers_with_context(text, source_url: str = "", max_results: int = 
         c = (ctx or "").lower()
         u = (unit or "").strip()
 
-        # =========================
-        # PATCH A3 (TAG ONLY): year-range endpoints are usually timeline metadata
-        # =========================
         try:
             iv = int(float(value))
             if u == "" and 1900 <= iv <= 2099 and _is_year_range_context(ctx):
@@ -25678,11 +24093,8 @@ def extract_numbers_with_context(text, source_url: str = "", max_results: int = 
             except Exception:
                 return False, ""
 
-    # -------------------------------------------------------------------------
-    # PATCH M1 (ADDITIVE): semantic classifier for associations like "share" vs "units"
     # NOTE: moved OUTSIDE the loop for determinism + speed (no behavioral change).
     # Also emits a "measure_assoc" label that downstream can display easily.
-    # -------------------------------------------------------------------------
     def _classify_measure(unit_tag: str, ctx: str):
         """
         Returns (measure_kind, measure_assoc):
@@ -25710,26 +24122,15 @@ def extract_numbers_with_context(text, source_url: str = "", max_results: int = 
             return "energy", "energy"
 
         return "other", "other"
-    # -------------------------------------------------------------------------
 
-    # ---------- extraction pattern ----------
-    # =========================
-    # PATCH N1 (ADDITIVE, BUGFIX): currency tokens
     # - Fix US$ being parsed as S$ by matching US\$ first.
     # - Also accept "US$" as a single token (case-insensitive).
-    # =========================
     pat = re.compile(
         r"(US\$|US\$(?!\w)|S\$|\$|USD|SGD|EUR|€|GBP|£)?\s*"
-        # =========================
-        # PATCH N2 (ADDITIVE, BUGFIX): avoid capturing negative year from year-range
         # - We'll still allow negatives generally, but we'll tag the special "2025-2030" case below.
         # (No behavior change for real negatives like -1.2% etc.)
-        # =========================
         r"(-?\d{1,3}(?:[,\s]\d{3})*(?:\.\d+)?|-?\d+(?:\.\d+)?)(?!\d)\s*"
-        # =========================
-        # PATCH N3 (ADDITIVE, BUGFIX): capture 'tn' magnitude explicitly
         # - Keep your A5 safeguard: single-letter magnitudes only match if NOT followed by a letter.
-        # =========================
         r"(TWh|GWh|MWh|kWh|Wh|tn|(?:T|B|M|K)(?![A-Za-z])|trillion|billion|million|bn|mn|%|percent)?",
         flags=re.I
     )
@@ -25771,11 +24172,8 @@ def extract_numbers_with_context(text, source_url: str = "", max_results: int = 
         if _year_only_suppression(val, unit, num_s, ctx_store):
             continue
 
-        # =========================
-        # PATCH N2b (ADDITIVE, BUGFIX): tag the "negative year from range" case as junk
         # Example: "CAGR 2025-2030" producing "-2030"
         # - Do NOT drop here (keep non-destructive policy); just tag.
-        # =========================
         neg_from_hyphen_range = False
         neg_year_from_range = False
         try:
@@ -25788,7 +24186,6 @@ def extract_numbers_with_context(text, source_url: str = "", max_results: int = 
             pass
             neg_from_hyphen_range = False
             neg_year_from_range = False
-# =========================
 
         anchor_hash = _sha1(f"{source_url}|{raw_disp}|{ctx_store}")
         # FIX2D69B: defensive tuple normalization (prevent unpack None)
@@ -25801,20 +24198,14 @@ def extract_numbers_with_context(text, source_url: str = "", max_results: int = 
         except Exception:
             is_junk, junk_reason = (False, "")
 
-        # =========================
-        # PATCH N2c (ADDITIVE): override junk tagging reason when we confidently detect this bug
-        # =========================
         if neg_year_from_range:
             is_junk = True
             junk_reason = "year_range_negative_endpoint"
         elif neg_from_hyphen_range:
             is_junk = True
             junk_reason = "hyphen_range_negative_endpoint"
-        # =========================
 
 
-            # =================================================================
-            # PATCH YEAR_ONLY_V2 (ADDITIVE): suppress standalone years as datapoints
             # Why:
             # - Years (e.g., 2025) frequently appear in headings/ranges and should not
             #   compete with real metric values (currency, %, volumes) in evolution.
@@ -25822,7 +24213,6 @@ def extract_numbers_with_context(text, source_url: str = "", max_results: int = 
             # Rules:
             # - If value is an integer-like 4-digit year in [1900..2100],
             #   unit is empty, and context lacks currency/%/magnitude cues => mark junk.
-            # =================================================================
             try:
                 if (not is_junk) and (not str(unit or "").strip()):
                     _v_int = None
@@ -25839,7 +24229,6 @@ def extract_numbers_with_context(text, source_url: str = "", max_results: int = 
                             junk_reason = "year_token"
             except Exception:
                 pass
-            # =================================================================
 # semantic association tags
         # FIX2D69B: defensive tuple normalization (prevent unpack None)
         try:
@@ -25872,11 +24261,8 @@ def extract_numbers_with_context(text, source_url: str = "", max_results: int = 
         if len(out) >= int(max_results or 350):
             break
 
-    # =========================
-    # PATCH FIX2D2J (ADDITIVE): enforce unit_family/measure_kind normalization on extractor output
     # - Ensures out entries include unit_tag, unit_family, and corrected currency measure_kind/assoc
     # - Adds compact unit_measure_classifier_trace_v1 for audit
-    # =========================
     try:
         fn_can = globals().get("canonicalize_numeric_candidate")
         if not callable(fn_can):
@@ -25895,10 +24281,8 @@ def extract_numbers_with_context(text, source_url: str = "", max_results: int = 
         out = out2
     except Exception:
         pass
-    # =========================
 
     return out
-
 
 
 def extract_numbers_with_context_pdf(text):
@@ -26085,9 +24469,7 @@ def render_source_anchored_results(results, query: str):
 
     st.markdown("---")
 
-    # -------------------------
     # Source status
-    # -------------------------
     st.subheader("🔗 Source Verification")
     src_results = results.get("source_results") or []
     if not isinstance(src_results, list):
@@ -26145,9 +24527,7 @@ def render_source_anchored_results(results, query: str):
 
     st.markdown("---")
 
-    # -------------------------
     # Metric changes table
-    # -------------------------
     st.subheader("💰 Metric Changes")
 
     # Prefer the V2 schema if present; fall back to legacy key for older snapshots.
@@ -26274,9 +24654,7 @@ def render_source_anchored_results(results, query: str):
     st.dataframe(table_rows, use_container_width=True)
 
 
-    # -------------------------
     # Debug / tuning views
-    # -------------------------
     # Aggregate rejection reasons across all metrics (quick tuning signal)
     agg_rej = Counter()
     for r in rows:
@@ -26384,9 +24762,7 @@ def render_source_anchored_results(results, query: str):
     st.markdown("---")
 
 
-# =========================================================
 # 9. DASHBOARD RENDERING
-# =========================================================
 
 def detect_x_label_dynamic(labels: list) -> str:
     """Enhanced X-axis detection with better region matching"""
@@ -26484,9 +24860,7 @@ def detect_y_label_dynamic(values: list) -> str:
     else:
         return "Units"
 
-# =========================================================
 # 3A. QUESTION CATEGORIZATION + SIGNALS (DETERMINISTIC)
-# =========================================================
 
 def categorize_question_signals(query: str, qs: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """
@@ -26583,8 +24957,6 @@ def categorize_question_signals(query: str, qs: Optional[Dict[str, Any]] = None)
     return profile
 
 
-
-
 def render_dashboard(
     primary_json: str,
     final_conf: float,
@@ -26596,15 +24968,10 @@ def render_dashboard(
 ):
     """Render the analysis dashboard"""
 
-    # -------------------------
     # Parse primary response
-    # -------------------------
 
-    # =========================
-    # PATCH RD1 (ADDITIVE): safe preview helper
     # - Prevents slice errors when primary_json is dict/list/etc.
     # - Keeps original behavior for strings
-    # =========================
     def _preview(x, limit: int = 1000) -> str:
         try:
             if isinstance(x, (dict, list)):
@@ -26615,35 +24982,24 @@ def render_dashboard(
             pass
             s = repr(x)
         return s[:limit]
-    # =========================
 
     try:
-        # =========================
-        # PATCH RD2 (ADDITIVE): accept dict/list directly
         # - If caller passes dict (primary_data), just use it
         # - If caller passes list, wrap it (keeps downstream dict access safe)
         # - Else try json.loads on string
-        # =========================
         if isinstance(primary_json, dict):
             data = primary_json
         elif isinstance(primary_json, list):
             data = {"_list": primary_json}
         else:
             data = json.loads(primary_json)
-        # =========================
 
     except Exception as e:
         st.error(f"❌ Cannot render dashboard: {e}")
-        # =========================
-        # PATCH RD1 (ADDITIVE): safe preview (no slicing crash)
-        # =========================
         st.code(_preview(primary_json))
-        # =========================
         return
 
-    # -------------------------
     # Helper: metric value formatting (currency + compact units) + RANGE SUPPORT
-    # -------------------------
     def _format_metric_value(m: Any) -> str:
         """
         Format metric values cleanly, with RANGE SUPPORT:
@@ -26655,9 +25011,7 @@ def render_dashboard(
                 return "N/A"
             return str(m)
 
-        # -------------------------
         # Helper: format a single numeric endpoint (val+unit)
-        # -------------------------
         def _format_point(val: Any, unit: str) -> str:
             if val is None or val == "":
                 return "N/A"
@@ -26725,9 +25079,7 @@ def render_dashboard(
 
             return f"{currency_prefix}{formatted}".strip()
 
-        # -------------------------
         # RANGE: prefer value_range if present and meaningful
-        # -------------------------
         unit = (m.get("unit") or "").strip()
         vr = m.get("value_range")
 
@@ -26745,18 +25097,14 @@ def render_dashboard(
         if isinstance(vr_disp, str) and vr_disp.strip():
             return vr_disp.strip()
 
-        # -------------------------
         # POINT VALUE fallback
-        # -------------------------
         val = m.get("value")
         if val is None or val == "":
             return "N/A"
 
         return _format_point(val, unit)
 
-    # -------------------------
     # Header + confidence row
-    # -------------------------
     st.header("📊 Yureeka Market Report")
     st.markdown(f"**Question:** {user_question}")
 
@@ -26770,9 +25118,7 @@ def render_dashboard(
 
     st.markdown("---")
 
-    # -------------------------
     # Executive Summary
-    # -------------------------
     st.subheader("📋 Executive Summary")
     st.markdown(f"**{data.get('executive_summary', 'No summary available')}**")
 
@@ -26787,9 +25133,7 @@ def render_dashboard(
 
     st.markdown("---")
 
-    # -------------------------
     # Key Metrics
-    # -------------------------
     st.subheader("💰 Key Metrics")
     metrics = data.get("primary_metrics", {}) or {}
 
@@ -26826,9 +25170,7 @@ def render_dashboard(
 
     st.markdown("---")
 
-    # -------------------------
     # Key Findings
-    # -------------------------
     st.subheader("🧠 Key Findings")
     kf = data.get("key_findings") or []
     if isinstance(kf, list) and kf:
@@ -26840,9 +25182,7 @@ def render_dashboard(
 
     st.markdown("---")
 
-    # -------------------------
     # Trends / Forecast
-    # -------------------------
     st.subheader("📈 Trends & Forecast")
     tf = data.get("trends_forecast") or []
     if isinstance(tf, list) and tf:
@@ -26859,9 +25199,7 @@ def render_dashboard(
 
     st.markdown("---")
 
-    # -------------------------
     # Sources / Web Context summary
-    # -------------------------
     st.subheader("🔎 Sources & Evidence")
     sources = data.get("sources") or data.get("web_sources") or []
     if isinstance(sources, list) and sources:
@@ -26879,9 +25217,6 @@ def render_dashboard(
             with st.expander("Collector debug counts"):
                 st.json(dbg)
 
-    # =====================================================================
-    # PATCH UI_EXTRA_URLS_TRACE2 (ADDITIVE): show injected extra-URL trace (if any)
-    # =====================================================================
     try:
         exdbg = {}
         if isinstance(web_context, dict):
@@ -26894,14 +25229,12 @@ def render_dashboard(
                 st.json(exdbg)
     except Exception:
         pass
-    # =====================================================================
 
     # Source reliability badges (if provided)
     if isinstance(source_reliability, list) and source_reliability:
         with st.expander("Source reliability"):
             for line in source_reliability[:80]:
                 st.write(line)
-
 
 
 def render_native_comparison(baseline: Dict, compare: Dict):
@@ -27109,12 +25442,8 @@ def render_native_comparison(baseline: Dict, compare: Dict):
         mime="application/json"
     )
 
-# =========================================================
 # 10. MAIN APPLICATION
-# =========================================================
 
-# ==============================================================================
-# PATCH FIX39 (ADDITIVE): Final publish/render unit-required hard gate
 #
 # Why:
 # - Even if upstream selection is tightened, some paths (UI render, sheet publish,
@@ -27129,7 +25458,6 @@ def render_native_comparison(baseline: Dict, compare: Dict):
 #     * blank out Current/new_raw
 #     * set unit_mismatch flag / change_type to "unit_mismatch" where possible
 # - Purely additive; does not refactor upstream pipelines.
-# ==============================================================================
 
 def _fix39_schema_unit_required(metric_def: dict, canonical_key: str = "") -> bool:
     try:
@@ -27310,9 +25638,6 @@ def main():
     # Create tabs
     tab1, tab2 = st.tabs(["🔍 New Analysis", "📈 Evolution Analysis"])
 
-    # =====================
-    # TAB 1: NEW ANALYSIS
-    # =====================
     with tab1:
         query = st.text_input(
             "Enter your question about markets, industries, finance, or economics:",
@@ -27328,15 +25653,10 @@ def main():
             )
 
 
-            # ============================================================
-
-            # PATCH UI_EXTRA_SOURCES_TAB1 (ADDITIVE)
-
             # - Add extra URL injection UI directly to TAB 1 (New Analysis)
 
             # - Does NOT alter behavior unless user supplies URLs
 
-            # ============================================================
 
             extra_sources_text_tab1 = st.text_area(
 
@@ -27351,9 +25671,6 @@ def main():
                 key="ui_extra_sources_tab1",
 
             )
-
-            # ============================================================
-
 
 
         if st.button("🔍 Analyze", type="primary") and query:
@@ -27371,7 +25688,6 @@ def main():
             if use_web:
                 with st.spinner("🌐 Searching the web..."):
 
-                    # ---- ADDITIVE: pass existing snapshots for reuse (Change #3 wiring) ----
                     existing_snapshots = None
 
                     # If you have an analysis dict already in scope, reuse its cache
@@ -27398,9 +25714,6 @@ def main():
                     except Exception:
                         pass
 
-                                        # ============================================================
-                    # PATCH UI_EXTRA_SOURCES2 (ADDITIVE): parse extra source URLs
-                    # ============================================================
                     extra_urls = []
                     try:
                         for _l in str(extra_sources_text_tab1 or "").splitlines():
@@ -27414,11 +25727,7 @@ def main():
                         extra_urls = []
 
 
-                    # ============================================================
-                    # PATCH INJ_DIAG_TAB1_CALL (ADDITIVE): correlate UI extra-URL input into fetch_web_context diagnostics
-                    # ============================================================
                     _analysis_run_id = _inj_diag_make_run_id("analysis")
-                    # ============================================================
 
                     web_context = fetch_web_context(
                         query,
@@ -27428,7 +25737,6 @@ def main():
                         diag_run_id=_analysis_run_id,
                         diag_extra_urls_ui_raw=(extra_sources_text_tab1 or ""),
                     )
-                    # ----------------------------------------------------------------------
 
             if not web_context or not web_context.get("search_results"):
                 st.info("💡 Using AI knowledge without web search")
@@ -27482,41 +25790,30 @@ def main():
                     )
 
 
-                # PATCH FIX2U_EV_CHARGERS_SCHEMA_APPLY_V1 (ADDITIVE)
                 try:
                     fn_fix2u = globals().get("_fix2u_extend_metric_schema_ev_chargers")
                     if callable(fn_fix2u):
                         primary_data["metric_schema_frozen"] = fn_fix2u(primary_data.get("metric_schema_frozen") or {})
                 except Exception:
                     pass
-                # END PATCH FIX2U_EV_CHARGERS_SCHEMA_APPLY_V1
 
-                # =========================================================
-                # PATCH FIX2V_EV_CHARGERS_CAGR_SCHEMA_APPLY_V1 (ADDITIVE)
                 try:
                     fn_fix2v = globals().get("_fix2v_extend_metric_schema_ev_chargers_cagr")
                     if callable(fn_fix2v):
                         primary_data["metric_schema_frozen"] = fn_fix2v(primary_data.get("metric_schema_frozen") or {})
                 except Exception:
                     pass
-                # END PATCH FIX2V_EV_CHARGERS_CAGR_SCHEMA_APPLY_V1
 
-                # =========================================================
-                # PATCH FIX2AB_GLOBAL_EV_SALES_YTD_2025_SCHEMA_APPLY_V1 (ADDITIVE)
                 try:
                     fn_fix2ab = globals().get("_fix2ab_extend_metric_schema_global_ev_sales_ytd_2025")
                     if callable(fn_fix2ab):
                         primary_data["metric_schema_frozen"] = fn_fix2ab(primary_data.get("metric_schema_frozen") or {})
                 except Exception:
                     pass
-                # END PATCH FIX2AB_GLOBAL_EV_SALES_YTD_2025_SCHEMA_APPLY_V1
 
-                # =========================================================
-                # PATCH FIX2D61 (ADDITIVE): Option A schema extension from provisional metrics
                 # - Build schema proposals from primary_metrics_provisional using freeze_metric_schema.
                 # - Auto-promote into metric_schema_frozen (governance can later restrict via allowlist).
                 # - Record proposals/promotions for audit.
-                # =========================================================
                 try:
                     _prov = primary_data.get("primary_metrics_provisional")
                     _schema = primary_data.get("metric_schema_frozen")
@@ -27532,11 +25829,6 @@ def main():
                             primary_data["schema_promoted_v1"] = sorted([str(k) for k in _prov_schema.keys() if str(k) in _schema])
                 except Exception:
                     pass
-                # END PATCH FIX2D61
-                # =========================================================
-
-
-                # =========================================================
 
 
                 # 2.B) FIX2D59: schema-first canonical identity rekey (Analysis)
@@ -27558,12 +25850,8 @@ def main():
                 except Exception:
                     pass
 
-                # =========================================================
 
-                # =========================================================
-                # PATCH FIX2D61 (ADDITIVE): feed provisional into canonical before schema-only enforcement
                 # - After schema promotion + rekey, merge provisional into canonical so bound rows can be retained.
-                # =========================================================
                 try:
                     _prov = primary_data.get("primary_metrics_provisional")
                     if isinstance(_prov, dict) and _prov:
@@ -27576,12 +25864,9 @@ def main():
                         primary_data["primary_metrics_provisional"] = {}
                 except Exception:
                     pass
-                # END PATCH FIX2D61 MERGE
 
-                # PATCH FIX2D60 (ADDITIVE): schema-only canonical enforcement
                 # - After rekeying, keep ONLY schema-bound keys in primary_metrics_canonical.
                 # - Move everything else into primary_metrics_provisional (quarantined for audit).
-                # =========================================================
                 try:
                     _pmc_bound, _pmc_not_bound = _fix2d60_split_schema_bound_only(primary_data.get('primary_metrics_canonical') or {})
                     if isinstance(_pmc_bound, dict):
@@ -27605,7 +25890,6 @@ def main():
                         metric_schema=(primary_data.get("metric_schema_frozen") or {}),
                     )
 
-                # PATCH SV1/EG1 (ADDITIVE): validate frozen schema + enforce evidence gating (analysis-side)
                 try:
                     fn = globals().get("apply_schema_validation_and_evidence_gating")
                     if callable(fn):
@@ -27650,7 +25934,6 @@ def main():
                 }
 
 
-            # REFACTOR31 (ADDITIVE): runtime identity stamp for diagnosing stale-version runs
             try:
                 output.setdefault("debug", {})
                 if isinstance(output.get("debug"), dict):
@@ -27673,8 +25956,6 @@ def main():
             except Exception:
                 pass
 
-            # =====================================================================
-            # PATCH FIX2D72 (REQUIRED): Materialize & persist schema-keyed baseline canonical metrics
             # Why:
             # - Evolution diffing requires previous_data.primary_metrics_canonical to exist and be schema-keyed.
             # - Some analysis paths seed metric_schema_frozen but do not emit primary_metrics_canonical into the
@@ -27683,7 +25964,6 @@ def main():
             # - If primary_metrics_canonical is missing/empty, rebuild it deterministically from the frozen schema
             #   using the same authoritative rebuild helper used by Evolution.
             # - Write into BOTH top-level and results for maximum persistence compatibility.
-            # =====================================================================
             try:
                 _pmc0 = output.get('primary_metrics_canonical')
                 _pmc0_empty = (not isinstance(_pmc0, dict)) or (not _pmc0)
@@ -27706,7 +25986,6 @@ def main():
                                 pass
             except Exception:
                 pass
-            # =====================================================================
 
             with st.spinner("💾 Saving to history..."):
                 if add_to_history(output):
@@ -27746,9 +26025,6 @@ def main():
                 st.write("**Primary Model Response:**")
                 st.json(primary_data)
 
-    # =====================
-    # TAB 2: EVOLUTION ANALYSIS
-    # =====================
     with tab2:
         st.markdown("""
         ### 📈 Track the evolution of key metrics over time using **deterministic source-anchored analysis**.
@@ -27773,20 +26049,16 @@ def main():
             else:
                 st.warning("⚠️ Using session storage")
 
-            # =====================================================================
-            # PATCH FIX40 (ADDITIVE): Scenario B control — Force rebuild toggle
             # - Streamlit Cloud UI has no free-text question editing (dropdown-only).
             # - This toggle lets you intentionally bypass the unchanged fastpath so you
             #   can validate the rebuild path + FIX39 publish invariants.
             # - Pure UI flag; no logic changes unless explicitly enabled.
-            # =====================================================================
             force_rebuild = st.checkbox(
                 "🧪 Force rebuild (ignore snapshot fastpath)",
                 value=False,
                 key="fix41_force_rebuild_toggle",
                 help="Debug only: forces evolution to rebuild even if sources+data are unchanged."
             )
-            # =====================================================================
 
         # ✅ FIX: your codebase uses get_history(), not load_history()
         history = get_history()
@@ -27812,9 +26084,6 @@ def main():
             ]
         )
 
-        # ============================================================
-        # PATCH UI_EXTRA_SOURCES1 (ADDITIVE)
-        # ============================================================
         extra_sources_text = st.text_area(
             "Extra source URLs (optional, one per line)",
             placeholder="https://example.com/report\nhttps://another-source.com/page",
@@ -27849,12 +26118,6 @@ def main():
 
                     try:
 
-
-                        # ============================================================
-
-                        # PATCH INJ_DIAG_EVO_UI (ADDITIVE): pass extra injected URLs + run_id into evolution
-
-                        # ============================================================
 
                         _evo_run_id = _inj_diag_make_run_id("evo")
 
@@ -27898,8 +26161,6 @@ def main():
 
                         )
 
-                        # ============================================================
-
 
                     except Exception as e:
 
@@ -27917,13 +26178,10 @@ def main():
                     interpretation = ""
 
 
-
-                # =====================================================================
                 # REFACTOR25: Analysis→Evolution timing delta (production only)
                 # - Standardize timestamps to UTC with offset (+00:00)
                 # - Compute/stamp run_timing_v1 in Evolution results
                 # - Attach per-row delta fields; blank when current metric is injected-sourced
-                # =====================================================================
                 _analysis_ts_raw = None
                 _analysis_ts_norm = None
                 _evo_ts = _yureeka_now_iso_utc()
@@ -27954,12 +26212,9 @@ def main():
                     _delta_warnings.append("delta_uncomputed_exception")
 
 
-                # ============================================================
-                # PATCH REFACTOR75_SUPPRESS_DELTA_ON_INJECTION_V1 (ADDITIVE)
                 # Why:
                 # - Injection runs are for diff activation/diagnostics; Δt is not meaningful.
                 # - Suppress Δt iff the UI provided injected/extra URLs (inj_trace_v1.ui_norm non-empty).
-                # ============================================================
                 try:
                     _ui_norm = _first_present(results or {}, [
                         ["debug", "inj_trace_v1", "ui_norm"],
@@ -27973,7 +26228,6 @@ def main():
                         _delta_human = ""
                 except Exception:
                     pass
-                # ================= END PATCH REFACTOR75_SUPPRESS_DELTA_ON_INJECTION_V1
 
 # Attach run timing to Evolution results (debug + non-debug copy)
                 try:
@@ -28003,7 +26257,6 @@ def main():
                     pass
 
 
-                # === REFACTOR80: suppress results.run_delta_* on true injection runs (ui/intake only) ===
                 try:
                     def _refactor80_is_injection_active(_res: dict) -> bool:
                         """Return True only when the user provided injection URLs (ui_norm/intake_norm).
@@ -28323,7 +26576,6 @@ def main():
                     return
 
                 with st.spinner("🌐 Fetching current data..."):
-                    # ---- ADDITIVE: pass existing snapshots for reuse (Change #3 wiring) ----
                     existing_snapshots = None
 
                     try:
@@ -28343,7 +26595,6 @@ def main():
                         num_sources=3,
                         existing_snapshots=existing_snapshots,
                     )
-                    # ----------------------------------------------------------------------
 
 
                 if not web_context:
@@ -28384,12 +26635,9 @@ def main():
                     st.error("❌ Analysis failed")
 
 
-# ======================================================================
-# PATCH SV1/EG1 (ADDITIVE): Schema validation + Evidence gating (analysis)
 # - Additive only: does not remove or refactor existing code.
 # - Only applied in TAB 1 (New Analysis) via a small post-pass hook.
 # - Does NOT alter evolution behavior (no changes to evolution functions).
-# ======================================================================
 
 def validate_metric_schema_frozen(metric_schema_frozen: dict) -> dict:
     """
@@ -28576,8 +26824,6 @@ def apply_schema_validation_and_evidence_gating(primary_data: dict) -> dict:
     return primary_data
 
 
-
-# ===================== PATCH RMS_UNWRAP1 (ADDITIVE) =====================
 def _normalize_prev_response_for_rebuild(previous_data):
     """Best-effort normalization of the loaded baseline object for rebuild dispatch.
     - If previous_data is a JSON string, parse it.
@@ -28610,7 +26856,6 @@ def _normalize_prev_response_for_rebuild(previous_data):
                     return pd
     except Exception:
         return previous_data
-# =================== END PATCH RMS_UNWRAP1 (ADDITIVE) ===================
 
 
 if __name__ == "__main__":
@@ -28618,7 +26863,6 @@ if __name__ == "__main__":
     pass
 
 
-# ===================== PATCH RMS_DISPATCH2 (ADDITIVE) =====================
 def _get_metric_anchors_any(prev_response: dict) -> dict:
     """Best-effort retrieval of metric_anchors from any plausible location (additive helper)."""
     try:
@@ -28650,10 +26894,7 @@ def _coerce_prev_response_any(previous_data):
         return previous_data if isinstance(previous_data, dict) else {}
     except Exception:
         return {}
-# =================== END PATCH RMS_DISPATCH2 (ADDITIVE) ===================
 
-# =====================================================================
-# PATCH FIX16 (ADDITIVE): close analysis↔evolution metric lock-down gaps
 # Goals (deterministic, no re-architecture):
 #   1) De-year schema keyword scoring for non-year metrics
 #   2) Hard unit expectation gating (unitless years can't win currency/percent)
@@ -28661,7 +26902,6 @@ def _coerce_prev_response_any(previous_data):
 # Notes:
 #   - Additive only: we define FIX16 rebuild functions and re-wire dispatch
 #   - No refetch, no heuristics beyond schema/unit/anchors
-# =====================================================================
 
 def _fix16_is_year_token(s: str) -> bool:
     try:
@@ -28754,7 +26994,6 @@ def _fix16_unit_compatible(c: dict, expected_dim: str) -> bool:
       - Some legacy call sites pass (metric_spec_dict, candidate_dict). In that case we swap.
     """
     try:
-        # ---- Back-compat: called as (metric_spec, candidate)
         if isinstance(expected_dim, dict) and isinstance(c, dict):
             spec_like = any(k in c for k in ("dimension", "unit_family", "expected_unit_family", "canonical_key", "name"))
             cand_like = any(k in expected_dim for k in ("raw", "value", "value_norm", "unit", "unit_tag", "unit_family", "base_unit"))
@@ -28798,7 +27037,6 @@ def _fix16_unit_compatible(c: dict, expected_dim: str) -> bool:
             except Exception:
                 return False
 
-        # ---- Percent: require explicit percent marker; reject bare year tokens mis-tagged as percent
         if dim == "percent":
             if not _has_percent_marker():
                 return False
@@ -28816,7 +27054,6 @@ def _fix16_unit_compatible(c: dict, expected_dim: str) -> bool:
                 return cand_fam == "percent"
             return True
 
-        # ---- Currency: require explicit currency marker (raw or unit); block magnitude-only tokens without currency context
         if dim == "currency":
             if not _has_currency_marker():
                 return False
@@ -28824,7 +27061,6 @@ def _fix16_unit_compatible(c: dict, expected_dim: str) -> bool:
                 return cand_fam == "currency"
             return True
 
-        # ---- Magnitude / count-like: must NOT look like currency or percent
         if dim == "magnitude":
             if cand_fam in ("currency", "percent", "rate", "ratio"):
                 return False
@@ -28832,7 +27068,6 @@ def _fix16_unit_compatible(c: dict, expected_dim: str) -> bool:
                 return False
             return True
 
-        # ---- Other dims: keep legacy behavior (soft), but enforce unit presence when truly required
         requires_unit = dim in ("rate", "ratio")
         if requires_unit and not _fix16_candidate_has_any_unit(c):
             return False
@@ -28842,7 +27077,6 @@ def _fix16_unit_compatible(c: dict, expected_dim: str) -> bool:
         return True
     except Exception:
         return True
-
 
 
 def _fix16_candidate_allowed(c: dict, metric_spec: dict, canonical_key: str = "") -> bool:
@@ -28865,7 +27099,6 @@ def _fix16_candidate_allowed(c: dict, metric_spec: dict, canonical_key: str = ""
         # Extra deterministic guard: unitless year-like numbers should never compete
         # for non-year metrics even if upstream tagging missed them.
         if not _fix16_metric_is_year_like(metric_spec, canonical_key=canonical_key):
-            # PATCH FIX2B_RANGE_SCHEMA_V1 (ADDITIVE): range uses schema-unit value when available
             v = c.get("value") if c.get("value") is not None else c.get("value_norm")
             u = (c.get("base_unit") or c.get("unit") or "").strip()
             if u == "" and isinstance(v, (int, float)):
@@ -28932,7 +27165,6 @@ def rebuild_metrics_from_snapshots_with_anchors_fix16(prev_response: dict, basel
         if not _fix16_candidate_allowed(c, spec, canonical_key=canonical_key):
             continue
 
-            # PATCH FIX2D2U: shared semantic gate (local snippet required tokens)
             try:
                 _ok_u, _why_u = _fix2d2u_semantic_eligible_global(c, spec, str(canonical_key))
                 if not _ok_u:
@@ -28961,9 +27193,6 @@ def rebuild_metrics_from_snapshots_with_anchors_fix16(prev_response: dict, basel
     return rebuilt
 
 
-
-# =====================================================================
-# PATCH FIX2S_OBSERVED_TO_CANONICAL_RULES_V1 (ADDITIVE)
 # Objective:
 # - Deterministically map a selected set of injected/observed extractions into
 #   existing Analysis canonical_keys so they participate in diffing.
@@ -28971,7 +27200,6 @@ def rebuild_metrics_from_snapshots_with_anchors_fix16(prev_response: dict, basel
 #   with deterministic unit_tag/measure_kind tagging.
 # - Canonical authority remains single-sourced via _analysis_canonical_final_selector_v1
 #   (this mapping only influences candidate eligibility for a target canonical_key).
-# =====================================================================
 
 def _fix2s_extract_year_from_candidate(c: dict) -> int:
     """Deterministically extract a 4-digit year from candidate fields or text."""
@@ -29027,7 +27255,6 @@ def _fix2s_apply_observed_to_canonical_rules_v1(candidates: list, metric_schema:
     if not isinstance(metric_schema, dict) or not metric_schema:
         return diag
 
-    # ---- Rule table (selected observed keys -> target canonical keys) ----
     # NOTE: target_key must already exist in Analysis' canonical namespace (schema).
     # We only promote if target_key exists in metric_schema.
     rule_table = [
@@ -29163,9 +27390,6 @@ def _fix2s_apply_observed_to_canonical_rules_v1(candidates: list, metric_schema:
     except Exception:
         return diag
 
-# =====================================================================
-# END PATCH FIX2S_OBSERVED_TO_CANONICAL_RULES_V1
-# =====================================================================
 
 def rebuild_metrics_from_snapshots_schema_only_fix16(prev_response: dict, baseline_sources_cache, web_context=None) -> dict:
     """
@@ -29197,8 +27421,6 @@ def rebuild_metrics_from_snapshots_schema_only_fix16(prev_response: dict, baseli
     else:
         sources = []
 
-    # =========================================================
-    # PATCH FIX2AA_INJECTED_SNAPSHOT_ADMISSION_V1 (ADDITIVE)
     # Purpose:
     #   The Analysis-parity rebuild consumes a "snapshot pool" shaped like:
     #     [{source_url, extracted_numbers, ...}, ...]
@@ -29213,7 +27435,6 @@ def rebuild_metrics_from_snapshots_schema_only_fix16(prev_response: dict, baseli
     # Non-negotiables:
     #   - additive only; no behavior change for non-injected sources
     #   - no domain hardcoding; uses diag_injected_urls admitted/ui list
-    # =========================================================
     _fix2aa_diag = {
         "enabled": True,
         "source_results_seen": 0,
@@ -29287,7 +27508,6 @@ def rebuild_metrics_from_snapshots_schema_only_fix16(prev_response: dict, baseli
             web_context["fix2aa_injected_snapshot_admission_v1"] = _fix2aa_diag
     except Exception:
         pass
-    # END PATCH FIX2AA_INJECTED_SNAPSHOT_ADMISSION_V1
 
     candidates = []
     for s in sources:
@@ -29303,12 +27523,9 @@ def rebuild_metrics_from_snapshots_schema_only_fix16(prev_response: dict, baseli
                 c2.setdefault("source_url", url)
                 candidates.append(c2)
 
-    # =========================================================
-    # PATCH FIX2V_INJECTED_CANDIDATE_BINDING_V1 (ADDITIVE)
     #   - Only binds candidates originating from injected URLs (admitted/ui list)
     #   - Uses exact substring + explicit year guards (no fuzzy matching)
     #   - Adds a per-candidate force key so only the intended schema slot competes
-    # =========================================================
     _fix2v_injected_norm_set = set()
     try:
         if isinstance(web_context, dict):
@@ -29389,8 +27606,6 @@ def rebuild_metrics_from_snapshots_schema_only_fix16(prev_response: dict, baseli
     except Exception:
         pass
 
-    # =====================================================================
-    # PATCH FIX2Y_CANDIDATE_AUTOPSY_V1 (ADDITIVE)
     # Purpose:
     #   Provide a deterministic "why not canonical?" autopsy for targeted keys.
     #   Records:
@@ -29402,7 +27617,6 @@ def rebuild_metrics_from_snapshots_schema_only_fix16(prev_response: dict, baseli
     #   - uses existing FIX16 gates; does not bypass selector
     # Scope:
     #   Only for the new EV-charger keys introduced in FIX2U/FIX2V.
-    # =====================================================================
     _fix2y_targets = set([
         "global_ev_chargers_2040__unit_count",
         "global_ev_chargers_cagr_2026_2040__percent",
@@ -29465,13 +27679,7 @@ def rebuild_metrics_from_snapshots_schema_only_fix16(prev_response: dict, baseli
             return 0
 
     # We'll populate _fix2y_autopsy inside the schema loop when the key matches.
-    # =====================================================================
-    # END PATCH FIX2Y_CANDIDATE_AUTOPSY_V1
-    # =====================================================================
 
-# =====================================================================
-    # PATCH FIX2W_BINDING_RULE_EVAL_SAMPLES_V1 (ADDITIVE)
-    # =====================================================================
     try:
         _eval_samples = []
         _eligible_but_unbound = 0
@@ -29536,16 +27744,11 @@ def rebuild_metrics_from_snapshots_schema_only_fix16(prev_response: dict, baseli
             web_context["fix2v_candidate_binding_v1"]["eligible_but_unbound_count"] = int(_eligible_but_unbound)
     except Exception:
         pass
-    # END PATCH FIX2W_BINDING_RULE_EVAL_SAMPLES_V1
-    # END PATCH FIX2V_INJECTED_CANDIDATE_BINDING_V1
 
-    # =========================================================
-    # PATCH FIX2Z_SCHEMA_BINDING_ADMISSION_V1 (ADDITIVE)
     #   - Deterministically synthesize schema-bound candidates from extracted_numbers
     #   - Injected-only (domain-agnostic): only candidates proven from injected URL set
     #   - No fuzzy matching: exact substring keyword hits + unit-family compatibility
     #   - Does NOT bypass the Analysis canonical selector; it only increases eligible pool
-    # =========================================================
     try:
         _fix2z_hits = []
         _fix2z_added = 0
@@ -29710,9 +27913,6 @@ def rebuild_metrics_from_snapshots_schema_only_fix16(prev_response: dict, baseli
             web_context["fix2z_schema_binding_admission_v1"]["hits"] = _fix2z_hits
     except Exception:
         pass
-    # END PATCH FIX2Z_SCHEMA_BINDING_ADMISSION_V1
-    # =========================================================
-    # =========================================================
 
     def _norm(s: str) -> str:
         return re.sub(r"[^a-z0-9]+", " ", (s or "").lower()).strip()
@@ -29754,9 +27954,6 @@ def rebuild_metrics_from_snapshots_schema_only_fix16(prev_response: dict, baseli
         expected_dim = _fix16_expected_dimension(spec)
 
 
-        # =====================================================================
-        # PATCH FIX2Y_CANDIDATE_AUTOPSY_V1 (ADDITIVE): per-key autopsy snapshot
-        # =====================================================================
         if canonical_key in _fix2y_targets:
             try:
                 _a = {
@@ -29823,9 +28020,6 @@ def rebuild_metrics_from_snapshots_schema_only_fix16(prev_response: dict, baseli
                 _fix2y_autopsy[canonical_key] = _a
             except Exception:
                 pass
-        # =====================================================================
-        # END PATCH FIX2Y_CANDIDATE_AUTOPSY_V1
-        # =====================================================================
 
         best = None
         best_tie = None
@@ -29840,7 +28034,6 @@ def rebuild_metrics_from_snapshots_schema_only_fix16(prev_response: dict, baseli
             if not _fix16_candidate_allowed(c, spec, canonical_key=canonical_key):
                 continue
 
-            # PATCH FIX2D2U: semantic eligibility gate (parity with evolution schema rebuild)
             try:
                 _ok_u, _why_u = _fix2d2u_semantic_eligible(c, spec, canonical_key)
                 if not _ok_u:
@@ -29848,7 +28041,6 @@ def rebuild_metrics_from_snapshots_schema_only_fix16(prev_response: dict, baseli
             except Exception:
                 pass
 
-            # PATCH FIX2D2U: enforce shared semantic eligibility (parity with Evolution)
             try:
                 _ok_u, _why_u = _fix2d2u_semantic_eligible(c, spec, canonical_key)
                 if not _ok_u:
@@ -29924,22 +28116,10 @@ def rebuild_metrics_from_snapshots_schema_only_fix16(prev_response: dict, baseli
     return rebuilt
 
 
-# =====================================================================
-# PATCH FIX16 (ADDITIVE): wire FIX16 rebuilds into the existing dispatch
 # - Keep names identical so evolution uses these as the LAST definitions
 # - We expose both functions while preserving older ones for reference
-# =====================================================================
 
 
-
-
-# =====================================================================
-# END PATCH FIX16
-# =====================================================================
-
-
-# =====================================================================
-# PATCH PH2B_S1 (ADDITIVE): Extract a PURE analysis-canonical final selector (v1)
 # Goal:
 #   - Provide exactly ONE authoritative selector for dashboard-facing "Current"
 #   - Treat candidate.value_norm as schema units (no base-unit assumption)
@@ -29949,7 +28129,6 @@ def rebuild_metrics_from_snapshots_schema_only_fix16(prev_response: dict, baseli
 #   - This is a single-metric selector. Batch rebuild helpers may call it.
 #   - Reuses FIX16 hard eligibility gates (_fix16_candidate_allowed) + FIX16 scoring.
 #   - Adds optional preferred/anchor lock when anchors are present (stays in preferred source).
-# =====================================================================
 
 def _ph2b_norm_url(url: str) -> str:
     try:
@@ -29960,13 +28139,9 @@ def _ph2b_norm_url(url: str) -> str:
         return str((url or "").strip())
 
 
-
-# =====================================================================
-# PATCH FIX2D2U (ADD): Shared semantic eligibility gate (Analysis parity)
 # - Uses LOCAL context_snippet (tight window) instead of page-wide context_window.
 # - Prevents cross-metric pollution in schema-only rebuild paths.
 # - Applied in BOTH Analysis selector and Evolution schema-only rebuild(s).
-# =====================================================================
 
 def _fix2d2u_norm_text(s: str) -> str:
     try:
@@ -30056,15 +28231,11 @@ def _fix2d2u_semantic_eligible_global(cand: dict, spec: dict, canonical_key: str
         return True, ""
 
 
-
-# =====================================================================
-# PATCH FIX2D2V (ADDITIVE): enforce semantic gates at schema_only_rebuild
 # commit point using a tight local window around the numeric token.
 # - Prevents cross-metric pollution where a China sales snippet populates
 #   chargers/investment/CAGR schema keys.
 # - Requires canonical-key year tokens to appear locally (if present).
 # - Logs reject counts into web_context.debug.fix2d2v_schema_commit_rejects.
-# =====================================================================
 
 def _fix2d2v_tight_window(cand: dict, width: int = 120) -> str:
     try:
@@ -30119,15 +28290,7 @@ def _fix2d2v_semantic_eligible_commit(cand: dict, spec: dict, canonical_key: str
     finally:
         pass
 
-# =====================================================================
-# END PATCH FIX2D2V
-# =====================================================================
-# =====================================================================
-# END PATCH FIX2D2U
-# =====================================================================
 
-# =====================================================================
-# PATCH FIX2D63 (ADDITIVE): harden schema_only_rebuild_fix17 selection
 # against injected-year pollution for unit/count metrics.
 #
 # Motivation:
@@ -30141,7 +28304,6 @@ def _fix2d2v_semantic_eligible_commit(cand: dict, spec: dict, canonical_key: str
 #   - Reject yearlike numeric candidates unless they carry unit evidence.
 #   - Prefer candidates with unit evidence (unit_tag/unit/unit_family/context).
 #   - Keep existing bare-year token guards as a last-mile safety net.
-# =====================================================================
 
 def _fix2d63_is_yearlike_value(cand: dict) -> bool:
     try:
@@ -30202,9 +28364,6 @@ def _fix2d63_schema_expects_unit_or_count(canonical_key: str, spec: dict) -> boo
     except Exception:
         return False
 
-# =====================================================================
-# END PATCH FIX2D63
-# =====================================================================
 
 def _analysis_canonical_final_selector_v1(
     canonical_key: str,
@@ -30286,7 +28445,6 @@ def _analysis_canonical_final_selector_v1(
 
     # Candidate filtering
     cands = [c for c in (candidates or []) if isinstance(c, dict)]
-    # PATCH FIX2B_TRACE_V1 (ADDITIVE): candidate counts for trace
     try:
         meta["candidate_count_in"] = int(len(cands))
     except Exception:
@@ -30301,7 +28459,6 @@ def _analysis_canonical_final_selector_v1(
                 cands_pref.append(c)
         # If preferred exists but yields zero candidates, we keep empty (hard lock).
         cands = cands_pref
-        # PATCH FIX2B_TRACE_V1 (ADDITIVE): preferred-locked candidate count
         try:
             meta["candidate_count_pref"] = int(len(cands))
         except Exception:
@@ -30310,12 +28467,9 @@ def _analysis_canonical_final_selector_v1(
     eligible = []
     for c in cands:
         try:
-            # =====================================================================
-            # PATCH PH2B_UF1 (ADDITIVE): Fill missing unit_family/unit_cmp deterministically
             # Many snapshot candidates omit unit_family even when unit_tag/raw clearly indicates
             # magnitude/percent/currency. The analysis selector treats unit_family as authoritative
             # for schema gating; leaving it blank causes false ineligibility (empty Current).
-            # =====================================================================
             try:
                 if isinstance(c, dict) and not str(c.get("unit_family") or "").strip():
                     _raw = str(c.get("raw") or "")
@@ -30370,12 +28524,9 @@ def _analysis_canonical_final_selector_v1(
             except Exception:
                 pass
 
-            # =====================================================================
-            # PATCH FIX2B_SEL23 (ADDITIVE): unit-family hard gating + year suppression + scaled-magnitude unit evidence
             # - Rejects percent/currency evidence when schema expects magnitude (prevents % hijacks).
             # - Suppresses unitless bare years (e.g., 2030) as candidates.
             # - Enforces unit evidence for scaled magnitude schemas (million/billion/etc.).
-            # =====================================================================
             try:
                 _raw0 = str(c.get("raw") or "").strip()
                 _raw0_l = _raw0.lower()
@@ -30386,12 +28537,9 @@ def _analysis_canonical_final_selector_v1(
                 _cand_family = str(c.get("unit_family") or "").strip().lower()
                 _cand_ucmp = str(c.get("unit_cmp") or c.get("unit_tag") or "").strip().lower()
                 _spec_family = str(spec.get("unit_family") or "").strip().lower()
-                # =====================================================================
-                # PATCH FIX2B_SCHEMAFAM_INFER_V1 (ADDITIVE):
                 # If schema.unit_family is missing/blank, infer expected family deterministically
                 # from schema.dimension / canonical_key suffixes using existing FIX17 helper.
                 # This prevents silent bypass of percent/currency hard-gates.
-                # =====================================================================
                 try:
                     if not _spec_family:
                         _fn_exp = globals().get("_fix17_expected_dimension")
@@ -30461,14 +28609,11 @@ def _analysis_canonical_final_selector_v1(
                 except Exception:
                     pass
 
-                # =====================================================================
-                # PATCH FIX2B_SCALE_EV_V2 (2026-01-10)
                 # Purpose: Fix broken scale/countish gating where earlier patch strings were truncated
                 #          (e.g., "milli..." / "uni...") and therefore never matched.
                 #          Enforce: if schema implies scaled magnitude (million/billion/etc.), unit evidence
                 #          must exist in the candidate (unit_tag/unit_cmp/raw/context), else hard-block.
                 # Safety: additive-only; does not change fastpath/hashing/injection/snapshot attach.
-                # =====================================================================
                 try:
                     _spec_nm2 = str(spec.get("name") or spec.get("label") or "").lower()
                     _spec_ut2 = str(_spec_ut or "").lower()
@@ -30531,12 +28676,7 @@ def _analysis_canonical_final_selector_v1(
                         pass
                 except Exception:
                     pass
-                # =====================================================================
-                # PATCH FIX2B_SCALE_EV_V2 END
-                # =====================================================================
 
-                # =====================================================================
-                # PATCH FIX2B_SCALE_EV_V1 (ADDITIVE): require *scale* evidence for scaled magnitude schemas
                 # Why:
                 # - Earlier gating treated inferred unit_family='magnitude' as "unit evidence", allowing unitless
                 #   integers (e.g., 170) to pass for schemas like "million units".
@@ -30544,7 +28684,6 @@ def _analysis_canonical_final_selector_v1(
                 # Safety:
                 # - Only applies when schema implies a scale (million/billion/thousand/trillion or M/B/K/T).
                 # - Does NOT change fastpath/hashing/injection/snapshot attach.
-                # =====================================================================
                 try:
                     _scaled2 = False
                     try:
@@ -30560,11 +28699,8 @@ def _analysis_canonical_final_selector_v1(
                             str(c.get("context_snippet") or c.get("context") or ""),
                         ])).lower()
                         _has_scale_ev = any(tok in _blob for tok in ("million", "billion", "trillion", "thousand", "mn", "bn")) or bool(re.search(r"\b[mbkt]\b", _blob))
-                        # =================================================================
-                        # PATCH FIX2B_SCALE_MATCH_V1 (ADDITIVE):
                         # For scaled schemas, require scale to *match* the schema (e.g., million vs billion).
                         # Prevents wrong-scale candidates from surviving for 'million units' schemas.
-                        # =================================================================
                         try:
                             _schema_scale = ""
                             if "million" in _spec_ut or _spec_ut == "m":
@@ -30598,15 +28734,11 @@ def _analysis_canonical_final_selector_v1(
                     pass
             except Exception:
                 pass
-            # =====================================================================
         except Exception:
             pass
             continue
-        # =====================================================================
-        # PATCH FIX2D17 (ADDITIVE): Reject bare-year tokens and enforce domain keyword overlap
         # Prevents year tokens like 2030 from being committed as metric values for non-year metrics,
         # and prevents unrelated snippets (e.g., "By 2030 ... sales ...") from satisfying chargers/investment metrics.
-        # =====================================================================
         try:
             _fix2d17_spec = spec if isinstance(spec, dict) else {}
             _fix2d17_ckey = str(canonical_key or "")
@@ -30668,7 +28800,6 @@ def _analysis_canonical_final_selector_v1(
         eligible.append(c)
 
     meta["eligible_count"] = int(len(eligible) or 0)
-    # PATCH FIX2B_TRACE_V1 (ADDITIVE): eligible candidate count
     try:
         meta["candidate_count_eligible"] = int(len(eligible))
     except Exception:
@@ -30715,9 +28846,6 @@ def _analysis_canonical_final_selector_v1(
         meta["blocked_reason"] = "no_winner_after_scoring"
         return None, meta
 
-    # =====================================================================
-    # PATCH FIX2D17 (ADDITIVE): Last-mile reject if winner is a bare-year token for non-year metrics
-    # =====================================================================
     try:
         _raw = str(best.get("raw") or "")
         try:
@@ -30795,12 +28923,8 @@ def _analysis_canonical_final_selector_v1(
 
     meta["anchor_used"] = bool(out.get("anchor_used"))
     meta["chosen_source_url"] = _ph2b_norm_url(out.get("source_url") or "")
-    # =====================================================================
 
-    # =====================================================================
-    # PATCH FIX2B_TRACE_V2 (ADDITIVE): richer trace fields (NO behavior change)
     # - Adds winner_candidate_debug + would_block_reason for scaled schemas.
-    # =====================================================================
     try:
         _winner = out if isinstance(out, dict) else {}
         meta["winner_candidate_debug"] = {
@@ -30831,9 +28955,7 @@ def _analysis_canonical_final_selector_v1(
     except Exception:
         pass
 
-    # PATCH FIX2B_TRACE_V1 (ADDITIVE): emit selector trace payload
     # - Does NOT change selection; purely diagnostic.
-    # =====================================================================
     try:
         meta["analysis_selector_trace_v1"] = {
             "selector_used": meta.get("selector_used"),
@@ -30895,16 +29017,10 @@ def rebuild_metrics_from_snapshots_analysis_canonical_v1(prev_response: dict, ba
                     c2["source_url"] = url
                 candidates.append(c2)
 
-    # =====================================================================
-    # PATCH FIX2S_APPLY_RULES_IN_ANALYSIS_CANONICAL_REBUILD (ADDITIVE)
-    # =====================================================================
     try:
         _fix2s_apply_observed_to_canonical_rules_v1(candidates, metric_schema, web_context=web_context)
     except Exception:
         pass
-    # =====================================================================
-    # END PATCH FIX2S_APPLY_RULES_IN_ANALYSIS_CANONICAL_REBUILD
-    # =====================================================================
     def _norm(s: str) -> str:
         return re.sub(r"[^a-z0-9]+", " ", (s or "").lower()).strip()
 
@@ -30921,14 +29037,10 @@ def rebuild_metrics_from_snapshots_analysis_canonical_v1(prev_response: dict, ba
         except Exception:
             return ("", "", 0, "", "", 0.0)
 
-    # =====================================================================
-    # PATCH FIX2D16 (ADD): Disable FIX2D15 gating; rely on last-mile bare-year reject instead
     _fix2d16_disable_fix2d15 = False
-    # PATCH FIX2D17: Deprecate FIX2D16 soft-match/year guards
     _fix2d17_disable_fix2d16 = True
 
     # (Legacy block retained for context but disabled)
-    # PATCH FIX2D15 (ADD): Harden schema-only rebuild candidate eligibility
     # Goals:
     #   1) Prevent bare-year tokens (e.g., 2030) from being selected as metric values
     #      when the metric does NOT explicitly expect a year-as-value.
@@ -30938,7 +29050,6 @@ def rebuild_metrics_from_snapshots_analysis_canonical_v1(prev_response: dict, ba
     # Notes:
     #   - This patch intentionally supersedes (and replaces) FIX2D15's earlier guard.
     #   - Keep changes local to schema_only_rebuild_fix17 selection.
-    # =====================================================================
 
     def _fix2d15_expects_year_value(spec: dict, canonical_key: str) -> bool:
         try:
@@ -31024,14 +29135,11 @@ def rebuild_metrics_from_snapshots_analysis_canonical_v1(prev_response: dict, ba
         except Exception:
             return []
 
-    # =====================================================================
-    # PATCH FIX2D19 (ADD): Required domain token binding
     # - Prevent generic keyword hits (e.g., 'global', 'market') from allowing
     #   unrelated candidates (e.g., year tokens) to satisfy domain-specific
     #   metrics like chargers/investment.
     # - For certain metrics, require at least one strong domain token to
     #   appear in candidate context/raw.
-    # =====================================================================
     def _fix2d19_required_domain_tokens(canonical_key: str, spec: dict) -> list:
         try:
             if bool(globals().get("_FIX2D20_DISABLE_FIX2D19", False)):
@@ -31060,15 +29168,10 @@ def rebuild_metrics_from_snapshots_analysis_canonical_v1(prev_response: dict, ba
             return []
 
 
-
-
-    # =====================================================================
-    # PATCH FIX2D22 (ADD): Eligibility-before-scoring gate for schema-only rebuild
     # - This is the decisive fix: reject invalid candidates *before* ranking.
     # - Prevents bare year tokens (e.g., 2024/2030/2030.0) from ever being
     #   eligible evidence for non-year metrics.
     # - Enforces unit-family requirements and required domain-token binding.
-    # =====================================================================
     def _fix2d22_candidate_eligible(cand: dict, spec: dict, canonical_key: str, kw_norm: list) -> (bool, str):
         try:
             # 1) Hard bare-year rejection unless metric explicitly expects year-as-value
@@ -31083,7 +29186,6 @@ def rebuild_metrics_from_snapshots_analysis_canonical_v1(prev_response: dict, ba
             ctx = _norm(cand.get('context_snippet') or cand.get('context') or cand.get('context_window') or '')
             rawn = _norm(cand.get('raw') or '')
 
-            # PATCH FIX2D2V (ADD): require explicit year tokens from canonical_key to appear locally
             try:
                 _yrs = re.findall(r"\b(19\d{2}|20\d{2})\b", str(canonical_key or ""))
                 if _yrs:
@@ -31205,7 +29307,6 @@ def rebuild_metrics_from_snapshots_analysis_canonical_v1(prev_response: dict, ba
     # Debug sink
     dbg = prev_response.setdefault("_evolution_rebuild_debug", {})
     dbg.setdefault("schema_only_zero_hit_metrics_fix17", [])
-    # PATCH FIX2D15 (ADD): diagnostics for schema-only gating
     dbg.setdefault("fix2d15_reject_reasons", {})
     dbg.setdefault("fix2d22_reject_reasons", {})
     dbg.setdefault("fix2d22_year_reject_samples", [])
@@ -31240,8 +29341,6 @@ def rebuild_metrics_from_snapshots_analysis_canonical_v1(prev_response: dict, ba
         best_tie = None
         best_hits = 0
 
-        # =====================================================================
-        # PATCH FIX2D2S (ADD): Prefer non-year candidates when available
         # Motivation:
         #   schema_only_rebuild can still end up selecting a bare year token (e.g. 2024/2026)
         #   when that token appears in the same snippet as the real metric value.
@@ -31252,7 +29351,6 @@ def rebuild_metrics_from_snapshots_analysis_canonical_v1(prev_response: dict, ba
         # Notes:
         #   - This is a local, deterministic filter applied BEFORE keyword scoring.
         #   - It does not weaken year-blocking; it strengthens selection parity.
-        # =====================================================================
         _fix2d2s_expect_year = False
         try:
             _fix2d2s_expect_year = bool(_fix2d15_expects_year_value(spec, str(canonical_key)))
@@ -31266,7 +29364,6 @@ def rebuild_metrics_from_snapshots_analysis_canonical_v1(prev_response: dict, ba
             ok, _reason = _fix17_candidate_allowed_with_reason(_c, spec, canonical_key=canonical_key)
             if not ok:
                 continue
-            # PATCH FIX2D2U: shared semantic eligibility gate (local required tokens)
             try:
                 # FIX2D63: bugfix - use the correct candidate variable (_c), not the outer loop's c.
                 _ok_u, _why_u = _fix2d2u_semantic_eligible(_c, spec, canonical_key=str(canonical_key))
@@ -31319,16 +29416,12 @@ def rebuild_metrics_from_snapshots_analysis_canonical_v1(prev_response: dict, ba
                 dbg['fix2d2s_filtered_bare_year_tokens'] = int(dbg.get('fix2d2s_filtered_bare_year_tokens') or 0) + int(max(0, _before - len(_fix2d2s_eligible)))
             except Exception:
                 pass
-        # =====================================================================
-        # END PATCH FIX2D2S
-        # =====================================================================
 
         for c in (_fix2d2s_eligible or []):
             ok, _reason = _fix17_candidate_allowed_with_reason(c, spec, canonical_key=canonical_key)
             if not ok:
                 continue
 
-            # PATCH FIX2D2U: semantic eligibility gate (local snippet required tokens)
             try:
                 _ok_u, _why_u = _fix2d2u_semantic_eligible(c, spec, str(canonical_key))
                 if not _ok_u:
@@ -31378,11 +29471,8 @@ def rebuild_metrics_from_snapshots_analysis_canonical_v1(prev_response: dict, ba
             dbg["schema_only_zero_hit_metrics_fix17"].append({"canonical_key": canonical_key, "reason": "no_keyword_hits"})
             continue
 
-        # =====================================================================
-        # PATCH FIX2D16 (ADD): Last-mile bare-year rejection for schema-only promotions
         # Even if earlier eligibility gates miss it, prevent committing a pure year
         # (e.g., 2030) as the metric value for non-year metrics.
-        # =====================================================================
         try:
             if _fix2d15_is_bare_year_token(best) and not _fix2d15_expects_year_value(spec, str(canonical_key)):
                 dbg.setdefault("fix2d16_rejected_bare_year_commit", 0)
@@ -31398,7 +29488,6 @@ def rebuild_metrics_from_snapshots_analysis_canonical_v1(prev_response: dict, ba
                 continue
         except Exception:
             pass
-        # =====================================================================
 
 
         rebuilt[canonical_key] = {
@@ -31422,12 +29511,9 @@ def rebuild_metrics_from_snapshots_analysis_canonical_v1(prev_response: dict, ba
     return rebuilt
 
 
-# =====================================================================
-# PATCH FIX2D2U (ADD): Shared semantic eligibility gate (Analysis parity)
 # - Uses LOCAL context_snippet (not page-wide context_window)
 # - Prevents cross-metric pollution in schema-only rebuild and other projections
 # - Called by BOTH Analysis selector and Evolution rebuild paths
-# =====================================================================
 
 _FIX2D2U_ENABLE = True
 
@@ -31517,29 +29603,13 @@ def _fix2d2u_semantic_eligible(cand: dict, spec: dict, canonical_key: str) -> tu
     except Exception:
         return True, ""
 
-# =====================================================================
-# END PATCH FIX2D2U
-# =====================================================================
 
-
-# =====================================================================
-# PATCH FIX17 (ADDITIVE): wire FIX17 rebuilds into the existing dispatch
 # - Keep names identical so evolution uses these as the LAST definitions
-# =====================================================================
 
 def rebuild_metrics_from_snapshots_with_anchors(prev_response: dict, baseline_sources_cache, web_context=None) -> dict:  # noqa: F811
     return rebuild_metrics_from_snapshots_with_anchors_fix17(prev_response, baseline_sources_cache, web_context=web_context)
 
 
-
-# =====================================================================
-# END PATCH FIX17
-# =====================================================================
-
-
-
-# =====================================================================
-# PATCH FIX18 (ADDITIVE): Anchor-authoritative rebuild (no schema fallback)
 # Goal:
 #   - If analysis emitted an anchor for a canonical metric, evolution MUST NOT
 #     fall back to schema-only selection when the anchor cannot be used.
@@ -31554,7 +29624,6 @@ def rebuild_metrics_from_snapshots_with_anchors(prev_response: dict, baseline_so
 # Notes:
 #   - Fully deterministic; no refetch; no LLM.
 #   - Additive only: leaves FIX17 implementations intact.
-# =====================================================================
 
 def rebuild_metrics_from_snapshots_schema_only_fix18(prev_response: dict, baseline_sources_cache, web_context=None) -> dict:
     """
@@ -31570,11 +29639,8 @@ def rebuild_metrics_from_snapshots_schema_only_fix18(prev_response: dict, baseli
     if not isinstance(prev_response, dict):
         return {}
 
-    # =====================================================================
-    # PATCH FIX2D21 (ADD): derive metric_schema_frozen from analysis baseline keys when available
     # - This makes Evolution naturally produce current values for the baseline keyspace, enabling
     #   Analysis -> Evolution deltas without requiring injected URLs during Analysis.
-    # =====================================================================
     try:
         _fix2d21_prev_pmc = None
         if isinstance(prev_response.get("results"), dict):
@@ -31611,9 +29677,6 @@ def rebuild_metrics_from_snapshots_schema_only_fix18(prev_response: dict, baseli
                 prev_response["metric_schema_frozen"] = ms_from_baseline
     except Exception:
         pass
-    # =====================================================================
-    # END PATCH FIX2D21
-    # =====================================================================
 # Anchored part (authoritative when present)
     fn_anchor = globals().get("rebuild_metrics_from_snapshots_with_anchors_fix17")
     anchored = fn_anchor(prev_response, baseline_sources_cache, web_context=web_context) if callable(fn_anchor) else {}
@@ -31663,13 +29726,7 @@ def rebuild_metrics_from_snapshots_schema_only_fix18(prev_response: dict, baseli
 def rebuild_metrics_from_snapshots_schema_only(prev_response: dict, baseline_sources_cache, web_context=None) -> dict:  # noqa: F811
     return rebuild_metrics_from_snapshots_schema_only_fix18(prev_response, baseline_sources_cache, web_context=web_context)
 
-# =====================================================================
-# END PATCH FIX18
-# =====================================================================
 
-
-# ==============================================================================
-# PATCH FIX24 (ADDITIVE): Sheets-first replay for unchanged sources+data, and
 # scrape+hash gate for evolution to prevent any rebuild/picking when unchanged.
 #
 # Goals:
@@ -31685,8 +29742,6 @@ def rebuild_metrics_from_snapshots_schema_only(prev_response: dict, baseline_sou
 #   - REFACTOR67: legacy base evolution runner removed; changed-case recompute calls compute_source_anchored_diff directly
 #   - Adds helper functions prefixed _fix24_*
 #   - Overrides run_source_anchored_evolution by re-defining it below
-# ==============================================================================
-
 
 
 def _fix24_get_prev_full_payload(previous_data: dict) -> dict:
@@ -31787,7 +29842,6 @@ def _fix24_build_scraped_meta(urls: list, max_chars_per_source: int = 180000) ->
     Fetch each URL (deterministically) and return scraped_meta in the same shape
     attach_source_snapshots_to_analysis expects: {url: {"status":..., "text":..., "extracted_numbers":[...]}}
     """
-    # PATCH FIX2AF_URL_SHAPE_NORMALIZER_AND_SCRAPE_LEDGER_V1 (ADDITIVE)
     _fix2af_ledger = globals().get("_fix2af_last_scrape_ledger")
     try:
         _fix2af_norm_urls, _fix2af_norm_diag = _fix2af_normalize_url_items(urls)
@@ -31796,7 +29850,6 @@ def _fix24_build_scraped_meta(urls: list, max_chars_per_source: int = 180000) ->
             _fix2af_ledger["__fix2af_url_normalize_diag__"] = _fix2af_norm_diag
     except Exception:
         pass
-    # END PATCH FIX2AF_URL_SHAPE_NORMALIZER_AND_SCRAPE_LEDGER_V1
 
     scraped_meta = {}
     fetch_fn = globals().get("fetch_url_content_with_status") or globals().get("fetch_url_content")
@@ -31804,12 +29857,10 @@ def _fix24_build_scraped_meta(urls: list, max_chars_per_source: int = 180000) ->
 
     for u in urls or []:
         url = str(u or "").strip()
-        # PATCH FIX2AF_SCRAPE_LEDGER_ATTEMPTED_V1 (ADDITIVE)
         try:
             _fix2af_ledger_put(_fix2af_ledger, url, stage="attempted", reason="entered_loop")
         except Exception:
             pass
-        # END PATCH FIX2AF_SCRAPE_LEDGER_ATTEMPTED_V1
         if not url:
             continue
         try:
@@ -31827,19 +29878,15 @@ def _fix24_build_scraped_meta(urls: list, max_chars_per_source: int = 180000) ->
             else:
                 text, status = (None, "no_fetch_fn")
 
-            # PATCH FIX2AF_SCRAPED_TEXT_ACCESSOR_V1 (ADDITIVE)
             txt = _fix2af_scraped_text_accessor(text)
-            # END PATCH FIX2AF_SCRAPED_TEXT_ACCESSOR_V1
             if max_chars_per_source and len(txt) > int(max_chars_per_source):
                 txt = txt[: int(max_chars_per_source)]
 
-            # PATCH FIX2AF_FETCH_FAILURE_VISIBILITY_V1 (ADDITIVE)
             try:
                 _fix2af_fail_class = _fix2af_classify_fetch_failure(status, txt)
                 _fix2af_ledger_put(_fix2af_ledger, url, stage="fetched", reason=_fix2af_fail_class, extra={"status": status, "text_len": len(txt or "")})
             except Exception:
                 pass
-            # END PATCH FIX2AF_FETCH_FAILURE_VISIBILITY_V1
 
             nums = []
             if callable(extract_fn) and txt.strip():
@@ -31851,18 +29898,15 @@ def _fix24_build_scraped_meta(urls: list, max_chars_per_source: int = 180000) ->
                     pass
                     nums = []
 
-            # PATCH FIX2AF_SCRAPE_LEDGER_EXTRACTED_V1 (ADDITIVE)
             try:
                 _fix2af_ledger_put(_fix2af_ledger, url, stage="extracted", reason="ok" if (isinstance(nums, list) and len(nums)>0) else "no_numbers", extra={"numbers_count": (len(nums) if isinstance(nums, list) else -1)})
             except Exception:
                 pass
-            # END PATCH FIX2AF_SCRAPE_LEDGER_EXTRACTED_V1
 
             scraped_meta[url] = {
                 "status": status,
                 "text": txt,
                 "extracted_numbers": nums if isinstance(nums, list) else [],
-                # PATCH FIX2AF_PER_URL_FETCH_DIAG_V1 (ADDITIVE)
                 "fix2af_fetch_diag": {
                     "url_norm": _fix2af_norm_url(url),
                     "status": status,
@@ -31870,15 +29914,12 @@ def _fix24_build_scraped_meta(urls: list, max_chars_per_source: int = 180000) ->
                     "failure_class": _fix2af_classify_fetch_failure(status, txt),
                     "numbers_count": (len(nums) if isinstance(nums, list) else -1),
                 },
-                # END PATCH FIX2AF_PER_URL_FETCH_DIAG_V1
             }
         except Exception as e:
-            # PATCH FIX2AF_SCRAPE_LEDGER_EXCEPTION_V1 (ADDITIVE)
             try:
                 _fix2af_ledger_put(_fix2af_ledger, url, stage="exception", reason=type(e).__name__, extra={"msg": str(e)[:300]})
             except Exception:
                 pass
-            # END PATCH FIX2AF_SCRAPE_LEDGER_EXCEPTION_V1
             scraped_meta[url] = {"status": f"exception:{type(e).__name__}", "text": "", "extracted_numbers": [], "fix2af_fetch_diag": {"url_norm": _fix2af_norm_url(url), "status": f"exception:{type(e).__name__}", "text_len": 0, "failure_class": type(e).__name__, "numbers_count": 0}}
 
     return scraped_meta
@@ -32002,11 +30043,6 @@ def _fix24_make_replay_output(prev_full: dict, hashes: dict) -> dict:
     }
 
 
-# PATCH FIX41G: removed misplaced top-level web_context normalization block (was causing NameError)
-
-
-
-# =====================================================================
 # REFACTOR88 (HOTFIX): Restore/guard FIX2D55 prev-lift helper used by FIX24 recompute
 # Why:
 # - REFACTOR87 pruned a legacy ladder block which previously defined _fix2d55_apply_prev_lift.
@@ -32014,9 +30050,7 @@ def _fix24_make_replay_output(prev_full: dict, hashes: dict) -> dict:
 # - Without it, Evolution shows: "FIX24: Evolution recompute failed (compute_source_anchored_diff path)."
 # What:
 # - Provide a small, deterministic "lift" that copies canonical maps/schema/anchors from any nested
-#   containers onto the expected keys in prev_full (purely additive; no schema/key grammar changes).
 # - Idempotent and safe: if nothing is found, it becomes a no-op.
-# =====================================================================
 
 def _fix2d55_apply_prev_lift(prev_full: dict, web_context: dict = None) -> None:
     try:
@@ -32132,7 +30166,6 @@ def _fix2d55_apply_prev_lift(prev_full: dict, web_context: dict = None) -> None:
         return
 
 
-
 def run_source_anchored_evolution(previous_data: dict, web_context: dict = None) -> dict:
     """
     PATCH FIX24 (ADDITIVE): Evolution flow is:
@@ -32151,8 +30184,6 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
 
     # Step 2: Build current scraped_meta by fetching the same URLs used previously
     urls = _fix24_extract_source_urls(prev_full)
-    # =====================================================================
-    # PATCH FIX41AFC3 (ADDITIVE): Recover Evolution injected URLs into web_context['extra_urls']
     #
     # Purpose:
     # - Streamlit may provide injected URLs only via diagnostic fields
@@ -32168,7 +30199,6 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
     # Safety:
     # - Purely additive wiring; no effect when no injection is present.
     # - Never raises; falls back silently.
-    # =====================================================================
     try:
         if isinstance(web_context, dict):
             _wc_extra0 = web_context.get('extra_urls')
@@ -32216,11 +30246,8 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
                                 })
     except Exception:
         pass
-    # =====================================================================
 
 
-    # =====================================================================
-    # PATCH EVO_ROUTE_INJECTED_URLS_THROUGH_FWC_V1 (ADDITIVE)
     #
     # Goal:
     # - When Evolution UI provides injected URLs, route them through the SAME
@@ -32239,7 +30266,6 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
     # Safety:
     # - identity_only=True prevents any network scrape inside fetch_web_context.
     # - Purely additive; if anything fails, it falls back to existing urls list.
-    # =====================================================================
     try:
         _evo_extra_urls_raw = (web_context or {}).get("extra_urls") or []
         _evo_extra_urls_norm = _inj_diag_norm_url_list(_evo_extra_urls_raw)
@@ -32282,13 +30308,8 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
                         })
     except Exception:
         pass
-    # =====================================================================
-    # =====================================================================
 
 
-    # =====================================================================
-        # =====================================================================
-    # PATCH FIX41AFC9 (ADDITIVE): Merge injected URLs into `urls` universe BEFORE scrape_meta build
     #
     # Problem observed (inj_trace_v1):
     # - Injected URL shows up in ui_norm/intake_norm, but can still vanish from admitted_norm/hash_inputs_norm.
@@ -32305,7 +30326,6 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
     # - Purely additive: does not change hashing algorithm or fastpath rules; it only ensures the URL
     #   universe includes the injected URLs when the user provided them.
     # - Never raises.
-    # =====================================================================
     try:
         _fx9_wc = web_context if isinstance(web_context, dict) else {}
         _fx9_inj = _inj_diag_norm_url_list((_fx9_wc or {}).get("extra_urls") or [])
@@ -32333,9 +30353,7 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
                         })
     except Exception:
         pass
-    # =====================================================================
 
-# PATCH FIX41AFC6 (ADDITIVE): When injected URL delta exists, actually FETCH it
     #
     # Observation (from inj_trace_v1 in evolution JSON):
     # - Injected URL appears in ui_norm/intake_norm, but attempted/persisted remain empty,
@@ -32353,7 +30371,6 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
     # - No effect when injection is empty or introduces no delta.
     # - Uses existing_snapshots to avoid re-fetching baseline sources.
     # - Never raises; falls back to existing behavior.
-    # =====================================================================
     try:
         _fix41afc6_wc = web_context if isinstance(web_context, dict) else {}
         _fix41afc6_inj = _inj_diag_norm_url_list((_fix41afc6_wc or {}).get("extra_urls") or [])
@@ -32372,7 +30389,6 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
                 extra_urls=_fix41afc6_inj,
                 diag_run_id=str((_fix41afc6_wc or {}).get("diag_run_id") or "") or _inj_diag_make_run_id("evo"),
                 diag_extra_urls_ui_raw=(_fix41afc6_wc or {}).get("diag_extra_urls_ui_raw"),
-                # PATCH FIX41AFC8 (ADDITIVE): force scrape injected extras even if not admitted
                 force_scrape_extra_urls=True,
                 force_admit_extra_urls=True,
                 identity_only=False,
@@ -32409,9 +30425,6 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
                             "admitted_count": int(len(_fix41afc6_admitted or [])) if isinstance(_fix41afc6_admitted, list) else 0,
                         })
 
-                    # =====================================================================
-                    # PATCH FIX41AFC8 (ADDITIVE): Emit forced-fetch diagnostics for injected delta
-                    # =====================================================================
                     try:
                         web_context.setdefault("debug", {})
                         if isinstance(web_context.get("debug"), dict):
@@ -32443,10 +30456,7 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
 
     except Exception:
         pass
-    # =====================================================================
 
-    # =====================================================================
-    # PATCH FIX41AFC7 (ADDITIVE): Early recovery + latching of injected URLs into web_context["extra_urls"]
     #
     # Problem observed in evolution JSON:
     # - ui_norm/intake_norm contains the injected URL (from Streamlit textarea),
@@ -32466,7 +30476,6 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
     # Safety:
     # - Purely additive. No effect when extra_urls already present.
     # - Never raises; falls back silently.
-    # =====================================================================
     try:
         if isinstance(web_context, dict):
             _fix41afc7_norm = []
@@ -32508,12 +30517,9 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
                     })
     except Exception:
         pass
-    # =====================================================================
 
-# PATCH INJ_DIAG_EVO_CORE (ADDITIVE): allow optional injected URLs (Scenario B)
     # - Only active if caller provides web_context['extra_urls']
     # - Does NOT affect default fastpath behavior.
-    # =====================================================================
     _inj_diag_run_id = ""
     _inj_extra_urls = []
     try:
@@ -32533,13 +30539,8 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
                     urls.append(_u)
     except Exception:
         pass
-    # =====================================================================
 
 
-    # =====================================================================
-
-    # =====================================================================
-    # PATCH FIX41AFC4 (ADDITIVE): Force-admit injected URL deltas into evolution URL universe
     #
     # Problem (observed in evolution JSON):
     # - Injected URL appears in ui_norm/intake_norm but is missing from admitted_norm,
@@ -32557,7 +30558,6 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
     # - Does not modify fastpath logic/hashing; it only ensures injected URLs are
     #   present in the post-intake universe when delta exists.
     # - Never raises; falls back silently.
-    # =====================================================================
     try:
         _fix41afc4_inj_norm = _inj_diag_norm_url_list(_inj_extra_urls or [])
         _fix41afc4_base_norm = _inj_diag_norm_url_list(_fix24_extract_source_urls(prev_full) or [])
@@ -32601,10 +30601,8 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
                     })
     except Exception:
         pass
-    # =====================================================================
 
 
-# PATCH EVO_INJ_ADMISSION_TRACE_V1 (ADDITIVE): pinpoint where injected URLs are dropped
     #
     # Why:
     # - When a URL appears in ui_norm/intake_norm but not in admitted_norm, we need
@@ -32617,7 +30615,6 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
     #
     # Safety:
     # - Does NOT alter control flow, fastpath eligibility, scraping, hashing, or selection.
-    # =====================================================================
     try:
         _urls_prev_full = _fix24_extract_source_urls(prev_full)
         _urls_prev_full_norm = _inj_diag_norm_url_list(_urls_prev_full or [])
@@ -32662,10 +30659,7 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
                 web_context["diag_injected_urls"].setdefault("urls_after_merge_norm", _urls_after_merge_norm)
     except Exception:
         pass
-    # =====================================================================
 
-    # =====================================================================
-    # PATCH FIX41AFC11 (ADDITIVE): Injection admission override + must-fetch lane (delta-only)
     #
     # Problem:
     # - Injected URLs can appear in UI intake but get dropped pre-admission, resulting in:
@@ -32680,7 +30674,6 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
     # Safety:
     # - No effect when no injection / no delta.
     # - Does not weaken normal fastpath logic (already bypassed upstream when delta exists).
-    # =====================================================================
     try:
         _fix41afc11_wc = web_context if isinstance(web_context, dict) else {}
         # Robust recovery (order required)
@@ -32781,9 +30774,6 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
                         })
     except Exception:
         pass
-    # =====================================================================
-    # =====================================================================
-    # PATCH FIX2AE_INJECTED_FETCH_URLS_MERGE_V1 (ADDITIVE)
     # Goal:
     #   Ensure injected URLs are merged into the scrape/fetch URL universe in a shape-aware way.
     #   If urls is a list of dicts, append {"url": u}; otherwise append the string u.
@@ -32791,7 +30781,6 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
     #   web_context.debug.fix2ae reports counts and added URLs.
     # Safety:
     #   Additive only. Never removes or reorders existing entries.
-    # =====================================================================
     try:
         _fx2ae_inj_raw = list(_inj_extra_urls or [])
         _fx2ae_inj_norm = _inj_diag_norm_url_list(_fx2ae_inj_raw) if _fx2ae_inj_raw else []
@@ -32835,28 +30824,20 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
             pass
     except Exception:
         pass
-    # =====================================================================
-
-
-
 
 
     scraped_meta = _fix24_build_scraped_meta(urls)
 
-    # PATCH FIX2AF_ATTACH_SCRAPE_LEDGER_TO_WEB_CONTEXT_V1 (ADDITIVE)
     try:
         _fix2af_led = globals().get("_fix2af_last_scrape_ledger")
         if isinstance(web_context, dict) and isinstance(_fix2af_led, dict):
             web_context["fix2af_scrape_ledger_v1"] = _fix2af_led
     except Exception:
         pass
-    # END PATCH FIX2AF_ATTACH_SCRAPE_LEDGER_TO_WEB_CONTEXT_V1
 
     # Step 3: Normalize into baseline_sources_cache and hash
     cur_bsc = _fix24_baseline_sources_cache_from_scraped_meta(scraped_meta)
 
-    # =====================================================================
-    # PATCH EVO_INJECTED_URLS_AS_CURRENT_SOURCES_V1 (ADDITIVE):
     # Policy + wiring alignment for Evolution UI injected URLs
     #
     # Goal:
@@ -32876,7 +30857,6 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
     # - Does NOT alter fastpath eligibility logic directly; it only ensures that
     #   the identity inputs reflect the actual successfully fetched current sources.
     # - Purely additive; never removes or refactors existing logic.
-    # =====================================================================
     try:
         _inj_sm = scraped_meta if isinstance(scraped_meta, dict) else {}
         _inj_attempted_rows = []
@@ -32928,14 +30908,10 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
                 web_context['diag_injected_urls']['success_urls'] = sorted(list(_inj_success_urls))
     except Exception:
         pass
-    # =====================================================================
 
     cur_hashes = _fix24_compute_current_hashes(cur_bsc)
 
-    # =====================================================================
 
-    # PATCH INJ_DIAG_EVO_DEBUG (ADDITIVE): record injected URL lifecycle (B1)
-    # =====================================================================
     try:
         _hash_inputs = _inj_diag_hash_inputs_from_bsc(cur_bsc)
         if isinstance(web_context, dict):
@@ -32956,8 +30932,6 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
                 })
     except Exception:
         pass
-    # =====================================================================
-
 
 
     # Step 4: Compare (v2 preferred)
@@ -32965,11 +30939,8 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
     equal_v1 = bool(prev_hashes.get("v1") and cur_hashes.get("v1") and prev_hashes["v1"] == cur_hashes["v1"])
     unchanged = equal_v2 or (not prev_hashes.get("v2") and equal_v1)
 
-    # =====================================================================
-    # PATCH FIX40 (ADDITIVE): Force rebuild override (Scenario B)
     # If the UI (or caller) requests force_rebuild, we intentionally bypass
     # the unchanged fastpath even if hashes match, to exercise rebuild logic.
-    # =====================================================================
     _force_rebuild = False
     try:
         _force_rebuild = bool((web_context or {}).get("force_rebuild"))
@@ -32981,7 +30952,6 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
         _fix41_force_rebuild_honored = True
     else:
         _fix41_force_rebuild_honored = False
-    # =====================================================================
 
     if unchanged:
         hashes = {
@@ -32991,9 +30961,6 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
             "cur_v1": cur_hashes.get("v1",""),
         }
         out_replay = _fix24_make_replay_output(prev_full, hashes)
-        # =====================================================================
-        # PATCH FIX41 (ADDITIVE): Attach force-rebuild debug to replay output
-        # =====================================================================
         try:
             if isinstance(out_replay, dict):
                 out_replay.setdefault("code_version", _yureeka_get_code_version())
@@ -33006,8 +30973,6 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
         except Exception:
             pass
 
-        # =====================================================================
-        # PATCH EVO_INJ_TRACE_REPLAY1 (ADDITIVE): emit inj_trace_v1 even on replay fastpath
         # Why:
         # - The FIX24 replay path returns early (skipping compute_source_anchored_diff),
         #   which previously meant results.debug.inj_trace_v1 might be missing.
@@ -33015,18 +30980,14 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
         #   to validate UI wiring and to explain why a mismatch did/did not occur.
         # Safety:
         # - Pure debug emission only; does NOT affect hash logic, scraping, or fastpath decisions.
-        # =====================================================================
         try:
             _wc = web_context if isinstance(web_context, dict) else {}
             _diag = _wc.get("diag_injected_urls") if isinstance(_wc.get("diag_injected_urls"), dict) else {}
 
-            # =====================================================================
-            # PATCH INJ_TRACE_V1_ENRICH_EVOLUTION_REPLAY_ARTIFACTS (ADDITIVE)
             # Populate attempted/persisted for injected URLs from scraped_meta/cur_bsc
             # even when replay fastpath returns early.
             # Also attach an explicit reason when injected URLs are present but not
             # admitted/hashed due to replay semantics.
-            # =====================================================================
             try:
                 if isinstance(_diag, dict):
                     # Enrich from scraped_meta (injected only) and from BSC (all)
@@ -33039,7 +31000,6 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
                         _diag.setdefault("injection_effective", False)
             except Exception:
                 pass
-            # =====================================================================
 
             _hash_inputs_replay = _inj_diag_hash_inputs_from_bsc(cur_bsc)
             _trace_replay = _inj_trace_v1_build(
@@ -33057,10 +31017,6 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
                     out_replay["results"]["debug"]["inj_trace_v1"] = _trace_replay
         except Exception:
             pass
-        # =====================================================================
-        # END PATCH EVO_INJ_TRACE_REPLAY1
-        # =====================================================================
-        # PATCH FIX2D20 (ADD): trace year-like commits on evolution replay output
 
         _fix2d20_trace_year_like_commits(out_replay, stage='evolution', callsite='run_source_anchored_evolution_replay')
 
@@ -33068,16 +31024,12 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
     # Step 5: Changed -> run deterministic evolution diff using existing machinery.
     # Provide web_context with scraped_meta so compute_source_anchored_diff can reconstruct snapshots deterministically.
     wc = {"scraped_meta": scraped_meta}
-    # =====================================================================
-    # PATCH FIX40 (ADDITIVE): Preserve caller flags (e.g., force_rebuild) into web_context
     # so downstream diff/rebuild logic can record provenance if needed.
-    # =====================================================================
     try:
         if isinstance(web_context, dict):
             wc.update({k: v for k, v in web_context.items() if k != "scraped_meta"})
     except Exception:
         pass
-    # =====================================================================
 
     # REFACTOR67: changed-case recompute routes directly through compute_source_anchored_diff
 
@@ -33092,9 +31044,6 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
                 pass
 
             out_changed = fn(prev_full, web_context=wc)
-            # =====================================================================
-            # PATCH FIX41 (ADDITIVE): Attach force-rebuild debug to changed output
-            # =====================================================================
             try:
                 if isinstance(out_changed, dict):
                     out_changed.setdefault("code_version", _yureeka_get_code_version())
@@ -33106,7 +31055,6 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
                     })
             except Exception:
                 pass
-            # PATCH FIX2D20 (ADD): trace year-like commits on evolution changed output
 
             _fix2d20_trace_year_like_commits(out_changed, stage='evolution', callsite='run_source_anchored_evolution_changed')
 
@@ -33136,14 +31084,9 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
     }
 
 
-
-
 # [REFACTOR87] legacy diff ladder pruned (FIX32→FIX2D77) — see patch tracker.
 
-# =====================================================================
-# PATCH FIX2D82 (ADDITIVE): definitive percent year-token rejection +
 #                           force-apply at schema_only rebuild + prev_data
-# ---------------------------------------------------------------------
 # Why FIX2D80 can still leak 2040->__percent:
 #   - The schema_only rebuild may select the year token as the "best" match.
 #   - Percent evidence checks can be fooled by unrelated % signs elsewhere.
@@ -33157,7 +31100,6 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
 #      any caller (incl. FIX2D75 materialize) gets the sanitized output.
 #   3) Wrap compute_source_anchored_diff directly to sanitize previous_data
 #      before diff join (cleans old HistoryFull snapshots too).
-# =====================================================================
 
 try:
 
@@ -33327,9 +31269,7 @@ try:
             return None
 
 
-    # -----------------------------------------------------------------
     # (1) Force-apply sanitizer to schema_only rebuild (Analysis baseline)
-    # -----------------------------------------------------------------
     try:
         _fix2d82__orig_schema_only = globals().get('rebuild_metrics_from_snapshots_schema_only_fix16')
         if callable(_fix2d82__orig_schema_only) and (not getattr(_fix2d82__orig_schema_only, '_fix2d82_wrapped', False)):
@@ -33358,9 +31298,7 @@ try:
         pass
 
 
-    # -----------------------------------------------------------------
     # (2) Force-apply sanitizer to previous_data before diff join
-    # -----------------------------------------------------------------
     try:
         _fix2d82__orig_compute = globals().get('compute_source_anchored_diff')
         if callable(_fix2d82__orig_compute) and (not getattr(_fix2d82__orig_compute, '_fix2d82_wrapped', False)):
@@ -33410,9 +31348,6 @@ except Exception:
     pass
 
 
-# =====================================================================
-# PATCH FIX2D82 PATCH TRACKER ENTRY (ADDITIVE)
-# =====================================================================
 # FIX2D82_VERSION_FINAL_OVERRIDE (REQUIRED): ensure patch id is authoritative
 try:
     CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
@@ -33421,13 +31356,10 @@ except Exception:
     pass
 
 
-# =====================================================================
-# PATCH FIX2D83 (CLEANUP): remove obsolete percent-guard wrappers and stabilize versioning
 #
 # - Removes FIX2D78/FIX2D79 percent-guard wrappers (superseded by definitive FIX2D82 sanitizer)
 # - Ensures a single authoritative CODE_VERSION at end-of-file
 # - Adds patch tracker entry
-# =====================================================================
 # FIX2D86_VERSION_FINAL_OVERRIDE (REQUIRED): keep patch id authoritative
 try:
     CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
@@ -33482,19 +31414,15 @@ except Exception:
     pass
 
 
-# =====================
 # REFACTOR04: VERSION FINAL OVERRIDE (LAST-WINS)
 # - This file contains legacy CODE_VERSION bumps from earlier phases.
 # - Ensure the refactor patch id remains authoritative.
-# =====================
 try:
     CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
     globals()["CODE_VERSION"] = CODE_VERSION
 except Exception:
     pass
 
-# ============================================================
-# REFACTOR04: REGRESSION HARNESS V2 (ADDITIVE, STREAMLIT-SAFE)
 # Goal:
 #   - Provide a stable gate for refactor/consolidation work.
 #   - Executes: Analysis (headless) -> Evolution (source-anchored) and asserts invariants.
@@ -33511,7 +31439,6 @@ except Exception:
 #   REFACTOR_HARNESS_EXTRA_URLS_EVOLUTION      - newline-separated URLs (evolution only)
 #   REFACTOR_HARNESS_FORCE_REBUILD             - 1/0 (default: 1)
 #   REFACTOR_HARNESS_REPORT_PATH               - directory path for JSON report (default: cwd)
-# ============================================================
 
 def _refactor01__bool(v, default=False):
     try:
@@ -33599,7 +31526,6 @@ def _refactor02_run_harness_v2():
     except Exception:
         pass
 
-    # ---- config
     query = str(os.getenv("REFACTOR_HARNESS_QUERY") or "").strip()
     if not query:
         # Safe default (user can override via env)
@@ -33676,7 +31602,6 @@ def _refactor02_run_harness_v2():
     except Exception:
         ok_all = _assert("binding.diff_fn_object_match", False, "exception") and ok_all
 
-    # ---- run analysis (headless)
     try:
         fwc = globals().get("fetch_web_context")
         qp = globals().get("query_perplexity")
@@ -33760,7 +31685,6 @@ def _refactor02_run_harness_v2():
             "baseline_sources_cache_count": int(len((analysis_out or {}).get("baseline_sources_cache") or [])),
         }
 
-        # ---- REFACTOR07 invariant: version + binding manifest must match runtime lock
         ok_all = _assert("analysis.code_version_matches_lock", str((analysis_out or {}).get("code_version") or "") == _yureeka_get_code_version(), f"analysis.code_version={(analysis_out or {}).get('code_version')} lock={_yureeka_get_code_version()}") and ok_all
         try:
             _pr = (analysis_out or {}).get("primary_response") if isinstance(analysis_out, dict) else None
@@ -33778,7 +31702,6 @@ def _refactor02_run_harness_v2():
         ok_all = _assert("analysis.pmc_nonempty", int(len(pmc or {})) > 0, f"pmc_key_count={len(pmc or {})}") and ok_all
 
 
-        # ---- REFACTOR04 invariants: baseline PMC dimensional sanity
         def _h_has_currency(_s):
             try:
                 s = str(_s or "").lower()
@@ -33879,7 +31802,6 @@ def _refactor02_run_harness_v2():
         print("[REFACTOR10] Harness FAILED during analysis stage. Report:", fpath)
         return False
 
-    # ---- run evolution
     evo_out = None
     try:
         evo_fn = globals().get("run_source_anchored_evolution")
@@ -33920,7 +31842,6 @@ def _refactor02_run_harness_v2():
         }
 
 
-        # ---- REFACTOR08 invariants: diff_panel_v2_summary consistency (if present)
         try:
             if rows_total is not None:
                 ok_all = _assert("diff.summary_rows_total_matches_len", int(rows_total) == int(len(rows)), f"rows_total={rows_total} len(rows)={len(rows)}") and ok_all
@@ -33948,13 +31869,11 @@ def _refactor02_run_harness_v2():
         except Exception:
             ok_all = _assert("diff.summary_consistency_checks", False, "exception") and ok_all
 
-        # ---- REFACTOR07 invariant: evolution code_version matches runtime lock
         try:
             ok_all = _assert("evolution.code_version_matches_lock", str((evo_out or {}).get("code_version") or "") == _yureeka_get_code_version(), f"evolution.code_version={(evo_out or {}).get('code_version')} lock={_yureeka_get_code_version()}") and ok_all
         except Exception:
             pass
 
-        # ---- invariants
         # 1) diff rows exist and include both prev+cur
         any_both = False
         for r in rows:
@@ -34057,7 +31976,6 @@ def _refactor02_run_harness_v2():
         report["status"] = "fail"
         ok_all = False
 
-    # ---- write report
     try:
         report["status"] = "pass" if ok_all else "fail"
         _dir = str(os.getenv("REFACTOR_HARNESS_REPORT_PATH") or os.getcwd())
@@ -34076,21 +31994,9 @@ def _refactor02_run_harness_v2():
     return bool(ok_all)
 
 
-# ============================================================
 #
 
 
-# ============================================================
-
-
-# ============================================================
-# ============================================================
-# ============================================================
-# ============================================================
-# ============================================================
-# REFACTOR60: PATCH TRACKER ENTRY (ADDITIVE)
-# ============================================================
-# ============================================================
 # REFACTOR09: DIFF ENGINE CONSOLIDATION (WRAPPER)
 #
 # Purpose:
@@ -34132,9 +32038,6 @@ def _refactor28_schema_only_rebuild_authoritative_v1(
     """
     import re
 
-# =====================================================================
-    # =====================================================================
-    # PATCH FIX33 (ADDITIVE): enforce unit-required eligibility in schema-only rebuild
     # Why:
     #   - When anchors are not used (anchor_used:false), schema-only rebuild can still
     #     select unit-less year tokens (e.g., 2024/2025) for currency/percent metrics.
@@ -34143,7 +32046,6 @@ def _refactor28_schema_only_rebuild_authoritative_v1(
     #   - Also optionally emits compact debug metadata for top candidates/rejections.
     # Determinism:
     #   - Pure filtering + stable ordering; no refetch; no randomness.
-    # =====================================================================
 
     def _fix33_schema_unit_required(spec_unit_family: str, spec_unit_tag: str, canonical_key: str) -> bool:
         uf = str(spec_unit_family or "").strip().lower()
@@ -34194,9 +32096,7 @@ def _refactor28_schema_only_rebuild_authoritative_v1(
         _fix33_dbg = False
 
 
-    # -------------------------
     # Resolve frozen schema (supports multiple storage locations)
-    # -------------------------
     schema = None
     try:
         if isinstance(prev_response, dict):
@@ -34213,9 +32113,7 @@ def _refactor28_schema_only_rebuild_authoritative_v1(
     if not isinstance(schema, dict) or not schema:
         return {}
 
-    # -------------------------
     # Collect candidates from snapshots (no re-fetch)
-    # -------------------------
     candidates = []
     if isinstance(baseline_sources_cache, list):
         for src in baseline_sources_cache:
@@ -34253,9 +32151,7 @@ def _refactor28_schema_only_rebuild_authoritative_v1(
     if not candidates:
         return {}
 
-    # -------------------------
     # Deterministic schema-driven selection
-    # -------------------------
     def _norm_text(s: str) -> str:
         return re.sub(r"\s+", " ", (s or "").lower()).strip()
 
@@ -34278,34 +32174,25 @@ def _refactor28_schema_only_rebuild_authoritative_v1(
         best = None
         best_key = None
 
-        # ============================================================
-        # PATCH FIX33 (ADDITIVE): per-metric debug collectors
-        # ============================================================
         _fix33_top = []
         _fix33_rej = {}
 
         for c in candidates:
-            # PATCH F: strict candidate exclusion at scoring time
             if _candidate_disallowed_for_metric(c, spec):
                 continue
-            # REFACTOR03 (ADDITIVE): enforce unit family + unit-tag eligibility
             if _refactor03_candidate_rejected_by_unit_family_v1(c, spec):
                 continue
-            # REFACTOR27 (ADDITIVE): reject currency date-fragment candidates (e.g., 'July 01, 2025')
             try:
                 if _refactor27_candidate_rejected_currency_date_fragment_v1(c, spec):
                     continue
             except Exception:
                 pass
 
-            # =====================================================================
-            # PATCH AI2 (ADDITIVE): guard against year-only candidates on currency-like metrics
             # Why:
             # - Some sources contain many years (e.g., 2023, 2024) that can outscore true values.
             # - For currency-ish metrics, suppress candidates that look like bare years unless context clearly indicates money.
             # Determinism:
             # - Pure filter; does not invent candidates or refetch content.
-            # =====================================================================
             try:
                 def _ai2_is_year_only(c: dict):
                     """Return True if candidate is a likely standalone year (1900-2100) with no unit."""
@@ -34338,12 +32225,9 @@ def _refactor28_schema_only_rebuild_authoritative_v1(
                         raw = str(c.get("raw") or "").strip()
                         sval = str(iv)
 
-                        # -------------------------------------------------------------
-                        # PATCH E (ADDITIVE): strict handling when raw contains context
                         # - Some extractors store a wider raw window (e.g. includes '$721m ... in 2023')
                         # - Currency symbols elsewhere in raw should NOT make a year candidate non-year.
                         # - Only treat as non-year if the currency symbol is directly attached to the year.
-                        # -------------------------------------------------------------
                         try:
                             if re.search(r"(\$|usd|eur|gbp|aud|cad|sgd)\s*"+re.escape(sval)+r"\b", raw.lower()):
                                 return False
@@ -34394,11 +32278,8 @@ def _refactor28_schema_only_rebuild_authoritative_v1(
                 if _ai2_schema_currencyish(_sd) and _ai2_is_year_only(c):
                     continue
 
-                # =====================================================================
-                # PATCH YEAR3 (ADDITIVE): suppress year-only candidates for percent/CAGR-like metrics too
                 # Why: year tokens (e.g., 2025) can outrank true percent values when unit evidence is weak.
                 # Safe: only suppress when candidate has no explicit unit and looks like a bare year.
-                # =====================================================================
                 try:
                     if _ai2_is_year_only(c):
                         _sd_name = str((_sd or {}).get('name') or '').lower()
@@ -34440,9 +32321,6 @@ def _refactor28_schema_only_rebuild_authoritative_v1(
                     if not (spec_unit_family and str(c.get("unit_family") or "").strip() == spec_unit_family):
                         continue
 
-            # =====================================================================
-            # PATCH FIX41AFC5 (ADDITIVE): reject year-only candidates early (schema-only rebuild parity)
-            # =====================================================================
             try:
                 _vnorm = c.get("value_norm", None)
                 if _vnorm is None:
@@ -34463,13 +32341,9 @@ def _refactor28_schema_only_rebuild_authoritative_v1(
             except Exception:
                 pass
 
-            # =====================================================================
-            # PATCH FIX33 (ADDITIVE): hard-reject unit-less candidates when unit is required
-            # =====================================================================
             try:
                 _req = _fix33_schema_unit_required(spec_unit_family, spec_unit_tag, canonical_key)
                 _has_unit_ev = _fix33_candidate_has_unit_evidence(c)
-                # PATCH FIX2D58G (ADDITIVE): reject year-like candidates for unit_sales metrics
                 # unit_sales keys represent quantities; they must never take a bare year token as the value.
                 try:
                     if str(canonical_key or '').strip().lower().endswith('__unit_sales'):
@@ -34558,10 +32432,6 @@ def _refactor28_schema_only_rebuild_authoritative_v1(
             },
         }
 
-# ============================================================
-        # ============================================================
-        # PATCH FIX33 (ADDITIVE): selection debug (top candidates + rejection counts)
-        # ============================================================
         try:
             if _fix33_dbg and isinstance(metric, dict):
                 try:
@@ -34581,10 +32451,6 @@ def _refactor28_schema_only_rebuild_authoritative_v1(
         out[canonical_key] = metric
 
     return out
-
-
-
-# ===================== PATCH RMS_AWARE1 (ADDITIVE) =====================
 
 
 # REFACTOR28: define the authoritative FIX16 schema-only wrapper directly on top of the authoritative base.
@@ -34646,17 +32512,10 @@ if not _refactor28__schema_only_wrapped:
     except Exception:
         pass
 
-# ============================================================
-# ============================================================
-# ============================================================
-# ============================================================
 # REFACTOR37 patch tracker
 # REFACTOR38 patch tracker
-# ============================================================
-# REFACTOR35: EOF entrypoint (Streamlit-safe)
 # - We intentionally call main() only after ALL patch blocks and helper defs have executed,
 #   so late overrides (diff engine, schema-only rebuild, etc.) are active during runs.
-# ============================================================
 # REFACTOR37: Crash-proof wrapper for run_source_anchored_evolution()
 #
 # Context:
@@ -34667,18 +32526,14 @@ if not _refactor28__schema_only_wrapped:
 #
 # Behavior:
 # - Preserve the existing implementation as _REFACTOR37_RUN_SOURCE_ANCHORED_EVOLUTION_IMPL
-# - Provide a final, Streamlit-safe wrapper that:
 #     * coerces inputs to dict
 #     * catches all exceptions and returns a renderer-safe failed payload with traceback
-# ============================================================
 try:
     _REFACTOR37_RUN_SOURCE_ANCHORED_EVOLUTION_IMPL = run_source_anchored_evolution
 except Exception:
     _REFACTOR37_RUN_SOURCE_ANCHORED_EVOLUTION_IMPL = None
 
 
-# ============================================================
-# REFACTOR83: Evolution output source-cache normalization (Streamlit-safe)
 #
 # Motivation:
 # - Some late patch blocks may overwrite results['baseline_sources_cache'] with an injected-only
@@ -34693,7 +32548,6 @@ except Exception:
 # Safety:
 # - Does NOT affect metric selection/diffing/stability. Payload-only normalization.
 # - Never raises.
-# ============================================================
 def _refactor83_normalize_evolution_source_caches_v1(payload: dict) -> dict:
     if not isinstance(payload, dict):
         return payload
@@ -34745,7 +32599,6 @@ def _refactor83_normalize_evolution_source_caches_v1(payload: dict) -> dict:
                 pass
 
     return payload
-
 
 
 def run_source_anchored_evolution(previous_data: dict, web_context: dict = None) -> dict:
@@ -34837,100 +32690,16 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
         import traceback as _tb
         return _fail(f"run_source_anchored_evolution crashed: {e}", tb=_tb.format_exc())
 
-# ============================================================
-# ============================================================
-# ============================================================
-# ============================================================
 # Why:
 # - Streamlit can execute main() before later end-of-file patch-tracker "ADD" blocks run.
 # - This block registers the current patch *before* main() executes, so harness/version checks see an up-to-date tracker.
-# ============================================================
-# MAIN ENTRYPOINT (Streamlit-safe)
-# ============================================================
 try:
     if __name__ == "__main__":
         if not bool(globals().get("_REFACTOR01_HARNESS_REQUESTED")):
             main()
 except Exception:
-    # Streamlit-safe: surface the exception if possible without crashing hard.
     try:
         import streamlit as st
         st.exception(Exception(f"Yureeka app crashed during main() execution ({_yureeka_get_code_version()})."))
     except Exception:
         pass
-
-# ============================================================
-# ============================================================
-# ============================================================
-# ============================================================
-# ============================================================
-# ============================================================
-# ===========================================================
-# ===========================================================
-# ===================== PATCH TRACKER ENTRY: REFACTOR44 =====================
-# ============================================================
-# ============================================================
-# ============================================================
-# ============================================================
-# ============================================================
-# ============================================================
-# ============================================================
-# ============================================================
-# ============================================================
-# ============================================================
-# ============================================================
-# ============================================================
-# ============================================================
-# ============================================================
-# ============================================================
-# ============================================================
-# ============================================================
-# ============================================================
-# ============================================================
-# ============================================================
-# ============================================================
-# ============================================================
-# ============================================================
-# ============================================================
-# ============================================================
-# ============================================================
-# ============================================================
-# ============================================================
-# ============================================================
-# ============================================================
-# ============================================================
-# ============================================================
-# ============================================================
-# ============================================================
-# ============================================================
-# ============================================================
-# ============================================================
-# ============================================================
-# =====================================================================
-# =====================================================================
-# =====================================================================
-# =====================================================================
-# ============================================================
-# ============================================================
-# ============================================================
-# ============================================================
-# ============================================================
-# ============================================================
-# ============================================================
-# ============================================================
-# ============================================================
-# ============================================================
-# ============================================================
-# ============================================================
-# ============================================================
-# ============================================================
-# ============================================================
-# ============================================================
-# ============================================================
-# ============================================================
-# ============================================================
-# ============================================================
-# ============================================================
-# ============================================================
-# ============================================================
-# ============================================================
