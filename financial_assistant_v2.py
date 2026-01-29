@@ -58,6 +58,8 @@ import plotly.express as px
 import streamlit as st
 
 
+_YUREEKA_SHEETS_SCOPES_DEBUG_V1 = {}  # REFACTOR100
+
 def _coerce_google_oauth_scopes(scopes) -> list:
     """Return a de-duplicated list of string OAuth scopes (drops non-strings).
 
@@ -94,6 +96,21 @@ def _coerce_google_oauth_scopes(scopes) -> list:
             "https://www.googleapis.com/auth/spreadsheets",
             "https://www.googleapis.com/auth/drive",
         ]
+
+        # REFACTOR100: capture a structured debug block once when scopes are contaminated.
+    try:
+        if dropped and (not _YUREEKA_SHEETS_SCOPES_DEBUG_V1.get('sheets_scopes_v1')):
+            _YUREEKA_SHEETS_SCOPES_DEBUG_V1['sheets_scopes_v1'] = {
+                'raw_types': [type(x).__name__ for x in (raw or [])],
+                'sanitized': list(deduped or []),
+            }
+            try:
+                st.session_state.setdefault('debug', {})
+                st.session_state['debug']['sheets_scopes_v1'] = dict(_YUREEKA_SHEETS_SCOPES_DEBUG_V1['sheets_scopes_v1'])
+            except Exception:
+                pass
+    except Exception:
+        pass
 
     # warn once per session (non-fatal)
     try:
@@ -136,7 +153,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "REFACTOR99D"
+_YUREEKA_CODE_VERSION_LOCK = "REFACTOR100"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 
 # - Downsizing step 1: remove accumulated per-patch try/append scaffolding.
@@ -148,7 +165,7 @@ _PATCH_TRACKER_CANONICAL_ENTRIES_V1 = [{'patch_id': 'REFACTOR25', 'date': '2026-
     {'patch_id': 'REFACTOR99B', 'id': 'REFACTOR99B', 'date': '2026-01-29', 'summary': 'Hardening: sanitize OAuth scopes to strings-only at Google Sheets auth callsites to prevent crashes if SCOPES is contaminated.', 'files': ['REFACTOR99B.py'], 'supersedes': ['REFACTOR99A']},
     {'patch_id': 'REFACTOR99C', 'id': 'REFACTOR99C', 'date': '2026-01-29', 'summary': 'Hotfix: define _sanitize_scopes helper (fix NameError) while keeping scope sanitization for Google Sheets auth.', 'files': ['REFACTOR99C.py'], 'supersedes': ['REFACTOR99B']},
     {'patch_id': 'REFACTOR99D', 'id': 'REFACTOR99D', 'date': '2026-01-29', 'summary': 'Hotfix: harden Google Sheets OAuth scopes by sanitizing at call-site (no dependency on _sanitize_scopes).', 'files': ['REFACTOR99D.py'], 'supersedes': ['REFACTOR99C']}
-]
+, {'patch_id': 'REFACTOR100', 'date': '2026-01-30', 'summary': 'Enforce year-anchor gating in authoritative schema-only candidate selection: derive required year tokens from canonical_key, prefer year-matching candidates (best_strong) and fall back with used_fallback_weak + structured provenance debug (selection_year_anchor_v1). Also harden Google Sheets auth scopes by coercing to strings-only and keeping _sanitize_scopes as a compatibility alias.', 'files': ['REFACTOR100.py'], 'supersedes': ['REFACTOR99D']}]
 
 def _yureeka_register_patch_tracker_v1(_entries=_PATCH_TRACKER_CANONICAL_ENTRIES_V1):
     try:
@@ -1444,44 +1461,15 @@ SCOPES = [
 MAX_HISTORY_ITEMS = 50
 
 def _sanitize_scopes(scopes) -> list:
-    """Defensive helper: ensure OAuth scopes is a list of strings (drops non-strings).
+    """Compatibility alias for older callsites.
 
-    This prevents Google auth from crashing with:
-      'sequence item N: expected str instance, dict found'
-    if a non-string accidentally contaminates the scopes list.
+    REFACTOR100: Always route through _coerce_google_oauth_scopes to ensure the
+    scopes list contains strings-only (drops non-strings deterministically).
     """
-    out = []
-    dropped = 0
     try:
-        for s in (scopes or []):
-            if isinstance(s, str):
-                out.append(s)
-            else:
-                dropped += 1
+        return _coerce_google_oauth_scopes(scopes)
     except Exception:
-        # Non-iterable scopes — treat as empty.
-        out = []
-        dropped = dropped or 1
-
-    # De-dup while preserving order
-    seen = set()
-    deduped = []
-    for s in out:
-        if s in seen:
-            continue
-        seen.add(s)
-        deduped.append(s)
-
-    # Warn once per session (non-fatal)
-    try:
-        if dropped:
-            _k = "_sanitize_scopes_warned_v1"
-            if hasattr(st, "session_state") and not st.session_state.get(_k):
-                st.session_state[_k] = True
-                st.warning(f"⚠️ Dropped {dropped} non-string OAuth scope(s) from configuration.")
-    except Exception:
-        pass
-    return deduped
+        return _coerce_google_oauth_scopes([])
 
 @st.cache_resource
 def get_google_sheet():
@@ -32330,6 +32318,25 @@ def _refactor28_schema_only_rebuild_authoritative_v1(
         )
 
     candidates.sort(key=_cand_sort_key)
+    # REFACTOR100: Pre-index source snapshot text by URL for year-anchor scanning.
+    _ref100_src_text_by_url = {}
+    try:
+        if isinstance(baseline_sources_cache, list):
+            for _src in baseline_sources_cache:
+                if not isinstance(_src, dict):
+                    continue
+                _u = str(_src.get("url") or _src.get("source_url") or "").strip()
+                if not _u:
+                    continue
+                _t = _src.get("snapshot_text") or _src.get("clean_text") or _src.get("text") or ""
+                if not isinstance(_t, str) or not _t.strip():
+                    continue
+                _tn = _norm_text(_t)
+                if len(_tn) > len(_ref100_src_text_by_url.get(_u, "")):
+                    _ref100_src_text_by_url[_u] = _tn
+    except Exception:
+        _ref100_src_text_by_url = {}
+
 
     if not candidates:
         return {}
@@ -32337,6 +32344,67 @@ def _refactor28_schema_only_rebuild_authoritative_v1(
     # Deterministic schema-driven selection
     def _norm_text(s: str) -> str:
         return re.sub(r"\s+", " ", (s or "").lower()).strip()
+
+    # REFACTOR100: Year-anchor gating for year-explicit canonical keys.
+    #   - If canonical_key contains one or more year tokens (e.g., 2026, 2040, 2025),
+    #     prefer candidates whose source text contains ALL required years.
+    #   - If no strong (year-complete) candidate exists, fall back to the best weak
+    #     candidate and mark used_fallback_weak=True for traceability.
+    def _refactor100_required_year_tokens_from_key(canonical_key: str) -> list:
+        try:
+            ck = str(canonical_key or "")
+        except Exception:
+            ck = ""
+        years = []
+        try:
+            for y in re.findall(r"\b(19\d{2}|20\d{2}|21\d{2})\b", ck):
+                if y and (y not in years):
+                    years.append(y)
+        except Exception:
+            years = []
+        out = []
+        for y in years:
+            try:
+                iv = int(y)
+                if 1900 <= iv <= 2100:
+                    out.append(str(iv))
+            except Exception:
+                continue
+        return out
+
+    def _refactor100_year_anchor_scan(candidate: dict, required_year_tokens: list, ctx_norm: str, src_text_by_url: dict) -> tuple:
+        """Return (found_years_list, year_ok_bool) for candidate against required years."""
+        if not required_year_tokens:
+            return ([], True)
+        try:
+            c = candidate if isinstance(candidate, dict) else {}
+            surl = str(c.get("source_url") or c.get("url") or "").strip()
+        except Exception:
+            c = {}
+            surl = ""
+        try:
+            raw_norm = _norm_text(str(c.get("raw") or c.get("display_value") or ""))
+        except Exception:
+            raw_norm = ""
+        try:
+            page_norm = src_text_by_url.get(surl, "") if isinstance(src_text_by_url, dict) else ""
+        except Exception:
+            page_norm = ""
+        hay = " ".join([str(ctx_norm or ""), str(raw_norm or ""), str(page_norm or "")]).lower()
+        found = []
+        for y in required_year_tokens:
+            try:
+                if re.search(r"(?<!\d)" + re.escape(str(y)) + r"(?!\d)", hay):
+                    if str(y) not in found:
+                        found.append(str(y))
+            except Exception:
+                try:
+                    if str(y) in hay and str(y) not in found:
+                        found.append(str(y))
+                except Exception:
+                    pass
+        year_ok = len(found) == len(required_year_tokens)
+        return (found, bool(year_ok))
 
     out = {}
 
@@ -32354,8 +32422,28 @@ def _refactor28_schema_only_rebuild_authoritative_v1(
         spec_unit_family = str(spec.get("unit_family") or "").strip()
 
         # Score candidates by schema keyword hits, then filter by unit constraints if present.
+
+        # REFACTOR100: apply year-anchor gating for year-explicit canonical keys.
+
         best = None
+
         best_key = None
+
+        best_strong = None
+
+        best_strong_key = None
+
+        best_strong_years = []
+
+        best_weak = None
+
+        best_weak_key = None
+
+        best_weak_years = []
+
+        _ref100_required_years = _refactor100_required_year_tokens_from_key(canonical_key)
+
+        _ref100_top3_pairs = []  # (tie, summary_dict)
 
         _fix33_top = []
         _fix33_rej = {}
@@ -32574,13 +32662,113 @@ def _refactor28_schema_only_rebuild_authoritative_v1(
                 pass
 
             # Deterministic tie-break:
+
             #   (-hits, then stable candidate identity tuple)
+
             tie = (-hits,) + _cand_sort_key(c)
-            if best is None or tie < best_key:
-                best = c
-                best_key = tie
+
+
+            # REFACTOR100: compute year_ok/year_found early (safe ordering)
+
+            year_found, year_ok = _refactor100_year_anchor_scan(c, _ref100_required_years, ctx, _ref100_src_text_by_url)
+
+
+            # Track top-3 candidates summary for year-anchored keys only (compact, deterministic)
+
+            if _ref100_required_years:
+
+                try:
+
+                    _sum = {
+
+                        "url": c.get("source_url"),
+
+                        "score": int(hits),
+
+                        "found_years": list(year_found),
+
+                        "year_ok": bool(year_ok),
+
+                    }
+
+                    _ref100_top3_pairs.append((tie, _sum))
+
+                    _ref100_top3_pairs.sort(key=lambda p: p[0])
+
+                    if len(_ref100_top3_pairs) > 3:
+
+                        _ref100_top3_pairs = _ref100_top3_pairs[:3]
+
+                except Exception:
+
+                    pass
+
+
+            if _ref100_required_years:
+
+                if year_ok:
+
+                    if best_strong is None or tie < best_strong_key:
+
+                        best_strong = c
+
+                        best_strong_key = tie
+
+                        best_strong_years = list(year_found)
+
+                else:
+
+                    if best_weak is None or tie < best_weak_key:
+
+                        best_weak = c
+
+                        best_weak_key = tie
+
+                        best_weak_years = list(year_found)
+
+            else:
+
+                if best is None or tie < best_key:
+
+                    best = c
+
+                    best_key = tie
+
+        # REFACTOR100: choose strong winner for year-anchored keys; allow weak fallback with flag.
+
+        _ref100_used_fallback_weak = False
+
+        _ref100_winner_years = []
+
+        _ref100_winner_has_all_years = None
+
+        if _ref100_required_years:
+
+            if isinstance(best_strong, dict):
+
+                best = best_strong
+
+                _ref100_winner_years = list(best_strong_years or [])
+
+                _ref100_winner_has_all_years = True
+
+            elif isinstance(best_weak, dict):
+
+                best = best_weak
+
+                _ref100_used_fallback_weak = True
+
+                _ref100_winner_years = list(best_weak_years or [])
+
+                _ref100_winner_has_all_years = False
+
+            else:
+
+                best = None
+
 
         if not isinstance(best, dict):
+
             continue
 
         # Emit a minimal canonical metric row (schema-driven, deterministic)
@@ -32614,6 +32802,27 @@ def _refactor28_schema_only_rebuild_authoritative_v1(
                 },
             },
         }
+
+        # REFACTOR100: attach year-anchor selection provenance for traceability (only when applicable)
+        try:
+            if _ref100_required_years and isinstance(metric, dict):
+                metric.setdefault("provenance", {})
+                try:
+                    top3 = [p[1] for p in (_ref100_top3_pairs or [])]
+                except Exception:
+                    top3 = []
+                metric["provenance"]["selection_year_anchor_v1"] = {
+                    "canonical_key": canonical_key,
+                    "required_year_tokens": list(_ref100_required_years or []),
+                    "winner_has_all_years": bool(_ref100_winner_has_all_years),
+                    "winner_found_years": list(_ref100_winner_years or []),
+                    "used_fallback_weak": bool(_ref100_used_fallback_weak),
+                    "top3": list(top3 or []),
+                }
+        except Exception:
+            pass
+
+
 
         try:
             if _fix33_dbg and isinstance(metric, dict):
