@@ -58,6 +58,57 @@ import plotly.express as px
 import streamlit as st
 
 
+def _coerce_google_oauth_scopes(scopes) -> list:
+    """Return a de-duplicated list of string OAuth scopes (drops non-strings).
+
+    This is a defensive guard for Google Sheets auth. If any non-string value
+    (e.g., a dict) contaminates the scopes list, Google auth may crash with:
+      'sequence item N: expected str instance, dict found'
+    """
+    raw = []
+    try:
+        raw = list(scopes) if scopes is not None else []
+    except Exception:
+        raw = []
+
+    out = []
+    dropped = 0
+    for s in raw:
+        if isinstance(s, str):
+            out.append(s)
+        else:
+            dropped += 1
+
+    # de-dup while preserving order
+    seen = set()
+    deduped = []
+    for s in out:
+        if s in seen:
+            continue
+        seen.add(s)
+        deduped.append(s)
+
+    if not deduped:
+        # sensible fallback
+        deduped = [
+            "https://www.googleapis.com/auth/spreadsheets",
+            "https://www.googleapis.com/auth/drive",
+        ]
+
+    # warn once per session (non-fatal)
+    try:
+        if dropped:
+            _k = "_coerce_google_oauth_scopes_warned_v1"
+            if hasattr(st, "session_state") and not st.session_state.get(_k):
+                st.session_state[_k] = True
+                st.warning(f"⚠️ Dropped {dropped} invalid Google OAuth scope(s) from configuration.")
+    except Exception:
+        pass
+
+    return deduped
+
+
+
 # Enabled only if caller sets web_context["enable_spine_shadow_fix2d64"]=True or env ENABLE_SPINE_SHADOW_FIX2D64=1.
 try:
     import canonical_identity_spine as _canonical_identity_spine_fix2d64
@@ -85,7 +136,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "REFACTOR99C"
+_YUREEKA_CODE_VERSION_LOCK = "REFACTOR99D"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 
 # - Downsizing step 1: remove accumulated per-patch try/append scaffolding.
@@ -95,7 +146,8 @@ _PATCH_TRACKER_CANONICAL_ENTRIES_V1 = [{'patch_id': 'REFACTOR25', 'date': '2026-
     {'patch_id': 'REFACTOR99', 'id': 'REFACTOR99', 'date': '2026-01-29', 'summary': 'Fix Evolution baseline selection to use latest Analysis payload only; add FIX31 fastpath safety gate when prev PMC is too sparse; improve FIX41AFC19 rebuild_exception diagnostics.', 'files': ['REFACTOR99.py'], 'supersedes': ['REFACTOR98']},
     {'patch_id': 'REFACTOR99A', 'id': 'REFACTOR99A', 'date': '2026-01-29', 'summary': 'Hotfix: remove accidental non-string entry from Google Sheets SCOPES (restores Sheets snapshot persistence). No other logic changes.', 'files': ['REFACTOR99A.py'], 'supersedes': ['REFACTOR99']},
     {'patch_id': 'REFACTOR99B', 'id': 'REFACTOR99B', 'date': '2026-01-29', 'summary': 'Hardening: sanitize OAuth scopes to strings-only at Google Sheets auth callsites to prevent crashes if SCOPES is contaminated.', 'files': ['REFACTOR99B.py'], 'supersedes': ['REFACTOR99A']},
-    {'patch_id': 'REFACTOR99C', 'id': 'REFACTOR99C', 'date': '2026-01-29', 'summary': 'Hotfix: define _sanitize_scopes helper (fix NameError) while keeping scope sanitization for Google Sheets auth.', 'files': ['REFACTOR99C.py'], 'supersedes': ['REFACTOR99B']}
+    {'patch_id': 'REFACTOR99C', 'id': 'REFACTOR99C', 'date': '2026-01-29', 'summary': 'Hotfix: define _sanitize_scopes helper (fix NameError) while keeping scope sanitization for Google Sheets auth.', 'files': ['REFACTOR99C.py'], 'supersedes': ['REFACTOR99B']},
+    {'patch_id': 'REFACTOR99D', 'id': 'REFACTOR99D', 'date': '2026-01-29', 'summary': 'Hotfix: harden Google Sheets OAuth scopes by sanitizing at call-site (no dependency on _sanitize_scopes).', 'files': ['REFACTOR99D.py'], 'supersedes': ['REFACTOR99C']}
 ]
 
 def _yureeka_register_patch_tracker_v1(_entries=_PATCH_TRACKER_CANONICAL_ENTRIES_V1):
@@ -1437,7 +1489,7 @@ def get_google_sheet():
     try:
         creds = Credentials.from_service_account_info(
             dict(st.secrets["gcp_service_account"]),
-            scopes=_sanitize_scopes(SCOPES)
+            scopes=_coerce_google_oauth_scopes(SCOPES)
         )
         client = gspread.authorize(creds)
 
@@ -1483,7 +1535,7 @@ def get_google_sheet():
             try:
                 creds = Credentials.from_service_account_info(
                     dict(st.secrets["gcp_service_account"]),
-                    scopes=_sanitize_scopes(SCOPES)
+                    scopes=_coerce_google_oauth_scopes(SCOPES)
                 )
                 client = gspread.authorize(creds)
 
@@ -14994,7 +15046,7 @@ def get_google_spreadsheet():
         ]
         creds = Credentials.from_service_account_info(
             dict(st.secrets["gcp_service_account"]),
-            scopes=_sanitize_scopes(SCOPES)
+            scopes=_coerce_google_oauth_scopes(SCOPES)
         )
         client = gspread.authorize(creds)
         spreadsheet_name = st.secrets.get("google_sheets", {}).get("spreadsheet_name", "Yureeka_JSON")
