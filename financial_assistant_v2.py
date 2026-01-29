@@ -1395,7 +1395,7 @@ def get_google_sheet():
     try:
         creds = Credentials.from_service_account_info(
             dict(st.secrets["gcp_service_account"]),
-            scopes=SCOPES
+            scopes=_sanitize_scopes(SCOPES)
         )
         client = gspread.authorize(creds)
 
@@ -1441,7 +1441,7 @@ def get_google_sheet():
             try:
                 creds = Credentials.from_service_account_info(
                     dict(st.secrets["gcp_service_account"]),
-                    scopes=SCOPES
+                    scopes=_sanitize_scopes(SCOPES)
                 )
                 client = gspread.authorize(creds)
 
@@ -14952,7 +14952,7 @@ def get_google_spreadsheet():
         ]
         creds = Credentials.from_service_account_info(
             dict(st.secrets["gcp_service_account"]),
-            scopes=SCOPES
+            scopes=_sanitize_scopes(SCOPES)
         )
         client = gspread.authorize(creds)
         spreadsheet_name = st.secrets.get("google_sheets", {}).get("spreadsheet_name", "Yureeka_JSON")
