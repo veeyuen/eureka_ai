@@ -153,7 +153,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "REFACTOR103"
+_YUREEKA_CODE_VERSION_LOCK = "REFACTOR104"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 
 # - Downsizing step 1: remove accumulated per-patch try/append scaffolding.
@@ -165,7 +165,7 @@ _PATCH_TRACKER_CANONICAL_ENTRIES_V1 = [{'patch_id': 'REFACTOR25', 'date': '2026-
     {'patch_id': 'REFACTOR99B', 'id': 'REFACTOR99B', 'date': '2026-01-29', 'summary': 'Hardening: sanitize OAuth scopes to strings-only at Google Sheets auth callsites to prevent crashes if SCOPES is contaminated.', 'files': ['REFACTOR99B.py'], 'supersedes': ['REFACTOR99A']},
     {'patch_id': 'REFACTOR99C', 'id': 'REFACTOR99C', 'date': '2026-01-29', 'summary': 'Hotfix: define _sanitize_scopes helper (fix NameError) while keeping scope sanitization for Google Sheets auth.', 'files': ['REFACTOR99C.py'], 'supersedes': ['REFACTOR99B']},
     {'patch_id': 'REFACTOR99D', 'id': 'REFACTOR99D', 'date': '2026-01-29', 'summary': 'Hotfix: harden Google Sheets OAuth scopes by sanitizing at call-site (no dependency on _sanitize_scopes).', 'files': ['REFACTOR99D.py'], 'supersedes': ['REFACTOR99C']}
-, {'patch_id': 'REFACTOR100', 'date': '2026-01-30', 'summary': 'Enforce year-anchor gating in authoritative schema-only candidate selection: derive required year tokens from canonical_key, prefer year-matching candidates (best_strong) and fall back with used_fallback_weak + structured provenance debug (selection_year_anchor_v1). Also harden Google Sheets auth scopes by coercing to strings-only and keeping _sanitize_scopes as a compatibility alias.', 'files': ['REFACTOR100.py'], 'supersedes': ['REFACTOR99D']}, {'patch_id': 'REFACTOR101', 'date': '2026-01-30', 'summary': 'Fix year-anchor gating for underscore-separated canonical keys and ensure gating runs by disabling hash fast-path reuse when code version changes. Year-anchored metrics now emit selection_year_anchor_v1 provenance with required/found years and used_fallback_weak.', 'files': ['REFACTOR101.py'], 'supersedes': ['REFACTOR100']}, {'patch_id': 'REFACTOR102', 'date': '2026-01-30', 'summary': 'Fix baseline freshness after saving Analysis to Google Sheets by invalidating History worksheet get_all_values cache on successful append_row. Ensures Evolution baseline selector sees the most recent Analysis run immediately in the same session (prevents stale Yahoo-baseline reuse after REFACTOR101).', 'files': ['REFACTOR102.py'], 'supersedes': ['REFACTOR101']}, {'patch_id': 'REFACTOR103', 'date': '2026-01-30', 'summary': 'Fix stale baseline selection when latest Analysis row in Sheet1 is sheets-safe/truncated wrapper: allow wrapper baselines (rehydratable via HistoryFull/full_store_ref/_sheet_id) to appear in the Evolution baseline selector, so Evolution always diffs against the most recent Analysis run. (Rehydration already occurs inside source-anchored evolution via HistoryFull.)', 'files': ['REFACTOR103.py'], 'supersedes': ['REFACTOR102']}]
+, {'patch_id': 'REFACTOR100', 'date': '2026-01-30', 'summary': 'Enforce year-anchor gating in authoritative schema-only candidate selection: derive required year tokens from canonical_key, prefer year-matching candidates (best_strong) and fall back with used_fallback_weak + structured provenance debug (selection_year_anchor_v1). Also harden Google Sheets auth scopes by coercing to strings-only and keeping _sanitize_scopes as a compatibility alias.', 'files': ['REFACTOR100.py'], 'supersedes': ['REFACTOR99D']}, {'patch_id': 'REFACTOR101', 'date': '2026-01-30', 'summary': 'Fix year-anchor gating for underscore-separated canonical keys and ensure gating runs by disabling hash fast-path reuse when code version changes. Year-anchored metrics now emit selection_year_anchor_v1 provenance with required/found years and used_fallback_weak.', 'files': ['REFACTOR101.py'], 'supersedes': ['REFACTOR100']}, {'patch_id': 'REFACTOR102', 'date': '2026-01-30', 'summary': 'Fix baseline freshness after saving Analysis to Google Sheets by invalidating History worksheet get_all_values cache on successful append_row. Ensures Evolution baseline selector sees the most recent Analysis run immediately in the same session (prevents stale Yahoo-baseline reuse after REFACTOR101).', 'files': ['REFACTOR102.py'], 'supersedes': ['REFACTOR101']}, {'patch_id': 'REFACTOR103', 'date': '2026-01-30', 'summary': 'Fix stale baseline selection when latest Analysis row in Sheet1 is sheets-safe/truncated wrapper: allow wrapper baselines (rehydratable via HistoryFull/full_store_ref/_sheet_id) to appear in the Evolution baseline selector, so Evolution always diffs against the most recent Analysis run. (Rehydration already occurs inside source-anchored evolution via HistoryFull.)', 'files': ['REFACTOR103.py'], 'supersedes': ['REFACTOR102']}, {'patch_id': 'REFACTOR104', 'date': '2026-01-30', 'summary': 'Baseline freshness hardening: prefer in-session last_analysis as Evolution baseline when Sheets history is stale/cached, reset baseline selectbox on newest-timestamp change (keyed widget), and emit diag_baseline_freshness_v1 for traceability. This prevents Evolution from diffing against an older snapshot after a new Analysis run in the same session.', 'files': ['REFACTOR104.py'], 'supersedes': ['REFACTOR103']}]
 
 def _yureeka_register_patch_tracker_v1(_entries=_PATCH_TRACKER_CANONICAL_ENTRIES_V1):
     try:
@@ -26261,6 +26261,47 @@ def main():
 
         history.sort(key=_r99_ts_key, reverse=True)
 
+        # REFACTOR104: Prefer in-session last_analysis as newest baseline when Sheets History is stale/cached.
+        _r104_session_last = None
+        try:
+            _r104_session_last = st.session_state.get("last_analysis")
+        except Exception:
+            _r104_session_last = None
+
+        def _r104_parse_ts(_obj: dict):
+            try:
+                if isinstance(_obj, dict):
+                    _t = _obj.get("timestamp") or (_obj.get("results") or {}).get("timestamp") or ""
+                    _dt = _parse_iso_dt(_t) if _t else None
+                    return (_t, _dt.timestamp() if _dt else 0.0)
+            except Exception:
+                pass
+            return ("", 0.0)
+
+        try:
+            if isinstance(_r104_session_last, dict):
+                _sess_t, _sess_ts = _r104_parse_ts(_r104_session_last)
+                _hist_t, _hist_ts = _r104_parse_ts(history[0]) if history else ("", 0.0)
+                _sess_is_newer = bool(_sess_ts) and (_sess_ts > (_hist_ts or 0.0) + 0.5)
+                if (not history) or _sess_is_newer:
+                    # De-dup by timestamp to avoid doubles when Sheets has already refreshed.
+                    _dedup = []
+                    for _h in (history or []):
+                        try:
+                            _t, _ = _r104_parse_ts(_h)
+                            if _t and _sess_t and _t == _sess_t:
+                                continue
+                        except Exception:
+                            pass
+                        _dedup.append(_h)
+                    history = [_r104_session_last] + _dedup
+                    try:
+                        history.sort(key=_r99_ts_key, reverse=True)
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
         if not history:
             st.info("📭 No previous analyses found. Run an analysis in the 'New Analysis' tab first.")
             return
@@ -26269,8 +26310,13 @@ def main():
             f"{i+1}. {h.get('question', 'N/A')}  ({h.get('timestamp', '')})"
             for i, h in enumerate(history)
         ]
+        _r104_baseline_select_key = "baseline_select"
+        try:
+            _r104_baseline_select_key = f"baseline_select_{(history[0].get('timestamp') or '')}"
+        except Exception:
+            pass
         # Default to the most recent baseline (index=0 because list is newest-first).
-        baseline_choice = st.selectbox("Select baseline analysis:", baseline_options, index=0)
+        baseline_choice = st.selectbox("Select baseline analysis:", baseline_options, index=0, key=_r104_baseline_select_key)
         baseline_idx = int(baseline_choice.split(".")[0]) - 1
         baseline_data = history[baseline_idx]
 
@@ -26342,6 +26388,27 @@ def main():
                             _extra_urls_evo = []
 
 
+
+                        _diag_baseline_freshness_v1 = {}
+                        try:
+                            _b_ts = (baseline_data or {}).get("timestamp") or ((baseline_data or {}).get("results") or {}).get("timestamp") or ""
+                            _s_last = None
+                            try:
+                                _s_last = st.session_state.get("last_analysis")
+                            except Exception:
+                                _s_last = None
+                            _s_ts = ""
+                            if isinstance(_s_last, dict):
+                                _s_ts = _s_last.get("timestamp") or (_s_last.get("results") or {}).get("timestamp") or ""
+                            _diag_baseline_freshness_v1 = {
+                                "baseline_selected_timestamp": str(_b_ts or ""),
+                                "session_last_analysis_timestamp": str(_s_ts or ""),
+                                "baseline_is_session_last": bool(_b_ts and _s_ts and str(_b_ts) == str(_s_ts)),
+                                "history_newest_timestamp": str((history[0].get("timestamp") if isinstance(history, list) and history and isinstance(history[0], dict) else "") or ""),
+                            }
+                        except Exception:
+                            _diag_baseline_freshness_v1 = {}
+
                         results = run_source_anchored_evolution(
 
                             baseline_data,
@@ -26355,6 +26422,8 @@ def main():
                                 "diag_run_id": _evo_run_id,
 
                                 "diag_extra_urls_ui_raw": (extra_sources_text or ""),
+
+                                "diag_baseline_freshness_v1": _diag_baseline_freshness_v1,
 
                             },
 
