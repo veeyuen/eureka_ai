@@ -153,7 +153,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "REFACTOR101"
+_YUREEKA_CODE_VERSION_LOCK = "REFACTOR102"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 
 # - Downsizing step 1: remove accumulated per-patch try/append scaffolding.
@@ -165,7 +165,7 @@ _PATCH_TRACKER_CANONICAL_ENTRIES_V1 = [{'patch_id': 'REFACTOR25', 'date': '2026-
     {'patch_id': 'REFACTOR99B', 'id': 'REFACTOR99B', 'date': '2026-01-29', 'summary': 'Hardening: sanitize OAuth scopes to strings-only at Google Sheets auth callsites to prevent crashes if SCOPES is contaminated.', 'files': ['REFACTOR99B.py'], 'supersedes': ['REFACTOR99A']},
     {'patch_id': 'REFACTOR99C', 'id': 'REFACTOR99C', 'date': '2026-01-29', 'summary': 'Hotfix: define _sanitize_scopes helper (fix NameError) while keeping scope sanitization for Google Sheets auth.', 'files': ['REFACTOR99C.py'], 'supersedes': ['REFACTOR99B']},
     {'patch_id': 'REFACTOR99D', 'id': 'REFACTOR99D', 'date': '2026-01-29', 'summary': 'Hotfix: harden Google Sheets OAuth scopes by sanitizing at call-site (no dependency on _sanitize_scopes).', 'files': ['REFACTOR99D.py'], 'supersedes': ['REFACTOR99C']}
-, {'patch_id': 'REFACTOR100', 'date': '2026-01-30', 'summary': 'Enforce year-anchor gating in authoritative schema-only candidate selection: derive required year tokens from canonical_key, prefer year-matching candidates (best_strong) and fall back with used_fallback_weak + structured provenance debug (selection_year_anchor_v1). Also harden Google Sheets auth scopes by coercing to strings-only and keeping _sanitize_scopes as a compatibility alias.', 'files': ['REFACTOR100.py'], 'supersedes': ['REFACTOR99D']}, {'patch_id': 'REFACTOR101', 'date': '2026-01-30', 'summary': 'Fix year-anchor gating for underscore-separated canonical keys and ensure gating runs by disabling hash fast-path reuse when code version changes. Year-anchored metrics now emit selection_year_anchor_v1 provenance with required/found years and used_fallback_weak.', 'files': ['REFACTOR101.py'], 'supersedes': ['REFACTOR100']}]
+, {'patch_id': 'REFACTOR100', 'date': '2026-01-30', 'summary': 'Enforce year-anchor gating in authoritative schema-only candidate selection: derive required year tokens from canonical_key, prefer year-matching candidates (best_strong) and fall back with used_fallback_weak + structured provenance debug (selection_year_anchor_v1). Also harden Google Sheets auth scopes by coercing to strings-only and keeping _sanitize_scopes as a compatibility alias.', 'files': ['REFACTOR100.py'], 'supersedes': ['REFACTOR99D']}, {'patch_id': 'REFACTOR101', 'date': '2026-01-30', 'summary': 'Fix year-anchor gating for underscore-separated canonical keys and ensure gating runs by disabling hash fast-path reuse when code version changes. Year-anchored metrics now emit selection_year_anchor_v1 provenance with required/found years and used_fallback_weak.', 'files': ['REFACTOR101.py'], 'supersedes': ['REFACTOR100']}, {'patch_id': 'REFACTOR102', 'date': '2026-01-30', 'summary': 'Fix baseline freshness after saving Analysis to Google Sheets by invalidating History worksheet get_all_values cache on successful append_row. Ensures Evolution baseline selector sees the most recent Analysis run immediately in the same session (prevents stale Yahoo-baseline reuse after REFACTOR101).', 'files': ['REFACTOR102.py'], 'supersedes': ['REFACTOR101']}]
 
 def _yureeka_register_patch_tracker_v1(_entries=_PATCH_TRACKER_CANONICAL_ENTRIES_V1):
     try:
@@ -3012,6 +3012,19 @@ def add_to_history(analysis: dict) -> bool:
             payload_json,
         ]
         sheet.append_row(row, value_input_option="RAW")
+
+        # REFACTOR102: invalidate History get_all_values cache so get_history() sees the newly appended row immediately.
+        try:
+            _cache = globals().get("_SHEETS_READ_CACHE")
+            if isinstance(_cache, dict):
+                _ws_title = getattr(sheet, "title", "") or "Sheet1"
+                _cache.pop(f"get_all_values:History::{_ws_title}", None)
+                # Defensive: drop any other cached History::* reads (worksheet rename / prior cache keys).
+                for _k in list(_cache.keys()):
+                    if isinstance(_k, str) and _k.startswith("get_all_values:History::"):
+                        _cache.pop(_k, None)
+        except Exception:
+            pass
 
         # - This prevents Evolution from being blocked when a Sheets write succeeds/fails intermittently.
         try:
