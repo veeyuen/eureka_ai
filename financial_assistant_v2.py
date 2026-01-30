@@ -58,6 +58,12 @@ import plotly.express as px
 import streamlit as st
 
 
+# REFACTOR108: Shared Sheets read-cache (used by sheets_get_all_values_cached). Keep TTL short to prevent stale baseline selection.
+_SHEETS_READ_CACHE = {}
+_SHEETS_READ_CACHE_TTL_SEC = 45
+_SHEETS_LAST_READ_ERROR = None
+
+
 _YUREEKA_SHEETS_SCOPES_DEBUG_V1 = {}  # REFACTOR100
 
 def _coerce_google_oauth_scopes(scopes) -> list:
@@ -153,7 +159,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "REFACTOR107"
+_YUREEKA_CODE_VERSION_LOCK = "REFACTOR108"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 
 # - Downsizing step 1: remove accumulated per-patch try/append scaffolding.
@@ -165,7 +171,7 @@ _PATCH_TRACKER_CANONICAL_ENTRIES_V1 = [{'patch_id': 'REFACTOR25', 'date': '2026-
     {'patch_id': 'REFACTOR99B', 'id': 'REFACTOR99B', 'date': '2026-01-29', 'summary': 'Hardening: sanitize OAuth scopes to strings-only at Google Sheets auth callsites to prevent crashes if SCOPES is contaminated.', 'files': ['REFACTOR99B.py'], 'supersedes': ['REFACTOR99A']},
     {'patch_id': 'REFACTOR99C', 'id': 'REFACTOR99C', 'date': '2026-01-29', 'summary': 'Hotfix: define _sanitize_scopes helper (fix NameError) while keeping scope sanitization for Google Sheets auth.', 'files': ['REFACTOR99C.py'], 'supersedes': ['REFACTOR99B']},
     {'patch_id': 'REFACTOR99D', 'id': 'REFACTOR99D', 'date': '2026-01-29', 'summary': 'Hotfix: harden Google Sheets OAuth scopes by sanitizing at call-site (no dependency on _sanitize_scopes).', 'files': ['REFACTOR99D.py'], 'supersedes': ['REFACTOR99C']}
-, {'patch_id': 'REFACTOR100', 'date': '2026-01-30', 'summary': 'Enforce year-anchor gating in authoritative schema-only candidate selection: derive required year tokens from canonical_key, prefer year-matching candidates (best_strong) and fall back with used_fallback_weak + structured provenance debug (selection_year_anchor_v1). Also harden Google Sheets auth scopes by coercing to strings-only and keeping _sanitize_scopes as a compatibility alias.', 'files': ['REFACTOR100.py'], 'supersedes': ['REFACTOR99D']}, {'patch_id': 'REFACTOR101', 'date': '2026-01-30', 'summary': 'Fix year-anchor gating for underscore-separated canonical keys and ensure gating runs by disabling hash fast-path reuse when code version changes. Year-anchored metrics now emit selection_year_anchor_v1 provenance with required/found years and used_fallback_weak.', 'files': ['REFACTOR101.py'], 'supersedes': ['REFACTOR100']}, {'patch_id': 'REFACTOR102', 'date': '2026-01-30', 'summary': 'Fix baseline freshness after saving Analysis to Google Sheets by invalidating History worksheet get_all_values cache on successful append_row. Ensures Evolution baseline selector sees the most recent Analysis run immediately in the same session (prevents stale Yahoo-baseline reuse after REFACTOR101).', 'files': ['REFACTOR102.py'], 'supersedes': ['REFACTOR101']}, {'patch_id': 'REFACTOR103', 'date': '2026-01-30', 'summary': 'Fix stale baseline selection when latest Analysis row in Sheet1 is sheets-safe/truncated wrapper: allow wrapper baselines (rehydratable via HistoryFull/full_store_ref/_sheet_id) to appear in the Evolution baseline selector, so Evolution always diffs against the most recent Analysis run. (Rehydration already occurs inside source-anchored evolution via HistoryFull.)', 'files': ['REFACTOR103.py'], 'supersedes': ['REFACTOR102']}, {'patch_id': 'REFACTOR104', 'date': '2026-01-30', 'summary': 'Baseline freshness hardening: prefer in-session last_analysis as Evolution baseline when Sheets history is stale/cached, reset baseline selectbox on newest-timestamp change (keyed widget), and emit diag_baseline_freshness_v1 for traceability. This prevents Evolution from diffing against an older snapshot after a new Analysis run in the same session.', 'files': ['REFACTOR104.py'], 'supersedes': ['REFACTOR103']}, {'patch_id': 'REFACTOR105', 'date': '2026-01-30', 'summary': 'Fix Evolution reading old baseline snapshots by making get_history() cache-proof: after successful Sheets writes, set a write-dirty flag and bypass cached History reads once; merge in-session analysis_history + last_analysis into history even when Sheets is available, with de-dup and limit enforcement. Ensures Evolution baseline selector always sees and defaults to the latest Analysis run in-session.', 'files': ['REFACTOR105.py'], 'supersedes': ['REFACTOR104']}, {'patch_id': 'REFACTOR106', 'date': '2026-01-30', 'summary': 'Fix Evolution baseline still reading stale snapshots by adding a final run-time baseline autobump guard: when the baseline selector is left on default (index 0) but a newer in-session or freshly-scanned Sheets Analysis exists for the same question, automatically use that latest Analysis payload as baseline and stamp diag_baseline_autobump_v1 for traceability. No schema/key-grammar changes; Streamlit-safe.', 'files': ['REFACTOR106.py'], 'supersedes': ['REFACTOR105']}, {'patch_id': 'REFACTOR107', 'date': '2026-01-30', 'summary': 'Baseline freshness hardening v2: fix Evolution still reading old Analysis snapshots by (a) treating Analysis payloads as valid even when primary_metrics_canonical is nested under primary_response, (b) accepting sheets-safe/truncated wrapper baselines via full_store_ref/_sheet_id/snapshot refs, and (c) sorting merged history by nested timestamps so the newest Analysis is truly default. Strengthens the REFACTOR106 baseline autobump guard without schema/key-grammar changes.', 'files': ['REFACTOR107.py'], 'supersedes': ['REFACTOR106']}]
+, {'patch_id': 'REFACTOR100', 'date': '2026-01-30', 'summary': 'Enforce year-anchor gating in authoritative schema-only candidate selection: derive required year tokens from canonical_key, prefer year-matching candidates (best_strong) and fall back with used_fallback_weak + structured provenance debug (selection_year_anchor_v1). Also harden Google Sheets auth scopes by coercing to strings-only and keeping _sanitize_scopes as a compatibility alias.', 'files': ['REFACTOR100.py'], 'supersedes': ['REFACTOR99D']}, {'patch_id': 'REFACTOR101', 'date': '2026-01-30', 'summary': 'Fix year-anchor gating for underscore-separated canonical keys and ensure gating runs by disabling hash fast-path reuse when code version changes. Year-anchored metrics now emit selection_year_anchor_v1 provenance with required/found years and used_fallback_weak.', 'files': ['REFACTOR101.py'], 'supersedes': ['REFACTOR100']}, {'patch_id': 'REFACTOR102', 'date': '2026-01-30', 'summary': 'Fix baseline freshness after saving Analysis to Google Sheets by invalidating History worksheet get_all_values cache on successful append_row. Ensures Evolution baseline selector sees the most recent Analysis run immediately in the same session (prevents stale Yahoo-baseline reuse after REFACTOR101).', 'files': ['REFACTOR102.py'], 'supersedes': ['REFACTOR101']}, {'patch_id': 'REFACTOR103', 'date': '2026-01-30', 'summary': 'Fix stale baseline selection when latest Analysis row in Sheet1 is sheets-safe/truncated wrapper: allow wrapper baselines (rehydratable via HistoryFull/full_store_ref/_sheet_id) to appear in the Evolution baseline selector, so Evolution always diffs against the most recent Analysis run. (Rehydration already occurs inside source-anchored evolution via HistoryFull.)', 'files': ['REFACTOR103.py'], 'supersedes': ['REFACTOR102']}, {'patch_id': 'REFACTOR104', 'date': '2026-01-30', 'summary': 'Baseline freshness hardening: prefer in-session last_analysis as Evolution baseline when Sheets history is stale/cached, reset baseline selectbox on newest-timestamp change (keyed widget), and emit diag_baseline_freshness_v1 for traceability. This prevents Evolution from diffing against an older snapshot after a new Analysis run in the same session.', 'files': ['REFACTOR104.py'], 'supersedes': ['REFACTOR103']}, {'patch_id': 'REFACTOR105', 'date': '2026-01-30', 'summary': 'Fix Evolution reading old baseline snapshots by making get_history() cache-proof: after successful Sheets writes, set a write-dirty flag and bypass cached History reads once; merge in-session analysis_history + last_analysis into history even when Sheets is available, with de-dup and limit enforcement. Ensures Evolution baseline selector always sees and defaults to the latest Analysis run in-session.', 'files': ['REFACTOR105.py'], 'supersedes': ['REFACTOR104']}, {'patch_id': 'REFACTOR106', 'date': '2026-01-30', 'summary': 'Fix Evolution baseline still reading stale snapshots by adding a final run-time baseline autobump guard: when the baseline selector is left on default (index 0) but a newer in-session or freshly-scanned Sheets Analysis exists for the same question, automatically use that latest Analysis payload as baseline and stamp diag_baseline_autobump_v1 for traceability. No schema/key-grammar changes; Streamlit-safe.', 'files': ['REFACTOR106.py'], 'supersedes': ['REFACTOR105']}, {'patch_id': 'REFACTOR107', 'date': '2026-01-30', 'summary': 'Baseline freshness hardening v2: fix Evolution still reading old Analysis snapshots by (a) treating Analysis payloads as valid even when primary_metrics_canonical is nested under primary_response, (b) accepting sheets-safe/truncated wrapper baselines via full_store_ref/_sheet_id/snapshot refs, and (c) sorting merged history by nested timestamps so the newest Analysis is truly default. Strengthens the REFACTOR106 baseline autobump guard without schema/key-grammar changes.', 'files': ['REFACTOR107.py'], 'supersedes': ['REFACTOR106']}, {'patch_id': 'REFACTOR108', 'date': '2026-01-30', 'summary': 'Fix baseline snapshot recency: return history newest-first (reverse chronological) so Evolution default baseline is truly latest across sessions; add shared Sheets read-cache globals + short TTL to prevent stale reads. No schema/key-grammar changes; Streamlit-safe.', 'files': ['REFACTOR108.py'], 'supersedes': ['REFACTOR107']}]
 
 def _yureeka_register_patch_tracker_v1(_entries=_PATCH_TRACKER_CANONICAL_ENTRIES_V1):
     try:
@@ -5157,7 +5163,14 @@ def get_history(limit: int = MAX_HISTORY_ITEMS) -> List[Dict]:
                     # (your existing GH1 rescue logic unchanged)
                     continue
 
-        # REFACTOR105: Merge in-session history (analysis_history + last_analysis) to avoid stale Sheets reads.
+
+        # REFACTOR108: Ensure history is newest-first (Sheet rows are chronological).
+        try:
+            history = list(reversed(history))
+        except Exception:
+            pass
+
+# REFACTOR105: Merge in-session history (analysis_history + last_analysis) to avoid stale Sheets reads.
         try:
             _sess_hist = st.session_state.get("analysis_history") or []
         except Exception:
@@ -5215,9 +5228,9 @@ def get_history(limit: int = MAX_HISTORY_ITEMS) -> List[Dict]:
                         return _dt.timestamp() if _dt else 0.0
                     except Exception:
                         return 0.0
-                _merged.sort(key=_ts)
+                _merged.sort(key=_ts, reverse=True)
                 if isinstance(limit, int) and limit > 0 and len(_merged) > limit:
-                    _merged = _merged[-limit:]
+                    _merged = _merged[:limit]
             except Exception:
                 pass
 
