@@ -153,7 +153,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "REFACTOR106"
+_YUREEKA_CODE_VERSION_LOCK = "REFACTOR107"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 
 # - Downsizing step 1: remove accumulated per-patch try/append scaffolding.
@@ -165,7 +165,7 @@ _PATCH_TRACKER_CANONICAL_ENTRIES_V1 = [{'patch_id': 'REFACTOR25', 'date': '2026-
     {'patch_id': 'REFACTOR99B', 'id': 'REFACTOR99B', 'date': '2026-01-29', 'summary': 'Hardening: sanitize OAuth scopes to strings-only at Google Sheets auth callsites to prevent crashes if SCOPES is contaminated.', 'files': ['REFACTOR99B.py'], 'supersedes': ['REFACTOR99A']},
     {'patch_id': 'REFACTOR99C', 'id': 'REFACTOR99C', 'date': '2026-01-29', 'summary': 'Hotfix: define _sanitize_scopes helper (fix NameError) while keeping scope sanitization for Google Sheets auth.', 'files': ['REFACTOR99C.py'], 'supersedes': ['REFACTOR99B']},
     {'patch_id': 'REFACTOR99D', 'id': 'REFACTOR99D', 'date': '2026-01-29', 'summary': 'Hotfix: harden Google Sheets OAuth scopes by sanitizing at call-site (no dependency on _sanitize_scopes).', 'files': ['REFACTOR99D.py'], 'supersedes': ['REFACTOR99C']}
-, {'patch_id': 'REFACTOR100', 'date': '2026-01-30', 'summary': 'Enforce year-anchor gating in authoritative schema-only candidate selection: derive required year tokens from canonical_key, prefer year-matching candidates (best_strong) and fall back with used_fallback_weak + structured provenance debug (selection_year_anchor_v1). Also harden Google Sheets auth scopes by coercing to strings-only and keeping _sanitize_scopes as a compatibility alias.', 'files': ['REFACTOR100.py'], 'supersedes': ['REFACTOR99D']}, {'patch_id': 'REFACTOR101', 'date': '2026-01-30', 'summary': 'Fix year-anchor gating for underscore-separated canonical keys and ensure gating runs by disabling hash fast-path reuse when code version changes. Year-anchored metrics now emit selection_year_anchor_v1 provenance with required/found years and used_fallback_weak.', 'files': ['REFACTOR101.py'], 'supersedes': ['REFACTOR100']}, {'patch_id': 'REFACTOR102', 'date': '2026-01-30', 'summary': 'Fix baseline freshness after saving Analysis to Google Sheets by invalidating History worksheet get_all_values cache on successful append_row. Ensures Evolution baseline selector sees the most recent Analysis run immediately in the same session (prevents stale Yahoo-baseline reuse after REFACTOR101).', 'files': ['REFACTOR102.py'], 'supersedes': ['REFACTOR101']}, {'patch_id': 'REFACTOR103', 'date': '2026-01-30', 'summary': 'Fix stale baseline selection when latest Analysis row in Sheet1 is sheets-safe/truncated wrapper: allow wrapper baselines (rehydratable via HistoryFull/full_store_ref/_sheet_id) to appear in the Evolution baseline selector, so Evolution always diffs against the most recent Analysis run. (Rehydration already occurs inside source-anchored evolution via HistoryFull.)', 'files': ['REFACTOR103.py'], 'supersedes': ['REFACTOR102']}, {'patch_id': 'REFACTOR104', 'date': '2026-01-30', 'summary': 'Baseline freshness hardening: prefer in-session last_analysis as Evolution baseline when Sheets history is stale/cached, reset baseline selectbox on newest-timestamp change (keyed widget), and emit diag_baseline_freshness_v1 for traceability. This prevents Evolution from diffing against an older snapshot after a new Analysis run in the same session.', 'files': ['REFACTOR104.py'], 'supersedes': ['REFACTOR103']}, {'patch_id': 'REFACTOR105', 'date': '2026-01-30', 'summary': 'Fix Evolution reading old baseline snapshots by making get_history() cache-proof: after successful Sheets writes, set a write-dirty flag and bypass cached History reads once; merge in-session analysis_history + last_analysis into history even when Sheets is available, with de-dup and limit enforcement. Ensures Evolution baseline selector always sees and defaults to the latest Analysis run in-session.', 'files': ['REFACTOR105.py'], 'supersedes': ['REFACTOR104']}, {'patch_id': 'REFACTOR106', 'date': '2026-01-30', 'summary': 'Fix Evolution baseline still reading stale snapshots by adding a final run-time baseline autobump guard: when the baseline selector is left on default (index 0) but a newer in-session or freshly-scanned Sheets Analysis exists for the same question, automatically use that latest Analysis payload as baseline and stamp diag_baseline_autobump_v1 for traceability. No schema/key-grammar changes; Streamlit-safe.', 'files': ['REFACTOR106.py'], 'supersedes': ['REFACTOR105']}]
+, {'patch_id': 'REFACTOR100', 'date': '2026-01-30', 'summary': 'Enforce year-anchor gating in authoritative schema-only candidate selection: derive required year tokens from canonical_key, prefer year-matching candidates (best_strong) and fall back with used_fallback_weak + structured provenance debug (selection_year_anchor_v1). Also harden Google Sheets auth scopes by coercing to strings-only and keeping _sanitize_scopes as a compatibility alias.', 'files': ['REFACTOR100.py'], 'supersedes': ['REFACTOR99D']}, {'patch_id': 'REFACTOR101', 'date': '2026-01-30', 'summary': 'Fix year-anchor gating for underscore-separated canonical keys and ensure gating runs by disabling hash fast-path reuse when code version changes. Year-anchored metrics now emit selection_year_anchor_v1 provenance with required/found years and used_fallback_weak.', 'files': ['REFACTOR101.py'], 'supersedes': ['REFACTOR100']}, {'patch_id': 'REFACTOR102', 'date': '2026-01-30', 'summary': 'Fix baseline freshness after saving Analysis to Google Sheets by invalidating History worksheet get_all_values cache on successful append_row. Ensures Evolution baseline selector sees the most recent Analysis run immediately in the same session (prevents stale Yahoo-baseline reuse after REFACTOR101).', 'files': ['REFACTOR102.py'], 'supersedes': ['REFACTOR101']}, {'patch_id': 'REFACTOR103', 'date': '2026-01-30', 'summary': 'Fix stale baseline selection when latest Analysis row in Sheet1 is sheets-safe/truncated wrapper: allow wrapper baselines (rehydratable via HistoryFull/full_store_ref/_sheet_id) to appear in the Evolution baseline selector, so Evolution always diffs against the most recent Analysis run. (Rehydration already occurs inside source-anchored evolution via HistoryFull.)', 'files': ['REFACTOR103.py'], 'supersedes': ['REFACTOR102']}, {'patch_id': 'REFACTOR104', 'date': '2026-01-30', 'summary': 'Baseline freshness hardening: prefer in-session last_analysis as Evolution baseline when Sheets history is stale/cached, reset baseline selectbox on newest-timestamp change (keyed widget), and emit diag_baseline_freshness_v1 for traceability. This prevents Evolution from diffing against an older snapshot after a new Analysis run in the same session.', 'files': ['REFACTOR104.py'], 'supersedes': ['REFACTOR103']}, {'patch_id': 'REFACTOR105', 'date': '2026-01-30', 'summary': 'Fix Evolution reading old baseline snapshots by making get_history() cache-proof: after successful Sheets writes, set a write-dirty flag and bypass cached History reads once; merge in-session analysis_history + last_analysis into history even when Sheets is available, with de-dup and limit enforcement. Ensures Evolution baseline selector always sees and defaults to the latest Analysis run in-session.', 'files': ['REFACTOR105.py'], 'supersedes': ['REFACTOR104']}, {'patch_id': 'REFACTOR106', 'date': '2026-01-30', 'summary': 'Fix Evolution baseline still reading stale snapshots by adding a final run-time baseline autobump guard: when the baseline selector is left on default (index 0) but a newer in-session or freshly-scanned Sheets Analysis exists for the same question, automatically use that latest Analysis payload as baseline and stamp diag_baseline_autobump_v1 for traceability. No schema/key-grammar changes; Streamlit-safe.', 'files': ['REFACTOR106.py'], 'supersedes': ['REFACTOR105']}, {'patch_id': 'REFACTOR107', 'date': '2026-01-30', 'summary': 'Baseline freshness hardening v2: fix Evolution still reading old Analysis snapshots by (a) treating Analysis payloads as valid even when primary_metrics_canonical is nested under primary_response, (b) accepting sheets-safe/truncated wrapper baselines via full_store_ref/_sheet_id/snapshot refs, and (c) sorting merged history by nested timestamps so the newest Analysis is truly default. Strengthens the REFACTOR106 baseline autobump guard without schema/key-grammar changes.', 'files': ['REFACTOR107.py'], 'supersedes': ['REFACTOR106']}]
 
 def _yureeka_register_patch_tracker_v1(_entries=_PATCH_TRACKER_CANONICAL_ENTRIES_V1):
     try:
@@ -5205,7 +5205,12 @@ def get_history(limit: int = MAX_HISTORY_ITEMS) -> List[Dict]:
             try:
                 def _ts(_h):
                     try:
-                        _t = _h.get("timestamp") or ""
+                        _t = (
+                            (_h.get("timestamp") if isinstance(_h, dict) else "")
+                            or ((_h.get("results") or {}).get("timestamp") if isinstance(_h.get("results"), dict) else "")
+                            or ((_h.get("primary_response") or {}).get("timestamp") if isinstance(_h.get("primary_response"), dict) else "")
+                            or ""
+                        )
                         _dt = _parse_iso_dt(_t) if _t else None
                         return _dt.timestamp() if _dt else 0.0
                     except Exception:
@@ -26359,7 +26364,13 @@ def main():
         # Sort newest-first so the default selection is the most recent baseline.
         def _r99_ts_key(h: dict):
             try:
-                _t = h.get("timestamp") or ""
+                # Prefer top-level timestamp, but fall back to nested results/primary_response timestamps.
+                _t = (
+                    (h.get("timestamp") if isinstance(h, dict) else "")
+                    or ((h.get("results") or {}).get("timestamp") if isinstance(h.get("results"), dict) else "")
+                    or ((h.get("primary_response") or {}).get("timestamp") if isinstance(h.get("primary_response"), dict) else "")
+                    or ""
+                )
                 _dt = _parse_iso_dt(_t) if _t else None
                 return _dt.timestamp() if _dt else 0.0
             except Exception:
@@ -26438,12 +26449,63 @@ def main():
                 except Exception:
                     return str(_q or "").strip().lower()
             def _r106_is_analysis_like(_obj):
+                """Loose-but-safe predicate for 'can be used as an Analysis baseline'.
+
+                Why:
+                - Some Analysis payloads store primary_metrics_canonical under primary_response.
+                - Some rows are sheets-safe/truncated wrappers (no schema/pmc) but are still deterministically rehydratable
+                  via full_store_ref/_sheet_id/snapshot refs (HistoryFull).
+                - Evolution baseline selection/autobump must treat these as valid so we don't fall back to older snapshots.
+                """
                 try:
                     if not isinstance(_obj, dict):
                         return False
-                    _schema = _obj.get("metric_schema_frozen") or ((_obj.get("primary_response") or {}).get("metric_schema_frozen") if isinstance(_obj.get("primary_response"), dict) else None) or ((_obj.get("results") or {}).get("metric_schema_frozen") if isinstance(_obj.get("results"), dict) else None)
-                    _pmc = _obj.get("primary_metrics_canonical") or ((_obj.get("results") or {}).get("primary_metrics_canonical") if isinstance(_obj.get("results"), dict) else None)
-                    return bool(isinstance(_schema, dict) and _schema and isinstance(_pmc, dict) and _pmc)
+
+                    # Exclude Evolution-shaped payloads.
+                    if str(_obj.get("analysis_type") or "").strip().lower() in ("source_anchored", "evolution"):
+                        return False
+
+                    _q = _obj.get("question") or ((_obj.get("results") or {}).get("question") if isinstance(_obj.get("results"), dict) else "") or ""
+                    _t = _obj.get("timestamp") or ((_obj.get("results") or {}).get("timestamp") if isinstance(_obj.get("results"), dict) else "") or ""
+                    if not (str(_q).strip() and str(_t).strip()):
+                        return False
+
+                    _schema = (
+                        _obj.get("metric_schema_frozen")
+                        or ((_obj.get("primary_response") or {}).get("metric_schema_frozen") if isinstance(_obj.get("primary_response"), dict) else None)
+                        or ((_obj.get("results") or {}).get("metric_schema_frozen") if isinstance(_obj.get("results"), dict) else None)
+                    )
+                    if isinstance(_schema, dict) and _schema:
+                        return True
+
+                    _pmc = (
+                        _obj.get("primary_metrics_canonical")
+                        or ((_obj.get("primary_response") or {}).get("primary_metrics_canonical") if isinstance(_obj.get("primary_response"), dict) else None)
+                        or ((_obj.get("results") or {}).get("primary_metrics_canonical") if isinstance(_obj.get("results"), dict) else None)
+                    )
+                    if isinstance(_pmc, dict) and _pmc:
+                        return True
+
+                    # Rehydratable wrappers: treat as valid baselines (HistoryFull).
+                    _ref = (
+                        _obj.get("full_store_ref")
+                        or ((_obj.get("results") or {}).get("full_store_ref") if isinstance(_obj.get("results"), dict) else "")
+                        or ((_obj.get("primary_response") or {}).get("full_store_ref") if isinstance(_obj.get("primary_response"), dict) else "")
+                        or ""
+                    )
+                    if isinstance(_ref, str) and _ref.strip():
+                        return True
+                    if _obj.get("_sheet_id"):
+                        return True
+                    if (
+                        _obj.get("snapshot_store_ref")
+                        or ((_obj.get("results") or {}).get("snapshot_store_ref") if isinstance(_obj.get("results"), dict) else "")
+                        or _obj.get("source_snapshot_hash")
+                        or ((_obj.get("results") or {}).get("source_snapshot_hash") if isinstance(_obj.get("results"), dict) else "")
+                    ):
+                        return True
+
+                    return False
                 except Exception:
                     return False
             if int(baseline_idx or 0) == 0:
@@ -26459,7 +26521,7 @@ def main():
                     _sess_q = _r106_norm_q(_sess_last.get("question") or ((_sess_last.get("results") or {}).get("question")))
                     _sess_ts = _parse_iso_dt(_sess_last.get("timestamp") or ((_sess_last.get("results") or {}).get("timestamp")))
                     _r106_autobump_v1.update({"selected_timestamp": str((baseline_data or {}).get("timestamp") or ""), "session_last_timestamp": str(_sess_last.get("timestamp") or "")})
-                    if _sel_q and _sess_q and _sel_q == _sess_q and _sel_ts and _sess_ts and _sess_ts > _sel_ts:
+                    if _sel_q and _sess_q and _sel_q == _sess_q and _sess_ts and (not _sel_ts or _sess_ts > _sel_ts):
                         baseline_data = _sess_last
                         _r106_autobump_v1["did_autobump"] = True
                         _r106_autobump_v1["reason"] = "session_last_analysis_newer_same_question_default_selection"
@@ -26498,7 +26560,7 @@ def main():
                                 if _best_ts is None or _ts > _best_ts:
                                     _best_ts = _ts
                                     _best = _obj
-                            if _best and _best_ts and _sel_ts and _best_ts > _sel_ts:
+                            if _best and _best_ts and (not _sel_ts or _best_ts > _sel_ts):
                                 baseline_data = _best
                                 _r106_autobump_v1["did_autobump"] = True
                                 _r106_autobump_v1["reason"] = "direct_sheet_scan_newer_same_question_default_selection"
