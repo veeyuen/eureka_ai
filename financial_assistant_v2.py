@@ -153,7 +153,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "REFACTOR105"
+_YUREEKA_CODE_VERSION_LOCK = "REFACTOR106"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 
 # - Downsizing step 1: remove accumulated per-patch try/append scaffolding.
@@ -165,7 +165,7 @@ _PATCH_TRACKER_CANONICAL_ENTRIES_V1 = [{'patch_id': 'REFACTOR25', 'date': '2026-
     {'patch_id': 'REFACTOR99B', 'id': 'REFACTOR99B', 'date': '2026-01-29', 'summary': 'Hardening: sanitize OAuth scopes to strings-only at Google Sheets auth callsites to prevent crashes if SCOPES is contaminated.', 'files': ['REFACTOR99B.py'], 'supersedes': ['REFACTOR99A']},
     {'patch_id': 'REFACTOR99C', 'id': 'REFACTOR99C', 'date': '2026-01-29', 'summary': 'Hotfix: define _sanitize_scopes helper (fix NameError) while keeping scope sanitization for Google Sheets auth.', 'files': ['REFACTOR99C.py'], 'supersedes': ['REFACTOR99B']},
     {'patch_id': 'REFACTOR99D', 'id': 'REFACTOR99D', 'date': '2026-01-29', 'summary': 'Hotfix: harden Google Sheets OAuth scopes by sanitizing at call-site (no dependency on _sanitize_scopes).', 'files': ['REFACTOR99D.py'], 'supersedes': ['REFACTOR99C']}
-, {'patch_id': 'REFACTOR100', 'date': '2026-01-30', 'summary': 'Enforce year-anchor gating in authoritative schema-only candidate selection: derive required year tokens from canonical_key, prefer year-matching candidates (best_strong) and fall back with used_fallback_weak + structured provenance debug (selection_year_anchor_v1). Also harden Google Sheets auth scopes by coercing to strings-only and keeping _sanitize_scopes as a compatibility alias.', 'files': ['REFACTOR100.py'], 'supersedes': ['REFACTOR99D']}, {'patch_id': 'REFACTOR101', 'date': '2026-01-30', 'summary': 'Fix year-anchor gating for underscore-separated canonical keys and ensure gating runs by disabling hash fast-path reuse when code version changes. Year-anchored metrics now emit selection_year_anchor_v1 provenance with required/found years and used_fallback_weak.', 'files': ['REFACTOR101.py'], 'supersedes': ['REFACTOR100']}, {'patch_id': 'REFACTOR102', 'date': '2026-01-30', 'summary': 'Fix baseline freshness after saving Analysis to Google Sheets by invalidating History worksheet get_all_values cache on successful append_row. Ensures Evolution baseline selector sees the most recent Analysis run immediately in the same session (prevents stale Yahoo-baseline reuse after REFACTOR101).', 'files': ['REFACTOR102.py'], 'supersedes': ['REFACTOR101']}, {'patch_id': 'REFACTOR103', 'date': '2026-01-30', 'summary': 'Fix stale baseline selection when latest Analysis row in Sheet1 is sheets-safe/truncated wrapper: allow wrapper baselines (rehydratable via HistoryFull/full_store_ref/_sheet_id) to appear in the Evolution baseline selector, so Evolution always diffs against the most recent Analysis run. (Rehydration already occurs inside source-anchored evolution via HistoryFull.)', 'files': ['REFACTOR103.py'], 'supersedes': ['REFACTOR102']}, {'patch_id': 'REFACTOR104', 'date': '2026-01-30', 'summary': 'Baseline freshness hardening: prefer in-session last_analysis as Evolution baseline when Sheets history is stale/cached, reset baseline selectbox on newest-timestamp change (keyed widget), and emit diag_baseline_freshness_v1 for traceability. This prevents Evolution from diffing against an older snapshot after a new Analysis run in the same session.', 'files': ['REFACTOR104.py'], 'supersedes': ['REFACTOR103']}, {'patch_id': 'REFACTOR105', 'date': '2026-01-30', 'summary': 'Fix Evolution reading old baseline snapshots by making get_history() cache-proof: after successful Sheets writes, set a write-dirty flag and bypass cached History reads once; merge in-session analysis_history + last_analysis into history even when Sheets is available, with de-dup and limit enforcement. Ensures Evolution baseline selector always sees and defaults to the latest Analysis run in-session.', 'files': ['REFACTOR105.py'], 'supersedes': ['REFACTOR104']}]
+, {'patch_id': 'REFACTOR100', 'date': '2026-01-30', 'summary': 'Enforce year-anchor gating in authoritative schema-only candidate selection: derive required year tokens from canonical_key, prefer year-matching candidates (best_strong) and fall back with used_fallback_weak + structured provenance debug (selection_year_anchor_v1). Also harden Google Sheets auth scopes by coercing to strings-only and keeping _sanitize_scopes as a compatibility alias.', 'files': ['REFACTOR100.py'], 'supersedes': ['REFACTOR99D']}, {'patch_id': 'REFACTOR101', 'date': '2026-01-30', 'summary': 'Fix year-anchor gating for underscore-separated canonical keys and ensure gating runs by disabling hash fast-path reuse when code version changes. Year-anchored metrics now emit selection_year_anchor_v1 provenance with required/found years and used_fallback_weak.', 'files': ['REFACTOR101.py'], 'supersedes': ['REFACTOR100']}, {'patch_id': 'REFACTOR102', 'date': '2026-01-30', 'summary': 'Fix baseline freshness after saving Analysis to Google Sheets by invalidating History worksheet get_all_values cache on successful append_row. Ensures Evolution baseline selector sees the most recent Analysis run immediately in the same session (prevents stale Yahoo-baseline reuse after REFACTOR101).', 'files': ['REFACTOR102.py'], 'supersedes': ['REFACTOR101']}, {'patch_id': 'REFACTOR103', 'date': '2026-01-30', 'summary': 'Fix stale baseline selection when latest Analysis row in Sheet1 is sheets-safe/truncated wrapper: allow wrapper baselines (rehydratable via HistoryFull/full_store_ref/_sheet_id) to appear in the Evolution baseline selector, so Evolution always diffs against the most recent Analysis run. (Rehydration already occurs inside source-anchored evolution via HistoryFull.)', 'files': ['REFACTOR103.py'], 'supersedes': ['REFACTOR102']}, {'patch_id': 'REFACTOR104', 'date': '2026-01-30', 'summary': 'Baseline freshness hardening: prefer in-session last_analysis as Evolution baseline when Sheets history is stale/cached, reset baseline selectbox on newest-timestamp change (keyed widget), and emit diag_baseline_freshness_v1 for traceability. This prevents Evolution from diffing against an older snapshot after a new Analysis run in the same session.', 'files': ['REFACTOR104.py'], 'supersedes': ['REFACTOR103']}, {'patch_id': 'REFACTOR105', 'date': '2026-01-30', 'summary': 'Fix Evolution reading old baseline snapshots by making get_history() cache-proof: after successful Sheets writes, set a write-dirty flag and bypass cached History reads once; merge in-session analysis_history + last_analysis into history even when Sheets is available, with de-dup and limit enforcement. Ensures Evolution baseline selector always sees and defaults to the latest Analysis run in-session.', 'files': ['REFACTOR105.py'], 'supersedes': ['REFACTOR104']}, {'patch_id': 'REFACTOR106', 'date': '2026-01-30', 'summary': 'Fix Evolution baseline still reading stale snapshots by adding a final run-time baseline autobump guard: when the baseline selector is left on default (index 0) but a newer in-session or freshly-scanned Sheets Analysis exists for the same question, automatically use that latest Analysis payload as baseline and stamp diag_baseline_autobump_v1 for traceability. No schema/key-grammar changes; Streamlit-safe.', 'files': ['REFACTOR106.py'], 'supersedes': ['REFACTOR105']}]
 
 def _yureeka_register_patch_tracker_v1(_entries=_PATCH_TRACKER_CANONICAL_ENTRIES_V1):
     try:
@@ -26425,6 +26425,91 @@ def main():
         baseline_choice = st.selectbox("Select baseline analysis:", baseline_options, index=0, key=_r104_baseline_select_key)
         baseline_idx = int(baseline_choice.split(".")[0]) - 1
         baseline_data = history[baseline_idx]
+        # REFACTOR106: Final guard against stale baseline dropdown state.
+        # If user leaves the selector on default (index 0) but we have a newer Analysis payload
+        # for the SAME question (in-session last_analysis or freshly-read Sheet1), use it.
+        _r106_autobump_v1 = {"attempted": False, "did_autobump": False}
+        try:
+            _r106_autobump_v1["attempted"] = True
+            def _r106_norm_q(_q):
+                try:
+                    import re as _re
+                    return _re.sub(r"\s+", " ", str(_q or "").strip().lower())
+                except Exception:
+                    return str(_q or "").strip().lower()
+            def _r106_is_analysis_like(_obj):
+                try:
+                    if not isinstance(_obj, dict):
+                        return False
+                    _schema = _obj.get("metric_schema_frozen") or ((_obj.get("primary_response") or {}).get("metric_schema_frozen") if isinstance(_obj.get("primary_response"), dict) else None) or ((_obj.get("results") or {}).get("metric_schema_frozen") if isinstance(_obj.get("results"), dict) else None)
+                    _pmc = _obj.get("primary_metrics_canonical") or ((_obj.get("results") or {}).get("primary_metrics_canonical") if isinstance(_obj.get("results"), dict) else None)
+                    return bool(isinstance(_schema, dict) and _schema and isinstance(_pmc, dict) and _pmc)
+                except Exception:
+                    return False
+            if int(baseline_idx or 0) == 0:
+                _sel_q = _r106_norm_q((baseline_data or {}).get("question") or (((baseline_data or {}).get("results") or {}).get("question")))
+                _sel_ts = _parse_iso_dt((baseline_data or {}).get("timestamp") or (((baseline_data or {}).get("results") or {}).get("timestamp")))
+                # 1) Prefer in-session last_analysis if it's analysis-like and newer for same question
+                _sess_last = None
+                try:
+                    _sess_last = st.session_state.get("last_analysis")
+                except Exception:
+                    _sess_last = None
+                if _r106_is_analysis_like(_sess_last):
+                    _sess_q = _r106_norm_q(_sess_last.get("question") or ((_sess_last.get("results") or {}).get("question")))
+                    _sess_ts = _parse_iso_dt(_sess_last.get("timestamp") or ((_sess_last.get("results") or {}).get("timestamp")))
+                    _r106_autobump_v1.update({"selected_timestamp": str((baseline_data or {}).get("timestamp") or ""), "session_last_timestamp": str(_sess_last.get("timestamp") or "")})
+                    if _sel_q and _sess_q and _sel_q == _sess_q and _sel_ts and _sess_ts and _sess_ts > _sel_ts:
+                        baseline_data = _sess_last
+                        _r106_autobump_v1["did_autobump"] = True
+                        _r106_autobump_v1["reason"] = "session_last_analysis_newer_same_question_default_selection"
+                # 2) If still stale, do a direct (non-cached) Sheet1 scan for the newest matching Analysis
+                if not _r106_autobump_v1.get("did_autobump") and _sel_q:
+                    try:
+                        _sheet_direct = get_google_sheet()
+                    except Exception:
+                        _sheet_direct = None
+                    if _sheet_direct:
+                        try:
+                            _rows = _sheet_direct.get_all_values() or []
+                        except Exception:
+                            _rows = []
+                        _best = None
+                        _best_ts = None
+                        try:
+                            for _r in (_rows[1:] if len(_rows) > 1 else []):
+                                if not isinstance(_r, list) or len(_r) < 5:
+                                    continue
+                                _q = _r106_norm_q(_r[2] if len(_r) > 2 else "")
+                                if not _q or _q != _sel_q:
+                                    continue
+                                _payload_raw = _r[4]
+                                if not isinstance(_payload_raw, str) or not _payload_raw.strip():
+                                    continue
+                                try:
+                                    _obj = json.loads(_payload_raw)
+                                except Exception:
+                                    continue
+                                if not _r106_is_analysis_like(_obj):
+                                    continue
+                                _ts = _parse_iso_dt(_obj.get("timestamp") or ((_obj.get("results") or {}).get("timestamp")))
+                                if not _ts:
+                                    continue
+                                if _best_ts is None or _ts > _best_ts:
+                                    _best_ts = _ts
+                                    _best = _obj
+                            if _best and _best_ts and _sel_ts and _best_ts > _sel_ts:
+                                baseline_data = _best
+                                _r106_autobump_v1["did_autobump"] = True
+                                _r106_autobump_v1["reason"] = "direct_sheet_scan_newer_same_question_default_selection"
+                                _r106_autobump_v1["sheet_scan_newest_timestamp"] = str(_best.get("timestamp") or "")
+                        except Exception:
+                            pass
+        except Exception as _e:
+            try:
+                _r106_autobump_v1["error"] = str(_e)
+            except Exception:
+                pass
 
         compare_method = st.selectbox(
             "Comparison method:",
@@ -26511,6 +26596,7 @@ def main():
                                 "session_last_analysis_timestamp": str(_s_ts or ""),
                                 "baseline_is_session_last": bool(_b_ts and _s_ts and str(_b_ts) == str(_s_ts)),
                                 "history_newest_timestamp": str((history[0].get("timestamp") if isinstance(history, list) and history and isinstance(history[0], dict) else "") or ""),
+                                "baseline_autobump_v1": (_r106_autobump_v1 if isinstance(_r106_autobump_v1, dict) else {}),
                             }
                         except Exception:
                             _diag_baseline_freshness_v1 = {}
@@ -26570,6 +26656,7 @@ def main():
                             "selected_analysis_type": (baseline_data or {}).get("analysis_type"),
                             "baseline_pmc_count": int(len(_pmc) if isinstance(_pmc, dict) else 0),
                             "schema_key_count": int(len(_ms) if isinstance(_ms, dict) else 0),
+                            "autobump_v1": (_r106_autobump_v1 if isinstance(_r106_autobump_v1, dict) else {}),
                         }
                 except Exception:
                     pass
