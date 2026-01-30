@@ -153,7 +153,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "REFACTOR100"
+_YUREEKA_CODE_VERSION_LOCK = "REFACTOR101"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 
 # - Downsizing step 1: remove accumulated per-patch try/append scaffolding.
@@ -165,7 +165,7 @@ _PATCH_TRACKER_CANONICAL_ENTRIES_V1 = [{'patch_id': 'REFACTOR25', 'date': '2026-
     {'patch_id': 'REFACTOR99B', 'id': 'REFACTOR99B', 'date': '2026-01-29', 'summary': 'Hardening: sanitize OAuth scopes to strings-only at Google Sheets auth callsites to prevent crashes if SCOPES is contaminated.', 'files': ['REFACTOR99B.py'], 'supersedes': ['REFACTOR99A']},
     {'patch_id': 'REFACTOR99C', 'id': 'REFACTOR99C', 'date': '2026-01-29', 'summary': 'Hotfix: define _sanitize_scopes helper (fix NameError) while keeping scope sanitization for Google Sheets auth.', 'files': ['REFACTOR99C.py'], 'supersedes': ['REFACTOR99B']},
     {'patch_id': 'REFACTOR99D', 'id': 'REFACTOR99D', 'date': '2026-01-29', 'summary': 'Hotfix: harden Google Sheets OAuth scopes by sanitizing at call-site (no dependency on _sanitize_scopes).', 'files': ['REFACTOR99D.py'], 'supersedes': ['REFACTOR99C']}
-, {'patch_id': 'REFACTOR100', 'date': '2026-01-30', 'summary': 'Enforce year-anchor gating in authoritative schema-only candidate selection: derive required year tokens from canonical_key, prefer year-matching candidates (best_strong) and fall back with used_fallback_weak + structured provenance debug (selection_year_anchor_v1). Also harden Google Sheets auth scopes by coercing to strings-only and keeping _sanitize_scopes as a compatibility alias.', 'files': ['REFACTOR100.py'], 'supersedes': ['REFACTOR99D']}]
+, {'patch_id': 'REFACTOR100', 'date': '2026-01-30', 'summary': 'Enforce year-anchor gating in authoritative schema-only candidate selection: derive required year tokens from canonical_key, prefer year-matching candidates (best_strong) and fall back with used_fallback_weak + structured provenance debug (selection_year_anchor_v1). Also harden Google Sheets auth scopes by coercing to strings-only and keeping _sanitize_scopes as a compatibility alias.', 'files': ['REFACTOR100.py'], 'supersedes': ['REFACTOR99D']}, {'patch_id': 'REFACTOR101', 'date': '2026-01-30', 'summary': 'Fix year-anchor gating for underscore-separated canonical keys and ensure gating runs by disabling hash fast-path reuse when code version changes. Year-anchored metrics now emit selection_year_anchor_v1 provenance with required/found years and used_fallback_weak.', 'files': ['REFACTOR101.py'], 'supersedes': ['REFACTOR100']}]
 
 def _yureeka_register_patch_tracker_v1(_entries=_PATCH_TRACKER_CANONICAL_ENTRIES_V1):
     try:
@@ -20529,7 +20529,13 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
             except Exception:
                 pass
 
-            if isinstance(_prev_hash_pref, str) and _prev_hash_pref and _cur_hash == _prev_hash_pref:
+            _fix31_prev_code_version = ""
+            try:
+                _fix31_prev_code_version = str((previous_data or {}).get("code_version") or "")
+            except Exception:
+                _fix31_prev_code_version = ""
+
+            if isinstance(_prev_hash_pref, str) and _prev_hash_pref and _cur_hash == _prev_hash_pref and _fix31_prev_code_version == str(globals().get("CODE_VERSION") or ""):
                 _fix31_authoritative_reuse = True
                 try:
                     if _fix41af_prev_hash_pref_saved is not None:
@@ -32357,7 +32363,7 @@ def _refactor28_schema_only_rebuild_authoritative_v1(
             ck = ""
         years = []
         try:
-            for y in re.findall(r"\b(19\d{2}|20\d{2}|21\d{2})\b", ck):
+            for y in re.findall(r"(?<!\d)(19\d{2}|20\d{2}|21\d{2})(?!\d)", ck):
                 if y and (y not in years):
                     years.append(y)
         except Exception:
