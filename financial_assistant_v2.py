@@ -159,7 +159,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "REFACTOR109"
+_YUREEKA_CODE_VERSION_LOCK = "REFACTOR110"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 
 # - Downsizing step 1: remove accumulated per-patch try/append scaffolding.
@@ -172,7 +172,9 @@ _PATCH_TRACKER_CANONICAL_ENTRIES_V1 = [{'patch_id': 'REFACTOR25', 'date': '2026-
     {'patch_id': 'REFACTOR99C', 'id': 'REFACTOR99C', 'date': '2026-01-29', 'summary': 'Hotfix: define _sanitize_scopes helper (fix NameError) while keeping scope sanitization for Google Sheets auth.', 'files': ['REFACTOR99C.py'], 'supersedes': ['REFACTOR99B']},
     {'patch_id': 'REFACTOR99D', 'id': 'REFACTOR99D', 'date': '2026-01-29', 'summary': 'Hotfix: harden Google Sheets OAuth scopes by sanitizing at call-site (no dependency on _sanitize_scopes).', 'files': ['REFACTOR99D.py'], 'supersedes': ['REFACTOR99C']}
 , {'patch_id': 'REFACTOR100', 'date': '2026-01-30', 'summary': 'Enforce year-anchor gating in authoritative schema-only candidate selection: derive required year tokens from canonical_key, prefer year-matching candidates (best_strong) and fall back with used_fallback_weak + structured provenance debug (selection_year_anchor_v1). Also harden Google Sheets auth scopes by coercing to strings-only and keeping _sanitize_scopes as a compatibility alias.', 'files': ['REFACTOR100.py'], 'supersedes': ['REFACTOR99D']}, {'patch_id': 'REFACTOR101', 'date': '2026-01-30', 'summary': 'Fix year-anchor gating for underscore-separated canonical keys and ensure gating runs by disabling hash fast-path reuse when code version changes. Year-anchored metrics now emit selection_year_anchor_v1 provenance with required/found years and used_fallback_weak.', 'files': ['REFACTOR101.py'], 'supersedes': ['REFACTOR100']}, {'patch_id': 'REFACTOR102', 'date': '2026-01-30', 'summary': 'Fix baseline freshness after saving Analysis to Google Sheets by invalidating History worksheet get_all_values cache on successful append_row. Ensures Evolution baseline selector sees the most recent Analysis run immediately in the same session (prevents stale Yahoo-baseline reuse after REFACTOR101).', 'files': ['REFACTOR102.py'], 'supersedes': ['REFACTOR101']}, {'patch_id': 'REFACTOR103', 'date': '2026-01-30', 'summary': 'Fix stale baseline selection when latest Analysis row in Sheet1 is sheets-safe/truncated wrapper: allow wrapper baselines (rehydratable via HistoryFull/full_store_ref/_sheet_id) to appear in the Evolution baseline selector, so Evolution always diffs against the most recent Analysis run. (Rehydration already occurs inside source-anchored evolution via HistoryFull.)', 'files': ['REFACTOR103.py'], 'supersedes': ['REFACTOR102']}, {'patch_id': 'REFACTOR104', 'date': '2026-01-30', 'summary': 'Baseline freshness hardening: prefer in-session last_analysis as Evolution baseline when Sheets history is stale/cached, reset baseline selectbox on newest-timestamp change (keyed widget), and emit diag_baseline_freshness_v1 for traceability. This prevents Evolution from diffing against an older snapshot after a new Analysis run in the same session.', 'files': ['REFACTOR104.py'], 'supersedes': ['REFACTOR103']}, {'patch_id': 'REFACTOR105', 'date': '2026-01-30', 'summary': 'Fix Evolution reading old baseline snapshots by making get_history() cache-proof: after successful Sheets writes, set a write-dirty flag and bypass cached History reads once; merge in-session analysis_history + last_analysis into history even when Sheets is available, with de-dup and limit enforcement. Ensures Evolution baseline selector always sees and defaults to the latest Analysis run in-session.', 'files': ['REFACTOR105.py'], 'supersedes': ['REFACTOR104']}, {'patch_id': 'REFACTOR106', 'date': '2026-01-30', 'summary': 'Fix Evolution baseline still reading stale snapshots by adding a final run-time baseline autobump guard: when the baseline selector is left on default (index 0) but a newer in-session or freshly-scanned Sheets Analysis exists for the same question, automatically use that latest Analysis payload as baseline and stamp diag_baseline_autobump_v1 for traceability. No schema/key-grammar changes; Streamlit-safe.', 'files': ['REFACTOR106.py'], 'supersedes': ['REFACTOR105']}, {'patch_id': 'REFACTOR107', 'date': '2026-01-30', 'summary': 'Baseline freshness hardening v2: fix Evolution still reading old Analysis snapshots by (a) treating Analysis payloads as valid even when primary_metrics_canonical is nested under primary_response, (b) accepting sheets-safe/truncated wrapper baselines via full_store_ref/_sheet_id/snapshot refs, and (c) sorting merged history by nested timestamps so the newest Analysis is truly default. Strengthens the REFACTOR106 baseline autobump guard without schema/key-grammar changes.', 'files': ['REFACTOR107.py'], 'supersedes': ['REFACTOR106']}, {'patch_id': 'REFACTOR108', 'date': '2026-01-30', 'summary': 'Fix baseline snapshot recency: return history newest-first (reverse chronological) so Evolution default baseline is truly latest across sessions; add shared Sheets read-cache globals + short TTL to prevent stale reads. No schema/key-grammar changes; Streamlit-safe.', 'files': ['REFACTOR108.py'], 'supersedes': ['REFACTOR107']},
-    {'patch_id': 'REFACTOR109', 'date': '2026-01-30', 'summary': 'Wire Evolution rebuilt current_baseline_sources_cache into compute_source_anchored_diff web_context so FIX42 can use true current pool (fixes old snapshot as current issue).', 'files': ['REFACTOR109.py'], 'supersedes': ['REFACTOR108']}
+    {'patch_id': 'REFACTOR109', 'date': '2026-01-30', 'summary': 'Wire Evolution rebuilt current_baseline_sources_cache into compute_source_anchored_diff web_context so FIX42 can use true current pool (fixes old snapshot as current issue).', 'files': ['REFACTOR109.py'], 'supersedes': ['REFACTOR108']},
+    {'patch_id': 'REFACTOR110', 'date': '2026-01-31', 'summary': 'Fix HistoryFull baseline rehydration against cached-empty reads: force direct worksheet refresh when cached rows are empty/short; invalidate HistoryFull cache after write_full_history_payload_to_sheet; add session dirty-flag bypass for immediate post-write rehydrate. Prevents Evolution from falling back to older snapshots when full_store_ref rehydration transiently fails.', 'files': ['REFACTOR110.py'], 'supersedes': ['REFACTOR109']}
+
 ]
 
 def _yureeka_register_patch_tracker_v1(_entries=_PATCH_TRACKER_CANONICAL_ENTRIES_V1):
@@ -15605,6 +15607,22 @@ def write_full_history_payload_to_sheet(analysis_id: str, payload: str, workshee
                     ws.append_row(r, value_input_option="RAW")
                 except Exception:
                     return False
+
+        # REFACTOR110: invalidate HistoryFull cache after successful write so immediate rehydration sees the new rows.
+        try:
+            _cache = globals().get("_SHEETS_READ_CACHE")
+            if isinstance(_cache, dict):
+                _cache.pop(f"get_all_values:{worksheet_title}", None)
+        except Exception:
+            pass
+
+        # REFACTOR110: mark HistoryFull as dirty so loader bypasses cached reads once (same-session baseline freshness).
+        try:
+            import time as _time
+            st.session_state["_historyfull_dirty_v1"] = float(_time.time())
+            st.session_state["_historyfull_dirty_reason_v1"] = "write_full_history_payload_to_sheet"
+        except Exception:
+            pass
         return True
     except Exception:
         return False
@@ -15638,13 +15656,52 @@ def load_full_history_payload_from_sheet(analysis_id: str, worksheet_title: str 
             return {}
 
         # Read all rows (prefer cached getter if present)
+        rows = []
+        _r110_used_direct = False
+
+        # REFACTOR110: after a HistoryFull write, bypass cached reads once to avoid stale/empty cache.
         try:
-            fn = globals().get("sheets_get_all_values_cached")
-            rows = fn(ws, cache_key=worksheet_title) if callable(fn) else (ws.get_all_values() or [])
+            _dirty = st.session_state.get("_historyfull_dirty_v1")
+        except Exception:
+            _dirty = None
+        try:
+            import time as _time
+            if isinstance(_dirty, (int, float)) and (_time.time() - float(_dirty) < 120):
+                rows = ws.get_all_values() or []
+                _r110_used_direct = True
+                try:
+                    _sheets_cache_set(f"get_all_values:{worksheet_title}", rows)
+                except Exception:
+                    pass
+                try:
+                    st.session_state.pop("_historyfull_dirty_v1", None)
+                    st.session_state.pop("_historyfull_dirty_reason_v1", None)
+                except Exception:
+                    pass
         except Exception:
             pass
+
+        if not _r110_used_direct:
             try:
-                rows = ws.get_all_values() or []
+                fn = globals().get("sheets_get_all_values_cached")
+                rows = fn(ws, cache_key=worksheet_title) if callable(fn) else (ws.get_all_values() or [])
+            except Exception:
+                pass
+                try:
+                    rows = ws.get_all_values() or []
+                except Exception:
+                    return {}
+
+        # REFACTOR110: if cached read returned empty/short, do ONE direct refresh and retry.
+        if (not rows) or (len(rows) < 2):
+            try:
+                direct = ws.get_all_values() or []
+                if direct and len(direct) >= 2:
+                    rows = direct
+                    try:
+                        _sheets_cache_set(f"get_all_values:{worksheet_title}", rows)
+                    except Exception:
+                        pass
             except Exception:
                 return {}
 
