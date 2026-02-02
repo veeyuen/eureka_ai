@@ -159,8 +159,13 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "REFACTOR110"
+_YUREEKA_CODE_VERSION_LOCK = "REFACTOR111"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
+
+# REFACTOR111 escape hatch + selector gate
+DISABLE_FASTPATH_FOR_NOW = True
+FORCE_LATEST_PREV_SNAPSHOT_V1 = True
+
 
 # - Downsizing step 1: remove accumulated per-patch try/append scaffolding.
 # - Registers a canonical entries list idempotently at import time.
@@ -174,6 +179,14 @@ _PATCH_TRACKER_CANONICAL_ENTRIES_V1 = [{'patch_id': 'REFACTOR25', 'date': '2026-
 , {'patch_id': 'REFACTOR100', 'date': '2026-01-30', 'summary': 'Enforce year-anchor gating in authoritative schema-only candidate selection: derive required year tokens from canonical_key, prefer year-matching candidates (best_strong) and fall back with used_fallback_weak + structured provenance debug (selection_year_anchor_v1). Also harden Google Sheets auth scopes by coercing to strings-only and keeping _sanitize_scopes as a compatibility alias.', 'files': ['REFACTOR100.py'], 'supersedes': ['REFACTOR99D']}, {'patch_id': 'REFACTOR101', 'date': '2026-01-30', 'summary': 'Fix year-anchor gating for underscore-separated canonical keys and ensure gating runs by disabling hash fast-path reuse when code version changes. Year-anchored metrics now emit selection_year_anchor_v1 provenance with required/found years and used_fallback_weak.', 'files': ['REFACTOR101.py'], 'supersedes': ['REFACTOR100']}, {'patch_id': 'REFACTOR102', 'date': '2026-01-30', 'summary': 'Fix baseline freshness after saving Analysis to Google Sheets by invalidating History worksheet get_all_values cache on successful append_row. Ensures Evolution baseline selector sees the most recent Analysis run immediately in the same session (prevents stale Yahoo-baseline reuse after REFACTOR101).', 'files': ['REFACTOR102.py'], 'supersedes': ['REFACTOR101']}, {'patch_id': 'REFACTOR103', 'date': '2026-01-30', 'summary': 'Fix stale baseline selection when latest Analysis row in Sheet1 is sheets-safe/truncated wrapper: allow wrapper baselines (rehydratable via HistoryFull/full_store_ref/_sheet_id) to appear in the Evolution baseline selector, so Evolution always diffs against the most recent Analysis run. (Rehydration already occurs inside source-anchored evolution via HistoryFull.)', 'files': ['REFACTOR103.py'], 'supersedes': ['REFACTOR102']}, {'patch_id': 'REFACTOR104', 'date': '2026-01-30', 'summary': 'Baseline freshness hardening: prefer in-session last_analysis as Evolution baseline when Sheets history is stale/cached, reset baseline selectbox on newest-timestamp change (keyed widget), and emit diag_baseline_freshness_v1 for traceability. This prevents Evolution from diffing against an older snapshot after a new Analysis run in the same session.', 'files': ['REFACTOR104.py'], 'supersedes': ['REFACTOR103']}, {'patch_id': 'REFACTOR105', 'date': '2026-01-30', 'summary': 'Fix Evolution reading old baseline snapshots by making get_history() cache-proof: after successful Sheets writes, set a write-dirty flag and bypass cached History reads once; merge in-session analysis_history + last_analysis into history even when Sheets is available, with de-dup and limit enforcement. Ensures Evolution baseline selector always sees and defaults to the latest Analysis run in-session.', 'files': ['REFACTOR105.py'], 'supersedes': ['REFACTOR104']}, {'patch_id': 'REFACTOR106', 'date': '2026-01-30', 'summary': 'Fix Evolution baseline still reading stale snapshots by adding a final run-time baseline autobump guard: when the baseline selector is left on default (index 0) but a newer in-session or freshly-scanned Sheets Analysis exists for the same question, automatically use that latest Analysis payload as baseline and stamp diag_baseline_autobump_v1 for traceability. No schema/key-grammar changes; Streamlit-safe.', 'files': ['REFACTOR106.py'], 'supersedes': ['REFACTOR105']}, {'patch_id': 'REFACTOR107', 'date': '2026-01-30', 'summary': 'Baseline freshness hardening v2: fix Evolution still reading old Analysis snapshots by (a) treating Analysis payloads as valid even when primary_metrics_canonical is nested under primary_response, (b) accepting sheets-safe/truncated wrapper baselines via full_store_ref/_sheet_id/snapshot refs, and (c) sorting merged history by nested timestamps so the newest Analysis is truly default. Strengthens the REFACTOR106 baseline autobump guard without schema/key-grammar changes.', 'files': ['REFACTOR107.py'], 'supersedes': ['REFACTOR106']}, {'patch_id': 'REFACTOR108', 'date': '2026-01-30', 'summary': 'Fix baseline snapshot recency: return history newest-first (reverse chronological) so Evolution default baseline is truly latest across sessions; add shared Sheets read-cache globals + short TTL to prevent stale reads. No schema/key-grammar changes; Streamlit-safe.', 'files': ['REFACTOR108.py'], 'supersedes': ['REFACTOR107']},
     {'patch_id': 'REFACTOR109', 'date': '2026-01-30', 'summary': 'Wire Evolution rebuilt current_baseline_sources_cache into compute_source_anchored_diff web_context so FIX42 can use true current pool (fixes old snapshot as current issue).', 'files': ['REFACTOR109.py'], 'supersedes': ['REFACTOR108']},
     {'patch_id': 'REFACTOR110', 'date': '2026-01-31', 'summary': 'Fix HistoryFull baseline rehydration against cached-empty reads: force direct worksheet refresh when cached rows are empty/short; invalidate HistoryFull cache after write_full_history_payload_to_sheet; add session dirty-flag bypass for immediate post-write rehydrate. Prevents Evolution from falling back to older snapshots when full_store_ref rehydration transiently fails.', 'files': ['REFACTOR110.py'], 'supersedes': ['REFACTOR109']}
+    , {
+  'patch_id': 'REFACTOR111',
+  'date': '2026-02-02',
+  'summary': 'Deterministic previous snapshot selection (HistoryFull max timestamp) + debug.prev_snapshot_pick_v1; break stale fastpath loop via debug.fastpath_gate_v1 and DISABLE_FASTPATH_FOR_NOW; Evolution previous_timestamp can be overridden from selected snapshot.',
+  'files': ['REFACTOR111.py'],
+  'supersedes': ['REFACTOR110']
+}
+
 
 ]
 
@@ -15929,6 +15942,331 @@ def fingerprint_text(text: str) -> str:
     normalized = re.sub(r"\s+", " ", text.strip().lower())
     return hashlib.md5(normalized.encode("utf-8")).hexdigest()[:12]
 
+# =========================
+# REFACTOR111: Prev snapshot picker (deterministic)
+# =========================
+
+def _refactor111_norm_question_v1(q: str) -> str:
+    try:
+        import re as _re
+        return _re.sub(r"\s+", " ", str(q or "").strip().lower())
+    except Exception:
+        return str(q or "").strip().lower()
+
+def _refactor111_get_question_from_payload_v1(obj: dict) -> str:
+    try:
+        if not isinstance(obj, dict):
+            return ""
+        q = obj.get("question") or ""
+        if q:
+            return str(q)
+        r = obj.get("results") if isinstance(obj.get("results"), dict) else {}
+        q2 = r.get("question") or ""
+        if q2:
+            return str(q2)
+        pr = obj.get("primary_response") if isinstance(obj.get("primary_response"), dict) else {}
+        q3 = pr.get("question") or ""
+        return str(q3 or "")
+    except Exception:
+        return ""
+
+def _refactor111_get_pmc_v1(obj: dict) -> dict:
+    try:
+        if not isinstance(obj, dict):
+            return {}
+        pmc = obj.get("primary_metrics_canonical")
+        if isinstance(pmc, dict) and pmc:
+            return pmc
+        r = obj.get("results") if isinstance(obj.get("results"), dict) else {}
+        pmc = r.get("primary_metrics_canonical")
+        if isinstance(pmc, dict) and pmc:
+            return pmc
+        pr = obj.get("primary_response") if isinstance(obj.get("primary_response"), dict) else {}
+        pmc = pr.get("primary_metrics_canonical")
+        if isinstance(pmc, dict) and pmc:
+            return pmc
+    except Exception:
+        pass
+    return {}
+
+def _refactor111_extract_bsc_urls_v1(obj: dict) -> list:
+    urls = []
+    try:
+        if not isinstance(obj, dict):
+            return []
+        # Prefer baseline_sources_cache
+        bsc = obj.get("baseline_sources_cache")
+        if not isinstance(bsc, list):
+            r = obj.get("results") if isinstance(obj.get("results"), dict) else {}
+            bsc = r.get("baseline_sources_cache")
+        if isinstance(bsc, list):
+            for it in bsc:
+                if isinstance(it, dict):
+                    u = it.get("source_url") or it.get("url")
+                    if u:
+                        urls.append(str(u))
+        # Also allow 'sources' list
+        if not urls:
+            s = obj.get("sources")
+            if isinstance(s, list):
+                urls = [str(u) for u in s if isinstance(u, str) and u.strip()]
+    except Exception:
+        pass
+    # stable dedupe
+    seen, out = set(), []
+    for u in urls:
+        uu = (u or "").strip()
+        if not uu or uu in seen:
+            continue
+        seen.add(uu)
+        out.append(uu)
+    return out
+
+def _refactor111_parse_ts_v1(ts: str):
+    try:
+        fn = globals().get("_parse_iso_dt")
+        if callable(fn):
+            dt = fn(ts)
+            return dt
+    except Exception:
+        pass
+    return None
+
+def _refactor111_mask_sheet_id_v1(sid: str) -> str:
+    try:
+        sid = str(sid or "")
+        if len(sid) <= 8:
+            return sid
+        return f"...{sid[-6:]}"
+    except Exception:
+        return ""
+
+def _refactor111_pick_latest_prev_snapshot_v1(previous_data: dict, web_context: dict = None):
+    """
+    REFACTOR111:
+    - Prefer HistoryFull by max parsed timestamp (created_at or payload.timestamp)
+    - Filter: exact normalized question match; must have non-empty primary_metrics_canonical
+    - Fallback: local history files by mtime; finally snapshot_ref/previous_data
+    """
+    dbg = {
+        "origin_attempted": "",
+        "candidates_considered": [],
+        "selected_ref": "",
+        "selected_timestamp": "",
+        "selected_code_version": "",
+        "reason": "fallback",
+        "selected_baseline_sources_urls": [],
+        "sheet_probe": {}
+    }
+
+    prev = previous_data if isinstance(previous_data, dict) else {}
+    wc = web_context if isinstance(web_context, dict) else {}
+
+    target_q = _refactor111_norm_question_v1(
+        wc.get("question") or prev.get("question") or _refactor111_get_question_from_payload_v1(prev)
+    )
+
+    # -------- Attempt A: Sheet HistoryFull --------
+    try:
+        if FORCE_LATEST_PREV_SNAPSHOT_V1:
+            ss = None
+            try:
+                ss = globals().get("get_google_spreadsheet")() if callable(globals().get("get_google_spreadsheet")) else None
+            except Exception:
+                ss = None
+
+            if ss:
+                sid = ""
+                try:
+                    sid = getattr(ss, "id", "") or ""
+                except Exception:
+                    sid = ""
+
+                dbg["origin_attempted"] = "sheet_historyfull"
+                try:
+                    dbg["sheet_probe"]["sheet_id_masked"] = _refactor111_mask_sheet_id_v1(sid)
+                except Exception:
+                    pass
+
+                ws = None
+                try:
+                    ws = ss.worksheet("HistoryFull")
+                except Exception:
+                    ws = None
+
+                rows = []
+                if ws:
+                    try:
+                        rows = ws.get_all_values() or []
+                    except Exception:
+                        rows = []
+                    dbg["sheet_probe"]["historyfull_list_ok"] = bool(rows)
+                    dbg["sheet_probe"]["historyfull_row_count"] = int(len(rows) if isinstance(rows, list) else 0)
+
+                if rows and len(rows) >= 2:
+                    header = rows[0]
+                    def _col(name):
+                        try:
+                            return header.index(name)
+                        except Exception:
+                            return -1
+
+                    c_aid = _col("analysis_id")
+                    if c_aid < 0:
+                        c_aid = _col("id")
+                    c_created = _col("created_at")
+                    c_cv = _col("code_version")
+
+                    # Build analysis_id -> best_ts
+                    best = {}
+                    for r in rows[1:]:
+                        if not isinstance(r, list):
+                            continue
+                        aid = (r[c_aid] if c_aid >= 0 and c_aid < len(r) else "") if r else ""
+                        aid = str(aid or "").strip()
+                        if not aid:
+                            continue
+                        created = (r[c_created] if c_created >= 0 and c_created < len(r) else "") if r else ""
+                        dt = _refactor111_parse_ts_v1(created)
+                        ts_val = dt.timestamp() if dt else 0.0
+                        if aid not in best or ts_val > best[aid]["ts_val"]:
+                            best[aid] = {"ts_val": ts_val, "created_at": str(created or ""), "code_version": (r[c_cv] if c_cv >= 0 and c_cv < len(r) else "")}
+
+                    # Sort candidate aids by ts desc
+                    cands = sorted(best.items(), key=lambda kv: float(kv[1]["ts_val"] or 0.0), reverse=True)
+
+                    # record considered (top 50)
+                    for aid, meta in cands[:50]:
+                        dbg["candidates_considered"].append({
+                            "ref": f"gsheet:HistoryFull:{aid}",
+                            "timestamp": meta.get("created_at") or "",
+                            "code_version": str(meta.get("code_version") or "")
+                        })
+
+                    # walk candidates in timestamp order until match
+                    loader = globals().get("load_full_history_payload_from_sheet")
+                    for aid, meta in cands[:50]:
+                        full = loader(aid, worksheet_title="HistoryFull") if callable(loader) else {}
+                        if not isinstance(full, dict) or not full:
+                            continue
+                        qn = _refactor111_norm_question_v1(_refactor111_get_question_from_payload_v1(full))
+                        if target_q and qn != target_q:
+                            continue
+                        pmc = _refactor111_get_pmc_v1(full)
+                        if not (isinstance(pmc, dict) and pmc):
+                            continue
+
+                        # Selected
+                        sel_ts = str(full.get("timestamp") or "")
+                        dbg["selected_ref"] = f"gsheet:HistoryFull:{aid}"
+                        dbg["selected_timestamp"] = sel_ts
+                        dbg["selected_code_version"] = str(full.get("code_version") or "")
+                        dbg["reason"] = "max_timestamp"
+                        dbg["selected_baseline_sources_urls"] = _refactor111_extract_bsc_urls_v1(full)
+
+                        # Mark payload for downstream fastpath gate
+                        full["_refactor111_prev_snapshot_is_latest_v1"] = True
+                        full["_refactor111_prev_snapshot_ref_v1"] = dbg["selected_ref"]
+                        full["_refactor111_prev_snapshot_pick_v1"] = dbg
+                        return full, dbg
+
+                    # If we saw candidates but did not match question/schema, still emit max timestamp seen
+                    try:
+                        if cands:
+                            top_ts = cands[0][1].get("created_at") or ""
+                            dbg["sheet_probe"]["historyfull_max_timestamp_seen"] = str(top_ts)
+                    except Exception:
+                        pass
+    except Exception:
+        pass
+
+    # -------- Attempt B: local history by mtime --------
+    try:
+        dbg["origin_attempted"] = dbg["origin_attempted"] or "local_history"
+        search_dirs = []
+        try:
+            search_dirs.append(os.getcwd())
+        except Exception:
+            pass
+        try:
+            search_dirs.append(os.path.dirname(__file__))
+        except Exception:
+            pass
+        for extra in ("history", "runs", "outputs"):
+            for base in list(search_dirs):
+                try:
+                    p = os.path.join(base, extra)
+                    if os.path.isdir(p):
+                        search_dirs.append(p)
+                except Exception:
+                    pass
+
+        files = []
+        for d in list(dict.fromkeys([x for x in search_dirs if isinstance(x, str) and x])):
+            try:
+                for fn in os.listdir(d):
+                    if not (fn.startswith("yureeka_") and fn.endswith(".json")):
+                        continue
+                    if "evolution" in fn:
+                        continue
+                    fp = os.path.join(d, fn)
+                    try:
+                        mt = os.path.getmtime(fp)
+                    except Exception:
+                        mt = 0.0
+                    files.append((mt, fp))
+            except Exception:
+                pass
+
+        files.sort(key=lambda t: float(t[0] or 0.0), reverse=True)
+
+        for mt, fp in files[:50]:
+            dbg["candidates_considered"].append({"ref": f"local:{fp}", "timestamp": "", "code_version": ""})
+
+            try:
+                raw = open(fp, "r", encoding="utf-8").read()
+                obj = json.loads(raw)
+            except Exception:
+                continue
+            if not isinstance(obj, dict):
+                continue
+
+            qn = _refactor111_norm_question_v1(_refactor111_get_question_from_payload_v1(obj))
+            if target_q and qn != target_q:
+                continue
+            pmc = _refactor111_get_pmc_v1(obj)
+            if not (isinstance(pmc, dict) and pmc):
+                continue
+
+            dbg["selected_ref"] = f"local:{fp}"
+            dbg["selected_timestamp"] = str(obj.get("timestamp") or "")
+            dbg["selected_code_version"] = str(obj.get("code_version") or "")
+            dbg["reason"] = "fallback"
+            dbg["selected_baseline_sources_urls"] = _refactor111_extract_bsc_urls_v1(obj)
+
+            obj["_refactor111_prev_snapshot_is_latest_v1"] = False
+            obj["_refactor111_prev_snapshot_ref_v1"] = dbg["selected_ref"]
+            obj["_refactor111_prev_snapshot_pick_v1"] = dbg
+            return obj, dbg
+    except Exception:
+        pass
+
+    # -------- Attempt C: snapshot_ref / previous_data --------
+    try:
+        dbg["origin_attempted"] = dbg["origin_attempted"] or "snapshot_ref"
+        dbg["selected_ref"] = str(prev.get("full_store_ref") or prev.get("snapshot_store_ref") or "")
+        dbg["selected_timestamp"] = str(prev.get("timestamp") or "")
+        dbg["selected_code_version"] = str(prev.get("code_version") or "")
+        dbg["selected_baseline_sources_urls"] = _refactor111_extract_bsc_urls_v1(prev)
+        prev["_refactor111_prev_snapshot_is_latest_v1"] = False
+        prev["_refactor111_prev_snapshot_ref_v1"] = dbg["selected_ref"]
+        prev["_refactor111_prev_snapshot_pick_v1"] = dbg
+    except Exception:
+        pass
+
+    return prev, dbg
+
+
 def attach_source_snapshots_to_analysis(analysis: dict, web_context: dict) -> dict:
     try:
         _q = str((analysis or {}).get('question') or '')
@@ -20724,14 +21062,83 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                         pass
             except Exception:
                 pass
-
             _fix31_prev_code_version = ""
             try:
                 _fix31_prev_code_version = str((previous_data or {}).get("code_version") or "")
             except Exception:
                 _fix31_prev_code_version = ""
 
-            if isinstance(_prev_hash_pref, str) and _prev_hash_pref and _cur_hash == _prev_hash_pref and _fix31_prev_code_version == str(globals().get("CODE_VERSION") or ""):
+            # =========================
+            # REFACTOR111: fastpath gate (break stale loop)
+            # =========================
+            _r111_prev_is_latest = False
+            try:
+                _r111_prev_is_latest = bool((previous_data or {}).get("_refactor111_prev_snapshot_is_latest_v1"))
+            except Exception:
+                _r111_prev_is_latest = False
+
+            _r111_disabled_by_flag = False
+            try:
+                _r111_disabled_by_flag = bool(globals().get("DISABLE_FASTPATH_FOR_NOW") is True)
+            except Exception:
+                _r111_disabled_by_flag = False
+
+            _r111_disabled_prev_not_latest = bool(not _r111_prev_is_latest)
+
+            _r111_gate_reason = ""
+            if _r111_disabled_by_flag:
+                _r111_gate_reason = "disabled_by_flag"
+            elif _r111_disabled_prev_not_latest:
+                _r111_gate_reason = "prev_snapshot_not_latest"
+
+            # Emit gate debug early (even if fastpath not taken)
+            try:
+                output.setdefault("debug", {})
+                if isinstance(output.get("debug"), dict):
+                    _cur_urls, _prev_urls = [], []
+                    try:
+                        _extract = globals().get("_refactor111_extract_bsc_urls_v1")
+                        if callable(_extract):
+                            # baseline_sources_cache is expected to be in scope in compute_source_anchored_diff
+                            _cur_urls = _extract(
+                                {"baseline_sources_cache": baseline_sources_cache}
+                                if isinstance(locals().get("baseline_sources_cache"), list)
+                                else {}
+                            )
+                            _prev_urls = _extract(previous_data if isinstance(previous_data, dict) else {})
+                    except Exception:
+                        _cur_urls, _prev_urls = [], []
+
+                    output["debug"]["fastpath_gate_v1"] = {
+                        "eligible": False,
+                        "reason": str(_r111_gate_reason or ""),
+                        "cur_hash": str(_cur_hash or ""),
+                        "prev_hash": str(_prev_hash_pref or _prev_hash or ""),
+                        "cur_sources_urls": _cur_urls,
+                        "prev_sources_urls": _prev_urls,
+                        "disabled_because_prev_snapshot_not_latest": bool(_r111_disabled_prev_not_latest),
+                    }
+
+                # Also stamp fix35 reason when gated (useful beacon)
+                try:
+                    if _r111_gate_reason and isinstance(output.get("debug"), dict) and isinstance(output["debug"].get("fix35"), dict):
+                        output["debug"]["fix35"]["fastpath_eligible"] = False
+                        output["debug"]["fix35"]["fastpath_reason"] = str(_r111_gate_reason)
+                except Exception:
+                    pass
+            except Exception:
+                pass
+
+            # If gated, blank prev hash so FIX31/FIX35 cannot trigger.
+            if _r111_gate_reason:
+                _prev_hash_pref = ""
+
+            if (
+                isinstance(_prev_hash_pref, str)
+                and _prev_hash_pref
+                and _cur_hash == _prev_hash_pref
+                and _fix31_prev_code_version == str(globals().get("CODE_VERSION") or "")
+            ):
                 _fix31_authoritative_reuse = True
                 try:
                     if _fix41af_prev_hash_pref_saved is not None:
@@ -20743,27 +21150,31 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                     output["rebuild_skipped"] = True
                     output["rebuild_skipped_reason"] = "fix31_sources_unchanged_reuse_prev_metrics"
                     output["source_snapshot_hash_current"] = _cur_hash
-                    output["source_snapshot_hash_previous"] = (_prev_hash_cmp if " _prev_hash_cmp" in locals() else _prev_hash)
+                    output["source_snapshot_hash_previous"] = (_prev_hash_cmp if "_prev_hash_cmp" in locals() else _prev_hash)
+
                     try:
                         if isinstance(output.get("debug"), dict) and isinstance(output["debug"].get("fix35"), dict):
                             output["debug"]["fix35"]["fastpath_eligible"] = True
                             output["debug"]["fix35"]["fastpath_reason"] = "hash_match_and_prev_metrics_present"
                             output["debug"]["fix35"]["source_snapshot_hash_current"] = _cur_hash
-                            output["debug"]["fix35"]["source_snapshot_hash_previous"] = (_prev_hash_pref if isinstance(locals().get("_prev_hash_pref"), str) and locals().get("_prev_hash_pref") else _prev_hash)
+                            output["debug"]["fix35"]["source_snapshot_hash_previous"] = (
+                                _prev_hash_pref
+                                if isinstance(locals().get("_prev_hash_pref"), str) and locals().get("_prev_hash_pref")
+                                else _prev_hash
+                            )
                             output["debug"]["fix35"]["current_metrics_origin"] = "reuse_processed_metrics_fastpath"
+                    except Exception:
+                        pass
+
+                    # Update gate debug to reflect that fastpath actually triggered
+                    try:
+                        if isinstance(output.get("debug"), dict) and isinstance(output["debug"].get("fastpath_gate_v1"), dict):
+                            output["debug"]["fastpath_gate_v1"]["eligible"] = True
+                            output["debug"]["fastpath_gate_v1"]["reason"] = "hash_match_and_prev_metrics_present"
                     except Exception:
                         pass
                 except Exception:
                     pass
-    except Exception:
-        pass
-        _fix31_authoritative_reuse = False
-        try:
-            if isinstance(output.get("debug"), dict) and isinstance(output["debug"].get("fix35"), dict):
-                if not output["debug"]["fix35"].get("fastpath_reason"):
-                    output["debug"]["fix35"]["fastpath_reason"] = "fastpath_not_taken_or_exception"
-        except Exception:
-            pass
 
     # Build a minimal current metrics dict from snapshots:
     current_metrics = {}
@@ -27155,7 +27566,10 @@ def main():
                     "timestamp": _evo_ts,
                     "code_version": _yureeka_get_code_version(),
                     "analysis_type": "source_anchored",
-                    "previous_timestamp": _analysis_ts_norm,
+                    "previous_timestamp": (
+                        ((results or {}).get("debug") or {}).get("prev_snapshot_pick_v1", {}).get("selected_timestamp")
+                        or _analysis_ts_norm
+                    ),
                     "results": results,
                     "interpretation": {
                         "text": interpretation,
@@ -31567,7 +31981,7 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
     else:
         _fix41_force_rebuild_honored = False
 
-    if unchanged:
+    if unchanged and (not DISABLE_FASTPATH_FOR_NOW):
         hashes = {
             "prev_v2": prev_hashes.get("v2",""),
             "cur_v2": cur_hashes.get("v2",""),
@@ -33458,6 +33872,19 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
     if web_context is None or not isinstance(web_context, dict):
         web_context = {}
 
+    # =========================
+    # REFACTOR111: deterministically override stale baseline_data with latest Analysis snapshot
+    # =========================
+    _ref111_prev_pick_dbg = {}
+    try:
+        _picker = globals().get("_refactor111_pick_latest_prev_snapshot_v1")
+        if callable(_picker):
+            _sel, _ref111_prev_pick_dbg = _picker(previous_data or {}, web_context=web_context)
+            if isinstance(_sel, dict) and _sel:
+                previous_data = _sel
+    except Exception:
+        pass
+
     def _fail(msg: str, tb: str = "") -> dict:
         out = {
             "status": "failed",
@@ -33483,6 +33910,14 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
                 }
             },
         }
+
+        # REFACTOR111: always attach prev snapshot pick debug (if available)
+        try:
+            if isinstance(out.get("debug"), dict):
+                out["debug"]["prev_snapshot_pick_v1"] = _ref111_prev_pick_dbg
+        except Exception:
+            pass
+
         if tb:
             try:
                 out["debug"]["refactor37"]["traceback"] = tb
@@ -33520,6 +33955,15 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
             _res = _refactor83_normalize_evolution_source_caches_v1(_res)
         except Exception:
             pass
+
+        # REFACTOR111: attach prev snapshot pick debug to successful output
+        try:
+            _res.setdefault("debug", {})
+            if isinstance(_res.get("debug"), dict):
+                _res["debug"]["prev_snapshot_pick_v1"] = _ref111_prev_pick_dbg
+        except Exception:
+            pass
+
         return _res
     except TypeError:
         # Backward-compat: some historical defs accept only previous_data
@@ -33532,6 +33976,15 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
                 _res = _refactor83_normalize_evolution_source_caches_v1(_res)
             except Exception:
                 pass
+
+            # REFACTOR111: attach prev snapshot pick debug to successful output (fallback path)
+            try:
+                _res.setdefault("debug", {})
+                if isinstance(_res.get("debug"), dict):
+                    _res["debug"]["prev_snapshot_pick_v1"] = _ref111_prev_pick_dbg
+            except Exception:
+                pass
+
             return _res
         except Exception as e:
             import traceback as _tb
