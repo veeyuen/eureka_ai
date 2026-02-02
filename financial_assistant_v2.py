@@ -21176,26 +21176,26 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                 except Exception:
                     pass
 
-    # Build a minimal current metrics dict from snapshots:
-    current_metrics = {}
-    try:
-
-        #   (covers the case where hash-match condition was false and the inline restore
-        #   inside the if-body did not execute).
+        # Build a minimal current metrics dict from snapshots:
+        current_metrics = {}
         try:
-            if locals().get("_fix41af_prev_hash_pref_saved") is not None and not _prev_hash_pref:
-                _prev_hash_pref = locals().get("_fix41af_prev_hash_pref_saved")
-        except Exception:
-            pass
 
-        if _fix31_authoritative_reuse and isinstance(prev_metrics, dict) and prev_metrics:
-            current_metrics = dict(prev_metrics)
+            #   (covers the case where hash-match condition was false and the inline restore
+            #   inside the if-body did not execute).
             try:
-                output["snapshot_origin"] = (output.get("snapshot_origin") or "") + "|fix31_reuse_prev_metrics"
+                if locals().get("_fix41af_prev_hash_pref_saved") is not None and not _prev_hash_pref:
+                    _prev_hash_pref = locals().get("_fix41af_prev_hash_pref_saved")
             except Exception:
                 pass
-    except Exception:
-        pass
+
+            if _fix31_authoritative_reuse and isinstance(prev_metrics, dict) and prev_metrics:
+                current_metrics = dict(prev_metrics)
+                try:
+                    output["snapshot_origin"] = (output.get("snapshot_origin") or "") + "|fix31_reuse_prev_metrics"
+                except Exception:
+                    pass
+        except Exception:
+            pass
 
 
     # Prefer metric_anchors to rebuild current_metrics (snapshot-gated)
