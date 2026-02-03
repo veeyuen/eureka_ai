@@ -159,7 +159,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "REFACTOR111"
+_YUREEKA_CODE_VERSION_LOCK = "REFACTOR112"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 
 # REFACTOR111 escape hatch + selector gate
@@ -187,6 +187,13 @@ _PATCH_TRACKER_CANONICAL_ENTRIES_V1 = [{'patch_id': 'REFACTOR25', 'date': '2026-
   'supersedes': ['REFACTOR110']
 }
 
+    , {
+  'patch_id': 'REFACTOR112',
+  'date': '2026-02-03',
+  'summary': 'Fix HistoryFull row schema mismatch: write 7-column rows (created_at, code_version) to match loader; add timestamp fallback from analysis_id when created_at is non-ISO; add sheet header/row-length probe fields to prev_snapshot_pick_v1; bump code version.',
+  'files': ['REFACTOR112.py'],
+  'supersedes': ['REFACTOR111']
+}
 
 ]
 
@@ -15561,14 +15568,46 @@ def load_full_snapshots_from_sheet(source_snapshot_hash: str, worksheet_title: s
 def write_full_history_payload_to_sheet(analysis_id: str, payload: str, worksheet_title: str = "HistoryFull", chunk_size: int = 20000) -> bool:
     """Write a full analysis payload (string) into HistoryFull as chunked rows keyed by analysis_id.
 
-    Additive helper to support oversized History cells:
-      - Ensures HistoryFull headers exist
-      - Splits payload into chunks
-      - Stores sha256 for integrity
+    REFACTOR112:
+      - Ensure HistoryFull headers match the 7-column schema:
+          analysis_id, part_index, total_parts, payload_part, created_at, code_version, sha256
+      - Backward compatible: if sheet is legacy 5-col, we still write 5-col rows.
+      - Stores sha256 for integrity (full stitched payload).
     """
     import hashlib
+    import datetime as _dt
     if not analysis_id or not payload:
         return False
+
+    # Derive created_at + code_version from payload when possible (best-effort)
+    created_at_iso = ""
+    code_version = ""
+    try:
+        obj = json.loads(payload)
+        if isinstance(obj, dict):
+            created_at_iso = str(obj.get("timestamp") or "")
+            if not created_at_iso:
+                r = obj.get("results") if isinstance(obj.get("results"), dict) else {}
+                created_at_iso = str(r.get("timestamp") or "")
+            code_version = str(obj.get("code_version") or "")
+            if not code_version:
+                r = obj.get("results") if isinstance(obj.get("results"), dict) else {}
+                code_version = str(r.get("code_version") or "")
+    except Exception:
+        pass
+
+    if not created_at_iso:
+        try:
+            created_at_iso = _dt.datetime.now(_dt.timezone.utc).isoformat()
+        except Exception:
+            created_at_iso = ""
+
+    if not code_version:
+        try:
+            code_version = str(globals().get("CODE_VERSION") or globals().get("_YUREEKA_CODE_VERSION_LOCK") or "")
+        except Exception:
+            code_version = ""
+
     try:
         ss = get_google_spreadsheet()
         if not ss:
@@ -15576,44 +15615,61 @@ def write_full_history_payload_to_sheet(analysis_id: str, payload: str, workshee
         try:
             ws = ss.worksheet(worksheet_title)
         except Exception:
-            pass
             # Create sheet if missing (best-effort)
             try:
                 ws = ss.add_worksheet(title=worksheet_title, rows=2000, cols=10)
             except Exception:
-                pass
                 ws = ss.worksheet(worksheet_title)
 
-        # Ensure headers exist
+        # Ensure headers exist (prefer 7-col schema)
+        headers = []
         try:
-            headers = ws.row_values(1)
-            if (not headers) or (len(headers) < 5) or headers[0] != "analysis_id":
-                _ = ws.update('A1:E1', [["analysis_id", "part_index", "total_parts", "payload_part", "sha256"]])
+            headers = ws.row_values(1) or []
+        except Exception:
+            headers = []
+
+        want_7 = False
+        try:
+            if headers and headers[0] == "analysis_id":
+                if len(headers) >= 7 and ("created_at" in headers or "code_version" in headers):
+                    want_7 = True
+                elif len(headers) >= 7:
+                    # header length already 7+; assume 7-col layout
+                    want_7 = True
         except Exception:
             pass
+
+        # Upgrade headers to 7-col schema if missing/legacy
+        try:
+            if (not headers) or (len(headers) < 7) or (headers[0] != "analysis_id") or ("created_at" not in headers) or ("code_version" not in headers):
+                _ = ws.update('A1:G1', [["analysis_id", "part_index", "total_parts", "payload_part", "created_at", "code_version", "sha256"]])
+                want_7 = True
+        except Exception:
+            # If header upgrade fails, fall back to legacy 5-col schema
+            want_7 = False
             try:
-                _ = ws.update('A1:E1', [["analysis_id", "part_index", "total_parts", "payload_part", "sha256"]])
+                if (not headers) or (len(headers) < 5) or (headers and headers[0] != "analysis_id"):
+                    _ = ws.update('A1:E1', [["analysis_id", "part_index", "total_parts", "payload_part", "sha256"]])
             except Exception:
                 pass
 
-        # Remove existing rows for this analysis_id (optional; keep additive and safe: do not delete to avoid refactor)
-        # We will append new parts; loader will read the latest by order if duplicates exist.
-
         sha = hashlib.sha256(payload.encode("utf-8", errors="ignore")).hexdigest()
-        parts = [payload[i:i+chunk_size] for i in range(0, len(payload), chunk_size)]
+        parts = [payload[i:i + chunk_size] for i in range(0, len(payload), chunk_size)]
         total = len(parts) if parts else 0
         if total == 0:
             return False
 
         rows = []
         for i, part in enumerate(parts):
-            rows.append([analysis_id, str(i), str(total), part, sha])
+            if want_7:
+                rows.append([analysis_id, str(i), str(total), part, created_at_iso, code_version, sha])
+            else:
+                rows.append([analysis_id, str(i), str(total), part, sha])
 
         # Append in one batch if possible
         try:
             ws.append_rows(rows, value_input_option="RAW")
         except Exception:
-            pass
             # Fallback to per-row append
             for r in rows:
                 try:
@@ -15621,7 +15677,7 @@ def write_full_history_payload_to_sheet(analysis_id: str, payload: str, workshee
                 except Exception:
                     return False
 
-        # REFACTOR110: invalidate HistoryFull cache after successful write so immediate rehydration sees the new rows.
+        # Invalidate HistoryFull cache after successful write so immediate rehydration sees new rows.
         try:
             _cache = globals().get("_SHEETS_READ_CACHE")
             if isinstance(_cache, dict):
@@ -15629,13 +15685,14 @@ def write_full_history_payload_to_sheet(analysis_id: str, payload: str, workshee
         except Exception:
             pass
 
-        # REFACTOR110: mark HistoryFull as dirty so loader bypasses cached reads once (same-session baseline freshness).
+        # Mark HistoryFull as dirty so loader bypasses cached reads once (same-session baseline freshness).
         try:
             import time as _time
             st.session_state["_historyfull_dirty_v1"] = float(_time.time())
             st.session_state["_historyfull_dirty_reason_v1"] = "write_full_history_payload_to_sheet"
         except Exception:
             pass
+
         return True
     except Exception:
         return False
@@ -16040,6 +16097,28 @@ def _refactor111_mask_sheet_id_v1(sid: str) -> str:
         return f"...{sid[-6:]}"
     except Exception:
         return ""
+def _refactor112_parse_ts_from_analysis_id_v1(aid: str):
+    """REFACTOR112: fallback timestamp inference from analysis_id like YYYYMMDD_HHMMSS_xxxxxx."""
+    try:
+        import datetime as _dt
+        s = str(aid or "").strip()
+        # Expected: 20260203_003809_7aa711
+        if len(s) >= 15 and s[8] == "_" and s[15:16] == "_":
+            d = s[0:8]
+            t = s[9:15]
+        elif len(s) >= 15 and s[8] == "_" and len(s) >= 15:
+            d = s[0:8]
+            t = s[9:15]
+        else:
+            return None
+        if not (d.isdigit() and t.isdigit()):
+            return None
+        dt = _dt.datetime.strptime(d + t, "%Y%m%d%H%M%S")
+        # Treat as UTC (naive)
+        return dt
+    except Exception:
+        return None
+
 
 def _refactor111_pick_latest_prev_snapshot_v1(previous_data: dict, web_context: dict = None):
     """
@@ -16105,6 +16184,14 @@ def _refactor111_pick_latest_prev_snapshot_v1(previous_data: dict, web_context: 
 
                 if rows and len(rows) >= 2:
                     header = rows[0]
+                    try:
+                        dbg["sheet_probe"]["historyfull_header"] = header
+                        _lens = [len(_r) for _r in (rows[1:] or []) if isinstance(_r, list)]
+                        if _lens:
+                            dbg["sheet_probe"]["historyfull_row_len_minmax"] = [int(min(_lens)), int(max(_lens))]
+                        dbg["sheet_probe"]["historyfull_expected_cols"] = 7
+                    except Exception:
+                        pass
                     def _col(name):
                         try:
                             return header.index(name)
@@ -16117,7 +16204,7 @@ def _refactor111_pick_latest_prev_snapshot_v1(previous_data: dict, web_context: 
                     c_created = _col("created_at")
                     c_cv = _col("code_version")
 
-                    # Build analysis_id -> best_ts
+                    # Build analysis_id -> best_ts (REFACTOR112: fallback parse from analysis_id when created_at is not ISO)
                     best = {}
                     for r in rows[1:]:
                         if not isinstance(r, list):
@@ -16126,11 +16213,46 @@ def _refactor111_pick_latest_prev_snapshot_v1(previous_data: dict, web_context: 
                         aid = str(aid or "").strip()
                         if not aid:
                             continue
-                        created = (r[c_created] if c_created >= 0 and c_created < len(r) else "") if r else ""
-                        dt = _refactor111_parse_ts_v1(created)
-                        ts_val = dt.timestamp() if dt else 0.0
-                        if aid not in best or ts_val > best[aid]["ts_val"]:
-                            best[aid] = {"ts_val": ts_val, "created_at": str(created or ""), "code_version": (r[c_cv] if c_cv >= 0 and c_cv < len(r) else "")}
+
+                        created_raw = (r[c_created] if c_created >= 0 and c_created < len(r) else "") if r else ""
+                        created_raw = str(created_raw or "")
+
+                        dt = _refactor111_parse_ts_v1(created_raw)
+                        inferred = False
+                        display_created = created_raw
+
+                        if not dt:
+                            try:
+                                _dt2 = _refactor112_parse_ts_from_analysis_id_v1(aid)
+                            except Exception:
+                                _dt2 = None
+                            if _dt2 is not None:
+                                dt = _dt2
+                                inferred = True
+                                try:
+                                    import datetime as _dt
+                                    display_created = _dt2.replace(tzinfo=_dt.timezone.utc).isoformat().replace("+00:00", "Z")
+                                except Exception:
+                                    pass
+
+                        ts_val = 0.0
+                        if dt:
+                            try:
+                                import datetime as _dt
+                                ts_val = dt.replace(tzinfo=_dt.timezone.utc).timestamp()
+                            except Exception:
+                                try:
+                                    ts_val = float(dt.timestamp())
+                                except Exception:
+                                    ts_val = 0.0
+
+                        if aid not in best or ts_val > float(best[aid].get("ts_val") or 0.0):
+                            best[aid] = {
+                                "ts_val": ts_val,
+                                "created_at": str(display_created or ""),
+                                "code_version": (r[c_cv] if c_cv >= 0 and c_cv < len(r) else ""),
+                                "inferred_from_analysis_id": bool(inferred),
+                            }
 
                     # Sort candidate aids by ts desc
                     cands = sorted(best.items(), key=lambda kv: float(kv[1]["ts_val"] or 0.0), reverse=True)
@@ -16140,7 +16262,8 @@ def _refactor111_pick_latest_prev_snapshot_v1(previous_data: dict, web_context: 
                         dbg["candidates_considered"].append({
                             "ref": f"gsheet:HistoryFull:{aid}",
                             "timestamp": meta.get("created_at") or "",
-                            "code_version": str(meta.get("code_version") or "")
+                            "code_version": str(meta.get("code_version") or ""),
+                            "timestamp_inferred": bool(meta.get("inferred_from_analysis_id")),
                         })
 
                     # walk candidates in timestamp order until match
