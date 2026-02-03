@@ -21062,83 +21062,14 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                         pass
             except Exception:
                 pass
+
             _fix31_prev_code_version = ""
             try:
                 _fix31_prev_code_version = str((previous_data or {}).get("code_version") or "")
             except Exception:
                 _fix31_prev_code_version = ""
 
-            # =========================
-            # REFACTOR111: fastpath gate (break stale loop)
-            # =========================
-            _r111_prev_is_latest = False
-            try:
-                _r111_prev_is_latest = bool((previous_data or {}).get("_refactor111_prev_snapshot_is_latest_v1"))
-            except Exception:
-                _r111_prev_is_latest = False
-
-            _r111_disabled_by_flag = False
-            try:
-                _r111_disabled_by_flag = bool(globals().get("DISABLE_FASTPATH_FOR_NOW") is True)
-            except Exception:
-                _r111_disabled_by_flag = False
-
-            _r111_disabled_prev_not_latest = bool(not _r111_prev_is_latest)
-
-            _r111_gate_reason = ""
-            if _r111_disabled_by_flag:
-                _r111_gate_reason = "disabled_by_flag"
-            elif _r111_disabled_prev_not_latest:
-                _r111_gate_reason = "prev_snapshot_not_latest"
-
-            # Emit gate debug early (even if fastpath not taken)
-            try:
-                output.setdefault("debug", {})
-                if isinstance(output.get("debug"), dict):
-                    _cur_urls, _prev_urls = [], []
-                    try:
-                        _extract = globals().get("_refactor111_extract_bsc_urls_v1")
-                        if callable(_extract):
-                            # baseline_sources_cache is expected to be in scope in compute_source_anchored_diff
-                            _cur_urls = _extract(
-                                {"baseline_sources_cache": baseline_sources_cache}
-                                if isinstance(locals().get("baseline_sources_cache"), list)
-                                else {}
-                            )
-                            _prev_urls = _extract(previous_data if isinstance(previous_data, dict) else {})
-                    except Exception:
-                        _cur_urls, _prev_urls = [], []
-
-                    output["debug"]["fastpath_gate_v1"] = {
-                        "eligible": False,
-                        "reason": str(_r111_gate_reason or ""),
-                        "cur_hash": str(_cur_hash or ""),
-                        "prev_hash": str(_prev_hash_pref or _prev_hash or ""),
-                        "cur_sources_urls": _cur_urls,
-                        "prev_sources_urls": _prev_urls,
-                        "disabled_because_prev_snapshot_not_latest": bool(_r111_disabled_prev_not_latest),
-                    }
-
-                # Also stamp fix35 reason when gated (useful beacon)
-                try:
-                    if _r111_gate_reason and isinstance(output.get("debug"), dict) and isinstance(output["debug"].get("fix35"), dict):
-                        output["debug"]["fix35"]["fastpath_eligible"] = False
-                        output["debug"]["fix35"]["fastpath_reason"] = str(_r111_gate_reason)
-                except Exception:
-                    pass
-            except Exception:
-                pass
-
-            # If gated, blank prev hash so FIX31/FIX35 cannot trigger.
-            if _r111_gate_reason:
-                _prev_hash_pref = ""
-
-            if (
-                isinstance(_prev_hash_pref, str)
-                and _prev_hash_pref
-                and _cur_hash == _prev_hash_pref
-                and _fix31_prev_code_version == str(globals().get("CODE_VERSION") or "")
-            ):
+            if isinstance(_prev_hash_pref, str) and _prev_hash_pref and _cur_hash == _prev_hash_pref and _fix31_prev_code_version == str(globals().get("CODE_VERSION") or ""):
                 _fix31_authoritative_reuse = True
                 try:
                     if _fix41af_prev_hash_pref_saved is not None:
@@ -21150,53 +21081,58 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                     output["rebuild_skipped"] = True
                     output["rebuild_skipped_reason"] = "fix31_sources_unchanged_reuse_prev_metrics"
                     output["source_snapshot_hash_current"] = _cur_hash
-                    output["source_snapshot_hash_previous"] = (_prev_hash_cmp if "_prev_hash_cmp" in locals() else _prev_hash)
-
+                    output["source_snapshot_hash_previous"] = (_prev_hash_cmp if " _prev_hash_cmp" in locals() else _prev_hash)
                     try:
                         if isinstance(output.get("debug"), dict) and isinstance(output["debug"].get("fix35"), dict):
                             output["debug"]["fix35"]["fastpath_eligible"] = True
                             output["debug"]["fix35"]["fastpath_reason"] = "hash_match_and_prev_metrics_present"
                             output["debug"]["fix35"]["source_snapshot_hash_current"] = _cur_hash
-                            output["debug"]["fix35"]["source_snapshot_hash_previous"] = (
-                                _prev_hash_pref
-                                if isinstance(locals().get("_prev_hash_pref"), str) and locals().get("_prev_hash_pref")
-                                else _prev_hash
-                            )
+                            output["debug"]["fix35"]["source_snapshot_hash_previous"] = (_prev_hash_pref if isinstance(locals().get("_prev_hash_pref"), str) and locals().get("_prev_hash_pref") else _prev_hash)
                             output["debug"]["fix35"]["current_metrics_origin"] = "reuse_processed_metrics_fastpath"
                     except Exception:
                         pass
-
-                    # Update gate debug to reflect that fastpath actually triggered
-                    try:
-                        if isinstance(output.get("debug"), dict) and isinstance(output["debug"].get("fastpath_gate_v1"), dict):
-                            output["debug"]["fastpath_gate_v1"]["eligible"] = True
-                            output["debug"]["fastpath_gate_v1"]["reason"] = "hash_match_and_prev_metrics_present"
-                    except Exception:
-                        pass
                 except Exception:
                     pass
+    except Exception:
+        pass
+        _fix31_authoritative_reuse = False
+        try:
+            if isinstance(output.get("debug"), dict) and isinstance(output["debug"].get("fix35"), dict):
+                if not output["debug"]["fix35"].get("fastpath_reason"):
+                    output["debug"]["fix35"]["fastpath_reason"] = "fastpath_not_taken_or_exception"
+        except Exception:
+            pass
 
-            # Build a minimal current metrics dict from snapshots:
-            current_metrics = {}
+    # Build a minimal current metrics dict from snapshots:
+    current_metrics = {}
+    try:
+
+        #   (covers the case where hash-match condition was false and the inline restore
+        #   inside the if-body did not execute).
+        try:
+            if locals().get("_fix41af_prev_hash_pref_saved") is not None and not _prev_hash_pref:
+                _prev_hash_pref = locals().get("_fix41af_prev_hash_pref_saved")
+        except Exception:
+            pass
+
+        if _fix31_authoritative_reuse and isinstance(prev_metrics, dict) and prev_metrics:
+            current_metrics = dict(prev_metrics)
             try:
-
-                #   (covers the case where hash-match condition was false and the inline restore
-                #   inside the if-body did not execute).
-                try:
-                    if locals().get("_fix41af_prev_hash_pref_saved") is not None and not _prev_hash_pref:
-                        _prev_hash_pref = locals().get("_fix41af_prev_hash_pref_saved")
-                except Exception:
-                    pass
-
-                if _fix31_authoritative_reuse and isinstance(prev_metrics, dict) and prev_metrics:
-                    current_metrics = dict(prev_metrics)
-                    try:
-                        output["snapshot_origin"] = (output.get("snapshot_origin") or "") + "|fix31_reuse_prev_metrics"
-                    except Exception:
-                        pass
+                output["snapshot_origin"] = (output.get("snapshot_origin") or "") + "|fix31_reuse_prev_metrics"
             except Exception:
                 pass
+    except Exception:
+        pass
 
+
+    except Exception:
+        _fix31_authoritative_reuse = False
+        try:
+            if isinstance(output.get("debug"), dict) and isinstance(output["debug"].get("fix35"), dict):
+                if not output["debug"]["fix35"].get("fastpath_reason"):
+                    output["debug"]["fix35"]["fastpath_reason"] = "fastpath_not_taken_or_exception"
+        except Exception:
+            pass
 
     # Prefer metric_anchors to rebuild current_metrics (snapshot-gated)
     def _get_metric_anchors(prev: dict) -> dict:
@@ -31981,7 +31917,7 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
     else:
         _fix41_force_rebuild_honored = False
 
-    if unchanged and (not DISABLE_FASTPATH_FOR_NOW):
+    if unchanged:
         hashes = {
             "prev_v2": prev_hashes.get("v2",""),
             "cur_v2": cur_hashes.get("v2",""),
