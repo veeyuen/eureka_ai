@@ -159,7 +159,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "REFACTOR112"
+_YUREEKA_CODE_VERSION_LOCK = "REFACTOR113"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 
 # REFACTOR111 escape hatch + selector gate
@@ -195,7 +195,7 @@ _PATCH_TRACKER_CANONICAL_ENTRIES_V1 = [{'patch_id': 'REFACTOR25', 'date': '2026-
   'supersedes': ['REFACTOR111']
 }
 
-]
+, {'patch_id': 'REFACTOR113', 'date': '2026-02-03', 'summary': 'Hard enforce year-anchor gating for year-stamped schema keys (no weak fallback); emit missing_reason_v1 for blocked/missing year anchors; normalize source row status when status_detail indicates success.', 'files': ['REFACTOR113.py'], 'supersedes': ['REFACTOR112']}]
 
 def _yureeka_register_patch_tracker_v1(_entries=_PATCH_TRACKER_CANONICAL_ENTRIES_V1):
     try:
@@ -33665,13 +33665,15 @@ def _refactor28_schema_only_rebuild_authoritative_v1(
 
                     best_key = tie
 
-        # REFACTOR100: choose strong winner for year-anchored keys; allow weak fallback with flag.
+        # REFACTOR113: hard year-anchor enforcement for year-stamped schema keys (no weak fallback).
 
         _ref100_used_fallback_weak = False
 
         _ref100_winner_years = []
 
         _ref100_winner_has_all_years = None
+
+        _ref113_missing_reason = ""
 
         if _ref100_required_years:
 
@@ -33685,17 +33687,29 @@ def _refactor28_schema_only_rebuild_authoritative_v1(
 
             elif isinstance(best_weak, dict):
 
-                best = best_weak
-
-                _ref100_used_fallback_weak = True
+                # Weak winner exists but lacks required year tokens -> treat as missing.
+                best = None
 
                 _ref100_winner_years = list(best_weak_years or [])
 
                 _ref100_winner_has_all_years = False
 
+                _ref113_missing_reason = "year_anchor_missing_required_year_tokens"
+
             else:
 
                 best = None
+
+                _ref100_winner_has_all_years = False
+
+                _ref113_missing_reason = "year_anchor_no_candidate"
+
+
+        # REFACTOR113: For year-anchored schema keys, emit a placeholder row (value=None)
+        # instead of incorrectly binding a weak candidate or dropping the row.
+        if _ref100_required_years and not isinstance(best, dict):
+
+            best = {}
 
 
         if not isinstance(best, dict):
@@ -33755,6 +33769,14 @@ def _refactor28_schema_only_rebuild_authoritative_v1(
 
 
 
+        # REFACTOR113: explicit missing reason when year-anchor gating blocks binding
+        try:
+            if _ref100_required_years and isinstance(metric, dict) and _ref113_missing_reason:
+                metric.setdefault("provenance", {})
+                metric["provenance"]["missing_reason_v1"] = str(_ref113_missing_reason)
+        except Exception:
+            pass
+
         try:
             if _fix33_dbg and isinstance(metric, dict):
                 try:
@@ -33770,7 +33792,6 @@ def _refactor28_schema_only_rebuild_authoritative_v1(
                 metric["provenance"]["fix33_rejected_reason_counts"] = dict(_fix33_rej or {})
         except Exception:
             pass
-
         out[canonical_key] = metric
 
     return out
@@ -33920,6 +33941,43 @@ def _refactor83_normalize_evolution_source_caches_v1(payload: dict) -> dict:
                         })
             except Exception:
                 pass
+
+    # REFACTOR113: normalize per-source status when status_detail indicates success
+    try:
+        _keys = ["baseline_sources_cache_current", "source_results", "baseline_sources_cache"]
+        _touched = 0
+        _changed = 0
+        for _k in _keys:
+            rows = res.get(_k)
+            if not isinstance(rows, list):
+                continue
+            for r in rows:
+                if not isinstance(r, dict):
+                    continue
+                _touched += 1
+                sd = str(r.get("status_detail") or r.get("detail") or "").strip().lower()
+                st = str(r.get("status") or "").strip().lower()
+                if sd == "success" and st in ("failed", "error", ""):
+                    try:
+                        r["status"] = "success"
+                        _changed += 1
+                    except Exception:
+                        pass
+        if _changed:
+            try:
+                res.setdefault("debug", {})
+                if isinstance(res.get("debug"), dict):
+                    res["debug"].setdefault("refactor83_status_normalize_v1", {})
+                    if isinstance(res["debug"].get("refactor83_status_normalize_v1"), dict):
+                        res["debug"]["refactor83_status_normalize_v1"].update({
+                            "applied": True,
+                            "touched_rows": int(_touched),
+                            "changed_rows": int(_changed),
+                        })
+            except Exception:
+                pass
+    except Exception:
+        pass
 
     return payload
 
