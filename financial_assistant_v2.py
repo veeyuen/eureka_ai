@@ -159,7 +159,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "REFACTOR113"
+_YUREEKA_CODE_VERSION_LOCK = "REFACTOR114"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 
 # REFACTOR111 escape hatch + selector gate
@@ -195,7 +195,7 @@ _PATCH_TRACKER_CANONICAL_ENTRIES_V1 = [{'patch_id': 'REFACTOR25', 'date': '2026-
   'supersedes': ['REFACTOR111']
 }
 
-, {'patch_id': 'REFACTOR113', 'date': '2026-02-03', 'summary': 'Hard enforce year-anchor gating for year-stamped schema keys (no weak fallback); emit missing_reason_v1 for blocked/missing year anchors; normalize source row status when status_detail indicates success.', 'files': ['REFACTOR113.py'], 'supersedes': ['REFACTOR112']}]
+, {'patch_id': 'REFACTOR113', 'date': '2026-02-03', 'summary': 'Hard enforce year-anchor gating for year-stamped schema keys (no weak fallback); emit missing_reason_v1 for blocked/missing year anchors; normalize source row status when status_detail indicates success.', 'files': ['REFACTOR113.py'], 'supersedes': ['REFACTOR112']}, {'patch_id': 'REFACTOR114', 'date': '2026-02-03', 'summary': 'Fix injected URL semantics: stop treating forced/seed source lists as injection; do not auto-fill diag_extra_urls_ui_raw; remove legacy fix2d65b_injected_urls fallbacks from injection detection + per-row delta gating so production runs regain Δt and only true UI injections suppress it.', 'files': ['REFACTOR114.py'], 'supersedes': ['REFACTOR113']}]
 
 def _yureeka_register_patch_tracker_v1(_entries=_PATCH_TRACKER_CANONICAL_ENTRIES_V1):
     try:
@@ -6744,294 +6744,122 @@ def _fix2d66_extract_urls_from_text(text: str) -> list:
 
 
 def _fix2d66_collect_injected_urls(web_context: dict, question_text: str = "") -> list:
-    """Collect injected URLs from all known UI/diag fields + (optional) question text."""
+    """Collect **only user-intended** injected URLs.
+
+    Important: do NOT treat generic wc['extra_urls'] (often used for seed/forced source pools)
+    as injection unless Evolution explicitly marked it with __yureeka_extra_urls_are_injection_v1.
+    """
     try:
         wc = web_context if isinstance(web_context, dict) else {}
-        found = []
-        # direct list fields
-        for k in (
-            'extra_urls',
-            'diag_extra_urls_final', 'diag_extra_urls',
-            'diag_extra_urls_ui', 'extra_urls_ui',
-            'extra_urls_normalized', 'extra_urls_ui_norm',
-        ):
-            v = wc.get(k)
-            if isinstance(v, (list, tuple)):
-                found.extend([str(x).strip() for x in v if isinstance(x, str) and x.strip()])
-
-        # raw string fields
-        for k in (
-            'diag_extra_urls_ui_raw', 'extra_urls_ui_raw',
-            'diag_extra_urls_ui_text', 'extra_urls_ui_text',
-        ):
-            v = wc.get(k)
-            if isinstance(v, str) and v.strip():
-                # splitlines + commas + url regex
-                for line in v.splitlines():
-                    line = (line or '').strip()
-                    if not line:
-                        continue
-                    for p in line.split(','):
-                        p = (p or '').strip()
-                        if p.startswith('http://') or p.startswith('https://'):
-                            found.append(p)
-                found.extend(_fix2d66_extract_urls_from_text(v))
-
-        # diag payloads
-        d = wc.get('diag_injected_urls') if isinstance(wc.get('diag_injected_urls'), dict) else {}
-        if isinstance(d, dict):
-            for k in ('ui_norm', 'intake_norm', 'admitted', 'persisted', 'persisted_norm', 'extra_urls', 'extra_urls_normalized'):
-                v = d.get(k)
-                if isinstance(v, (list, tuple)):
-                    found.extend([str(x).strip() for x in v if isinstance(x, str) and x.strip()])
-            vraw = d.get('ui_raw')
-            if isinstance(vraw, str) and vraw.strip():
-                found.extend(_fix2d66_extract_urls_from_text(vraw))
-
-        # last resort: parse question text (helps when user pastes URL into prompt)
+        found: list = []
+        # Primary: dedicated injected-url extractor (REFACTOR32 semantics)
+        try:
+            found.extend(_yureeka_extract_injected_urls_v1(wc))
+        except Exception:
+            pass
+        # Last resort: URL pasted into the prompt/question text
         if isinstance(question_text, str) and question_text.strip():
-            found.extend(_fix2d66_extract_urls_from_text(question_text))
-
-        # normalize
+            try:
+                found.extend(_fix2d66_extract_urls_from_text(question_text))
+            except Exception:
+                pass
+        # Normalize + stable de-dup
         try:
             norm = _inj_diag_norm_url_list(found)
         except Exception:
-            pass
-            norm = [u for u in found if isinstance(u, str) and u.startswith(('http://','https://'))]
-        # stable de-dupe order
-        seen = set(); out = []
+            norm = [u for u in found if isinstance(u, str) and (u.startswith("http://") or u.startswith("https://"))]
+        out: list = []
+        seen = set()
         for u in norm:
-            if not u or u in seen:
+            uu = str(u or "").strip()
+            if not uu or uu in seen:
                 continue
-            seen.add(u); out.append(u)
+            seen.add(uu)
+            out.append(uu)
         return out
     except Exception:
         return []
 
 
 def _fix2d66_promote_injected_urls(web_context: dict, question_text: str = "", stage: str = "") -> dict:
-    """Promote injected URLs into web_context.extra_urls and ensure diag_injected_urls exists."""
+    """Promote injected URLs into web_context in a way that cannot poison production runs.
+
+    - Only runs when **true user injection URLs** are present (via UI fields / explicit marker / prompt URL).
+    - Does NOT auto-fill diag_extra_urls_ui_raw (that field is UI-owned; writing to it can make
+      production runs look like injection runs).
+    """
     try:
         if not isinstance(web_context, dict):
             return web_context
-        inj = _fix2d66_collect_injected_urls(web_context, question_text=question_text)
+        inj = _fix2d66_collect_injected_urls(web_context or {}, question_text=question_text)
         if not inj:
             return web_context
 
-        # promote into extra_urls if empty/missing
-        cur = web_context.get('extra_urls')
-        if not isinstance(cur, (list, tuple)) or not cur:
-            web_context['extra_urls'] = list(inj)
-        else:
-            # merge
-            merged = []
-            seen = set()
-            for u in _inj_diag_norm_url_list(list(cur) + list(inj)):
-                if not u or u in seen:
-                    continue
-                seen.add(u); merged.append(u)
-            web_context['extra_urls'] = merged
-
-        # ensure ui_raw presence (for inj_trace_v1)
-        if not (isinstance(web_context.get('diag_extra_urls_ui_raw'), str) and web_context.get('diag_extra_urls_ui_raw').strip()):
-            web_context['diag_extra_urls_ui_raw'] = "\n".join(inj)
-
-        # ensure diag_injected_urls exists if upstream bypassed fetch_web_context
-        if not isinstance(web_context.get('diag_injected_urls'), dict):
-            web_context['diag_injected_urls'] = {}
-        d = web_context['diag_injected_urls']
-        if isinstance(d, dict):
-            d.setdefault('run_id', web_context.get('diag_run_id') or _inj_diag_make_run_id(stage or 'run'))
-            d.setdefault('ui_raw', web_context.get('diag_extra_urls_ui_raw') or "\n".join(inj))
-            d.setdefault('ui_norm', list(inj))
-            d.setdefault('intake_norm', list(inj))
-            d.setdefault('admitted', list(inj))
-
-        web_context.setdefault('debug', {})
-        if isinstance(web_context.get('debug'), dict):
-            web_context['debug'].setdefault('fix2d66', {})
-            if isinstance(web_context['debug'].get('fix2d66'), dict):
-                web_context['debug']['fix2d66'].update({
-                    'promoted': True,
-                    'count': int(len(inj)),
-                    'set_hash': _inj_diag_set_hash(inj),
-                    'stage': str(stage or ''),
-                })
-        return web_context
-    except Exception:
-        return web_context
-
-# Objective:
-# - Emit ONE canonical diagnostic payload in a fixed location for every run:
-#     results.debug.inj_trace_v1  (analysis outputs)
-#     results.debug.inj_trace_v1  (evolution outputs; mirrored from output.debug)
-# - Purely additive; does NOT alter fastpath logic or selection control flow.
-def _inj_trace_v1_build(
-    diag_injected_urls: dict,
-    hash_inputs: list,
-    stage: str = "analysis",
-    path: str = "",
-    rebuild_pool: list = None,
-    rebuild_selected: list = None,
-    hash_exclusion_reasons: dict = None,
-) -> dict:
-    try:
-        d = diag_injected_urls if isinstance(diag_injected_urls, dict) else {}
-        ui_raw = d.get("ui_raw") if isinstance(d.get("ui_raw"), (str, list)) else (d.get("extra_urls_ui_raw") or "")
-        ui_norm = _inj_diag_norm_url_list(d.get("ui_norm") or d.get("extra_urls_ui_norm") or d.get("extra_urls_normalized") or [])
-        intake_norm = _inj_diag_norm_url_list(d.get("intake_norm") or d.get("extra_urls_intake_norm") or d.get("extra_urls") or [])
-        admitted_norm = _inj_diag_norm_url_list(d.get("admitted") or d.get("extra_urls_admitted") or [])
-        persisted_norm = _inj_diag_norm_url_list(d.get("persisted") or d.get("persisted_norm") or [])
-
-        attempted = d.get("attempted") if isinstance(d.get("attempted"), list) else []
-        # Keep attempted minimal and stable
-        attempted_min = []
-        for a in attempted:
-            if not isinstance(a, dict):
-                continue
-            attempted_min.append({
-                "url": str(a.get("url") or ""),
-                "status": str(a.get("status") or a.get("fetch_status") or ""),
-                "reason": str(a.get("reason") or a.get("fail_reason") or ""),
-                "content_len": a.get("content_len"),
-            })
-
-        hash_inputs_norm = _inj_diag_norm_url_list(hash_inputs or [])
-        rebuild_pool_norm = _inj_diag_norm_url_list(rebuild_pool or [])
-        rebuild_selected_norm = _inj_diag_norm_url_list(rebuild_selected or [])
-
-        # Deterministic deltas (set-based; small lists)
-        def _delta(a, b):
-            try:
-                return sorted(list(set(a or []) - set(b or [])))[:100]
-            except Exception:
-                return []
-
-        deltas = {
-            "ui_minus_intake": _delta(ui_norm, intake_norm),
-            "intake_minus_admitted": _delta(intake_norm, admitted_norm),
-            "admitted_minus_attempted": _delta(admitted_norm, [x.get("url") for x in attempted_min if isinstance(x, dict)]),
-            "attempted_minus_persisted": _delta([x.get("url") for x in attempted_min if isinstance(x, dict)], persisted_norm),
-            "persisted_minus_hash_inputs": _delta(persisted_norm, hash_inputs_norm),
-            "hash_inputs_minus_rebuild_pool": _delta(hash_inputs_norm, rebuild_pool_norm) if rebuild_pool is not None else [],
-            "rebuild_pool_minus_selected": _delta(rebuild_pool_norm, rebuild_selected_norm) if rebuild_selected is not None else [],
-        }
-
-
-        # Purpose: make evolution/analysis admission & selection drops explain themselves with stable reason codes.
-        # Purely additive: diagnostics only (does not alter fastpath, hashing, scrape, or rebuild behavior).
-        admission_rejection_reasons = {}
-        attempted_rejection_reasons = {}
+        # Mark for downstream semantics (REFACTOR32 contract)
         try:
-            # Prefer explicit per-URL decisions if present (from other EVO admission tracing patches)
-            _decisions = d.get("inj_admission_decisions") or d.get("admission_decisions") or {}
-            if isinstance(_decisions, dict):
-                for _u, _v in _decisions.items():
-                    if not _u:
-                        continue
-                    if isinstance(_v, dict):
-                        _decision = str(_v.get("decision") or "")
-                        _reason = str(_v.get("reason_code") or _v.get("reason") or "")
-                    else:
-                        _decision = str(_v or "")
-                        _reason = ""
-                    if _decision.lower().startswith("reject"):
-                        admission_rejection_reasons[str(_u)] = _reason or "rejected_by_merge"
+            web_context["__yureeka_extra_urls_are_injection_v1"] = True
+            web_context["__yureeka_injected_urls_v1"] = list(inj)
         except Exception:
             pass
 
-        # Heuristic reason coding for intake→admitted drops
-        for _u in (deltas.get("intake_minus_admitted") or []):
-            if not _u:
-                continue
-            if _u in admission_rejection_reasons:
-                continue
-            _rsn = ""
+        # Promote into extra_urls (merge, stable)
+        try:
+            cur = web_context.get("extra_urls")
+            cur_list = list(cur) if isinstance(cur, (list, tuple)) else []
+            merged = _inj_diag_norm_url_list(cur_list + list(inj))
+            seen = set()
+            out = []
+            for u in merged:
+                uu = str(u or "").strip()
+                if not uu or uu in seen:
+                    continue
+                seen.add(uu)
+                out.append(uu)
+            web_context["extra_urls"] = out
+        except Exception:
             try:
-                if not str(_u).startswith(("http://", "https://")):
-                    _rsn = "invalid_scheme"
-                elif str(stage) == "evolution" and str(path).startswith(("fastpath", "fastpath_replay")):
-                    # In fastpath/replay, extra URLs may be visible but not admitted into the scrape/hash universe by policy.
-                    _rsn = "fastpath_replay_no_admission"
-                else:
-                    _rsn = "unknown_rejected_pre_admission"
+                web_context["extra_urls"] = list(inj)
             except Exception:
                 pass
-                _rsn = "unknown_rejected_pre_admission"
-            admission_rejection_reasons[str(_u)] = _rsn
 
-        # Heuristic reason coding for admitted→attempted drops
-        _attempted_urls = [x.get("url") for x in attempted_min if isinstance(x, dict) and x.get("url")]
-        for _u in (deltas.get("admitted_minus_attempted") or []):
-            if not _u:
-                continue
-            if str(stage) == "evolution" and str(path).startswith(("fastpath", "fastpath_replay")):
-                attempted_rejection_reasons[str(_u)] = "fastpath_replay_no_fetch"
-            else:
-                attempted_rejection_reasons[str(_u)] = "not_fetched_or_filtered_before_fetch"
-
-        # Policy/context snapshot (small + stable)
+        # Ensure diag payload exists for traceability, WITHOUT mutating UI fields
         try:
-            import os as _os
-            policy = {
-                "exclude_injected_from_hash_env": str(_os.getenv("YUREEKA_EXCLUDE_INJECTED_URLS_FROM_SNAPSHOT_HASH") or ""),
-                "force_include_injected_in_hash_env": str(_os.getenv("YUREEKA_INCLUDE_INJECTED_URLS_IN_SNAPSHOT_HASH") or ""),
-                "evolution_calls_fetch_web_context": d.get("evolution_calls_fetch_web_context"),
-                "evolution_injection_url_present": bool(ui_norm or intake_norm or admitted_norm or attempted_min or persisted_norm),
-                "evolution_injection_url_count": int(len(ui_norm) if isinstance(ui_norm, list) else 0),
-                "evolution_fastpath_allows_injection": False,
-            }
+            _d = web_context.get("diag_injected_urls")
+            if not isinstance(_d, dict):
+                _d = {}
+                web_context["diag_injected_urls"] = _d
+            if isinstance(_d, dict):
+                try:
+                    _d.setdefault("run_id", web_context.get("diag_run_id") or _inj_diag_make_run_id(stage or "run"))
+                except Exception:
+                    pass
+                # prefer actual UI raw if present; otherwise synthesize
+                _ui_raw = ""
+                try:
+                    _ui_raw = str(web_context.get("diag_extra_urls_ui_raw") or web_context.get("extra_urls_ui_raw") or "")
+                except Exception:
+                    _ui_raw = ""
+                if not _ui_raw.strip():
+                    _ui_raw = "\n".join(list(inj))
+                _d.setdefault("ui_raw", _ui_raw)
+                _d.setdefault("ui_norm", list(inj))
+                _d.setdefault("intake_norm", list(inj))
+                _d.setdefault("admitted", list(inj))
         except Exception:
             pass
-            policy = {}
-        return {
-            "run_id": str(d.get("run_id") or ""),
-            "stage": str(stage or ""),
-            "path": str(path or ""),
-            "ui_raw": ui_raw,
-            "ui_norm": ui_norm,
-            "intake_norm": intake_norm,
-            "admitted_norm": admitted_norm,
-            "attempted": attempted_min,
-            "persisted_norm": persisted_norm,
-            "hash_inputs_norm": hash_inputs_norm,
-            "rebuild_pool_norm": rebuild_pool_norm if rebuild_pool is not None else None,
-            "rebuild_selected_norm": rebuild_selected_norm if rebuild_selected is not None else None,
-            "counts": {
-                "ui_norm": int(len(ui_norm)),
-                "intake_norm": int(len(intake_norm)),
-                "admitted_norm": int(len(admitted_norm)),
-                "attempted": int(len(attempted_min)),
-                "persisted_norm": int(len(persisted_norm)),
-                "hash_inputs_norm": int(len(hash_inputs_norm)),
-                "rebuild_pool_norm": int(len(rebuild_pool_norm)) if rebuild_pool is not None else None,
-                "rebuild_selected_norm": int(len(rebuild_selected_norm)) if rebuild_selected is not None else None,
-            },
-            "set_hashes": {
-                "ui_norm": _inj_diag_set_hash(ui_norm),
-                "intake_norm": _inj_diag_set_hash(intake_norm),
-                "admitted_norm": _inj_diag_set_hash(admitted_norm),
-                "persisted_norm": _inj_diag_set_hash(persisted_norm),
-                "hash_inputs_norm": _inj_diag_set_hash(hash_inputs_norm),
-                "rebuild_pool_norm": _inj_diag_set_hash(rebuild_pool_norm) if rebuild_pool is not None else "",
-                "rebuild_selected_norm": _inj_diag_set_hash(rebuild_selected_norm) if rebuild_selected is not None else "",
-            },
-            "deltas": deltas,
-            "rejection_reasons": {
-                "intake_minus_admitted": admission_rejection_reasons,
-                "admitted_minus_attempted": attempted_rejection_reasons,
-            },
-            "policy": policy,
-        }
-    except Exception:
-        return {"stage": str(stage or ""), "path": str(path or ""), "error": "inj_trace_build_failed"}
 
-# Purpose:
-# - Make injected URL admission deterministic and auditable across modes.
-# - Promote UI/raw diagnostic fields into web_context.extra_urls when missing.
-# - Build a minimal diag_injected_urls payload when fetch_web_context wasn't called
-#   (common on evolution replay/fastpath).
-# - Pure wiring + diagnostics: does NOT refetch, does NOT change selector logic.
+        # lightweight debug
+        try:
+            web_context["__fix2d66_injected_urls_promoted_v1"] = True
+            web_context["__fix2d66_injected_urls_count_v1"] = int(len(inj))
+            web_context["__fix2d66_stage_v1"] = str(stage or "")
+        except Exception:
+            pass
+
+        return web_context
+    except Exception:
+        return web_context
+
 
 def _fix2d66_extract_urls_from_text(text: str) -> list:
     try:
@@ -7048,57 +6876,38 @@ def _fix2d66_extract_urls_from_text(text: str) -> list:
 
 
 def _fix2d66_collect_injected_urls_from_wc(web_context: dict, question: str = "") -> dict:
-    """Return dict with ui_raw, ui_norm, intake_norm (normalized list) from many possible inputs."""
+    """Return {ui_raw, ui_norm, intake_norm} for **true injection URLs** only.
+
+    NOTE: This MUST NOT treat seed/forced source pools (often carried in wc['extra_urls'])
+    as injection unless Evolution explicitly marked them with __yureeka_extra_urls_are_injection_v1.
+    """
     wc = web_context if isinstance(web_context, dict) else {}
 
-    # candidates from list-like fields
-    candidates = []
-    for k in (
-        "extra_urls",
-        "diag_extra_urls_final",
-        "diag_extra_urls",
-        "extra_urls_final",
-        "diag_extra_urls_ui",
-        "extra_urls_ui",
-        "diag_extra_urls_ui_norm",
-        "extra_urls_ui_norm",
-    ):
-        v = wc.get(k)
-        if isinstance(v, (list, tuple)):
-            candidates.extend([x for x in v if isinstance(x, str) and x.strip()])
-        elif isinstance(v, str) and v.strip() and k.endswith("_final"):
-            candidates.extend(_fix2d66_extract_urls_from_text(v))
-
-    # raw text fields
+    # UI-owned raw injection field (do not synthesize from other fields)
     ui_raw = ""
-    for k in (
-        "diag_extra_urls_ui_raw",
-        "extra_urls_ui_raw",
-        "extra_sources_text",
-        "extra_sources_text_tab1",
-    ):
+    for k in ("diag_extra_urls_ui_raw", "extra_urls_ui_raw"):
         v = wc.get(k)
         if isinstance(v, str) and v.strip():
-            if not ui_raw:
-                ui_raw = v
-            candidates.extend(_fix2d66_extract_urls_from_text(v))
-            # also split on newlines/commas
-            for line in v.splitlines():
-                for part in line.split(','):
-                    part = (part or '').strip()
-                    if part.startswith('http://') or part.startswith('https://'):
-                        candidates.append(part)
+            ui_raw = v
+            break
 
-    # also allow URLs embedded in the question text
+    candidates: list = []
+    try:
+        candidates.extend(_yureeka_extract_injected_urls_v1(wc))
+    except Exception:
+        pass
+
+    # Also allow URLs embedded in the question text (rare, but helpful for CLI/API use)
     if isinstance(question, str) and question.strip():
-        candidates.extend(_fix2d66_extract_urls_from_text(question))
+        try:
+            candidates.extend(_fix2d66_extract_urls_from_text(question))
+        except Exception:
+            pass
 
-    norm = []
     try:
         norm = _inj_diag_norm_url_list(candidates)
     except Exception:
-        pass
-        norm = [x for x in candidates if isinstance(x, str) and x]
+        norm = [x for x in candidates if isinstance(x, str) and x.strip()]
 
     return {
         "ui_raw": ui_raw,
@@ -7107,11 +6916,22 @@ def _fix2d66_collect_injected_urls_from_wc(web_context: dict, question: str = ""
     }
 
 
+
+
 def _fix2d66_promote_injection_in_web_context(web_context: dict, question: str = "") -> dict:
     """Mutate web_context in-place: ensure extra_urls + diag_injected_urls reflect UI/raw injection."""
     wc = web_context if isinstance(web_context, dict) else {}
     info = _fix2d66_collect_injected_urls_from_wc(wc, question=question)
     intake = info.get('intake_norm') or []
+
+
+    # Mark for downstream semantics (REFACTOR32 contract)
+    try:
+        if intake:
+            wc['__yureeka_extra_urls_are_injection_v1'] = True
+            wc['__yureeka_injected_urls_v1'] = list(intake)
+    except Exception:
+        pass
 
     # Promote into extra_urls when missing/empty
     try:
@@ -27361,10 +27181,6 @@ def main():
                                 _lst = _it.get(_k)
                                 if isinstance(_lst, list) and any(isinstance(x, str) and x.strip() for x in _lst):
                                     return True
-                            # legacy: keep for backward compatibility
-                            _legacy = _dbg.get("fix2d65b_injected_urls") or []
-                            if isinstance(_legacy, list) and any(isinstance(x, str) and x.strip() for x in _legacy):
-                                return True
                         except Exception:
                             return False
                         return False
@@ -27403,8 +27219,6 @@ def main():
                                     _inj_urls = _iu
                         except Exception:
                             pass
-                        if not _inj_urls:
-                            _inj_urls = _dbg3.get("fix2d65b_injected_urls") or []
                         if not isinstance(_inj_urls, list):
                             _inj_urls = []
 
