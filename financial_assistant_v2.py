@@ -147,7 +147,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "REFACTOR147"
+_YUREEKA_CODE_VERSION_LOCK = "REFACTOR148"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 
 # REFACTOR129: run-level beacons (reset per evolution run)
@@ -167,7 +167,15 @@ FORCE_LATEST_PREV_SNAPSHOT_V1 = True
 # - Downsizing step 1: remove accumulated per-patch try/append scaffolding.
 # - Registers a canonical entries list idempotently at import time.
 
-_PATCH_TRACKER_CANONICAL_ENTRIES_V1 = [{'patch_id': 'REFACTOR147', 'date': '2026-02-10', 'summary': 'Downsizing: remove truly unused helper functions (no runtime references).', 'notes': ['Deletes seven dead helpers that had exactly one occurrence (definition only): calculate_time_ago, compute_component_similarity, get_metric_value_span, spans_overlap, compute_percent_change, normalize_name, _fix39_schema_unit_required.', 'No pipeline behavior changes; triad invariants preserved.'], 'files': ['REFACTOR147.py'], 'supersedes': ['REFACTOR146']}, {'patch_id': 'REFACTOR134', 'date': '2026-02-08', 'summary': 'Fix REFACTOR133 downsizing regression: restore a callable core implementation for run_source_anchored_evolution by introducing _refactor134_run_source_anchored_evolution_core_v1 and wiring _REFACTOR37_RUN_SOURCE_ANCHORED_EVOLUTION_IMPL to it. No schema/key/unit/diff changes; preserves Streamlit-safe single-file invariant.', 'files': ['REFACTOR134.py'], 'supersedes': ['REFACTOR133'], 'acceptance_notes': 'App no longer errors "run_source_anchored_evolution implementation is not callable". Triad outputs should match REFACTOR132: prod stable with Δt populated; injection overrides stable with blank Δt; PDF skip/fast-path/schema freeze unchanged.'}, {'patch_id': 'REFACTOR135', 'date': '2026-02-08', 'summary': 'Add million-scale precision tie-break (million cue + decimal preference) to schema_only_rebuild_fix17 selection and always emit debug.precision_tiebreak_v1 for chargers_2040 showing top candidates and chosen reason. No schema/key-grammar changes; strict comparability preserved; Streamlit-safe.', 'files': ['REFACTOR135.py'], 'supersedes': ['REFACTOR134']},
+_PATCH_TRACKER_CANONICAL_ENTRIES_V1 = [
+    {
+        'patch_id': 'REFACTOR148',
+        'date': '2026-02-10',
+        'summary': 'Downsizing: remove dead canonical-first diff wrapper (_yureeka_diff_metrics_by_name_wrap1) and consolidate metric_schema_frozen seeding into a single constant helper (removes legacy FIX2U/FIX2V/FIX2AB schema extension helpers). No schema/key-grammar changes; triad behavior unchanged.',
+        'files': ['REFACTOR148.py'],
+        'supersedes': ['REFACTOR147']
+    },
+{'patch_id': 'REFACTOR147', 'date': '2026-02-10', 'summary': 'Downsizing: remove truly unused helper functions (no runtime references).', 'notes': ['Deletes seven dead helpers that had exactly one occurrence (definition only): calculate_time_ago, compute_component_similarity, get_metric_value_span, spans_overlap, compute_percent_change, normalize_name, _fix39_schema_unit_required.', 'No pipeline behavior changes; triad invariants preserved.'], 'files': ['REFACTOR147.py'], 'supersedes': ['REFACTOR146']}, {'patch_id': 'REFACTOR134', 'date': '2026-02-08', 'summary': 'Fix REFACTOR133 downsizing regression: restore a callable core implementation for run_source_anchored_evolution by introducing _refactor134_run_source_anchored_evolution_core_v1 and wiring _REFACTOR37_RUN_SOURCE_ANCHORED_EVOLUTION_IMPL to it. No schema/key/unit/diff changes; preserves Streamlit-safe single-file invariant.', 'files': ['REFACTOR134.py'], 'supersedes': ['REFACTOR133'], 'acceptance_notes': 'App no longer errors "run_source_anchored_evolution implementation is not callable". Triad outputs should match REFACTOR132: prod stable with Δt populated; injection overrides stable with blank Δt; PDF skip/fast-path/schema freeze unchanged.'}, {'patch_id': 'REFACTOR135', 'date': '2026-02-08', 'summary': 'Add million-scale precision tie-break (million cue + decimal preference) to schema_only_rebuild_fix17 selection and always emit debug.precision_tiebreak_v1 for chargers_2040 showing top candidates and chosen reason. No schema/key-grammar changes; strict comparability preserved; Streamlit-safe.', 'files': ['REFACTOR135.py'], 'supersedes': ['REFACTOR134']},
 {'patch_id': 'REFACTOR136', 'date': '2026-02-09', 'summary': 'UI polish: remove accidental Streamlit "magic" output leakage caused by a non-docstring triple-quoted string inside attach_source_snapshots_to_analysis; convert it into a real function docstring so it no longer renders in the app. No behavior change to snapshot attachment; Streamlit-safe.', 'files': ['REFACTOR136.py'], 'supersedes': ['REFACTOR135']},
 {'patch_id': 'REFACTOR137', 'date': '2026-02-09', 'summary': 'UI restoration only: reinstate Sources & Reliability, Evidence Quality Scores, and Data Visualization panels by porting the corresponding UI blocks from FIX2D88 into the REFACTOR136 UI stack. No pipeline logic changes; optional Plotly import guards prevent crashes if Plotly is unavailable; Streamlit-safe single-file.', 'files': ['REFACTOR137.py'], 'supersedes': ['REFACTOR136'], 'acceptance_notes': 'Panels visible in both Analysis and Evolution; Evidence scores show live veracity_scores in Analysis; Data viz renders when visualization_data exists; triad mechanics unchanged.'},
 {'patch_id': 'REFACTOR138', 'date': '2026-02-09', 'summary': 'UI consolidation + diagnostics: de-duplicate the legacy "Sources & Evidence" section by routing all source display through the restored Sources & Reliability panel, and add a collapsed Diagnostics expander (schema key count, fastpath/injection, snapshot pick) for both Analysis and Evolution. No pipeline logic changes; Streamlit-safe.', 'files': ['REFACTOR138.py'], 'supersedes': ['REFACTOR137'], 'acceptance_notes': 'No regressions in triad mechanics; Sources/Evidence shown once via Sources & Reliability; Diagnostics is optional (collapsed by default).'},
@@ -10233,148 +10241,86 @@ def freeze_metric_schema(canonical_metrics: Dict) -> Dict:
         }
 
 
-# Purpose:
-#   Extend frozen schema with new canonical keys for EV charging infrastructure
-#   (e.g., global EV chargers by 2040) so injected charger content can be
-#   canonicalised + diffed deterministically under the shared Analysis selector.
-# Notes:
-#   - Purely additive: does not modify existing schema entries
-#   - Dimension uses "count" so existing unit-family logic treats it as magnitude
-#   - unit_tag uses "M" (million-scale counts) but unit_family remains "magnitude"
+# Deterministic metric_schema_frozen seeding (schema-frozen keyspace)
+# - Replaces legacy FIX2U/FIX2V/FIX2AB schema extension helpers.
+# - Purely additive: when applied to an existing schema dict, only missing keys are inserted.
+_METRIC_SCHEMA_FROZEN_SEED_V1 = {
+    "global_ev_chargers_2040__unit_count": {
+        "canonical_key": "global_ev_chargers_2040__unit_count",
+        "canonical_id": "global_ev_chargers_2040",
+        "dimension": "count",
+        "name": "Global EV chargers (2040)",
+        "unit": "M",
+        "unit_tag": "M",
+        "unit_family": "magnitude",
+        "keywords": [
+            "ev", "electric", "vehicle", "charger", "chargers", "charging",
+            "infrastructure", "network", "global", "worldwide", "2040",
+            "count", "million", "m"
+        ],
+    },
+    "global_ev_charging_investment_2040__currency": {
+        "canonical_key": "global_ev_charging_investment_2040__currency",
+        "canonical_id": "global_ev_charging_investment_2040",
+        "dimension": "currency",
+        "name": "Global EV charging investment (2040)",
+        "unit": "U",
+        "unit_tag": "USD",
+        "unit_family": "currency",
+        "keywords": [
+            "ev", "electric", "vehicle", "charger", "chargers", "charging",
+            "infrastructure", "network", "investment", "spend", "spending",
+            "capex", "expenditure", "global", "worldwide", "2040",
+            "currency", "usd"
+        ],
+    },
+    "global_ev_chargers_cagr_2026_2040__percent": {
+        "canonical_key": "global_ev_chargers_cagr_2026_2040__percent",
+        "canonical_id": "global_ev_chargers_cagr_2026_2040",
+        "dimension": "percent",
+        "name": "Global EV chargers CAGR (2026–2040)",
+        "unit": "%",
+        "unit_tag": "%",
+        "unit_family": "percent",
+        "keywords": [
+            "ev", "electric", "vehicle", "charger", "chargers", "charging",
+            "global", "worldwide", "cagr", "growth", "rate", "percent",
+            "2026", "2040"
+        ],
+    },
+    "global_ev_sales_ytd_2025__unit_sales": {
+        "canonical_key": "global_ev_sales_ytd_2025__unit_sales",
+        "canonical_id": "global_ev_sales_ytd_2025",
+        "dimension": "unit_sales",
+        "name": "Global EV sales YTD (2025)",
+        "unit": "M",
+        "unit_tag": "M",
+        "unit_family": "magnitude",
+        "keywords": [
+            "ev", "electric", "vehicle", "sales", "sold", "deliveries",
+            "global", "worldwide", "ytd", "year-to-date", "2025",
+            "million", "m"
+        ],
+    },
+}
 
-def _fix2u_extend_metric_schema_ev_chargers(metric_schema_frozen: dict) -> dict:
-    """Add EV charger infrastructure canonical keys to frozen schema (additive)."""
+def _seed_metric_schema_frozen_v1(metric_schema_frozen: dict) -> dict:
+    """Ensure the canonical schema-frozen keyspace exists (purely additive)."""
     try:
         if not isinstance(metric_schema_frozen, dict):
             metric_schema_frozen = {}
     except Exception:
-        pass
         metric_schema_frozen = {}
-
-    def _add_if_missing(ckey: str, entry: dict):
+    for _k, _spec in _METRIC_SCHEMA_FROZEN_SEED_V1.items():
         try:
-            if not ckey or not isinstance(entry, dict):
-                return
-            if ckey in metric_schema_frozen:
-                return
-            metric_schema_frozen[ckey] = entry
+            if _k not in metric_schema_frozen or not isinstance(metric_schema_frozen.get(_k), dict):
+                _v = dict(_spec or {})
+                if isinstance(_v.get("keywords"), list):
+                    _v["keywords"] = list(_v["keywords"])
+                metric_schema_frozen[_k] = _v
         except Exception:
             pass
-
-    # Minimal v1 keys (Global, high-signal, year-qualified)
-    # 1) Global EV chargers by 2040 (count)
-    _add_if_missing(
-        "global_ev_chargers_2040__unit_count",
-        {
-            "canonical_key": "global_ev_chargers_2040__unit_count",
-            "canonical_id": "global_ev_chargers_2040",
-            "dimension": "count",
-            "name": "Global EV chargers (2040)",
-            # Backward-compatible schema fields:
-            "unit": "M",
-            # Stable, non-breaking additions used by downstream gates:
-            "unit_tag": "M",
-            "unit_family": "magnitude",
-            "keywords": [
-                "ev", "electric", "vehicle",
-                "charger", "chargers", "charging", "infrastructure", "network",
-                "global", "worldwide",
-                "2040", "count", "magnitude",
-            ],
-        },
-    )
-
-    # 2) Global EV charging investment by 2040 (currency) — only used if extracted evidence exists
-    _add_if_missing(
-        "global_ev_charging_investment_2040__currency",
-        {
-            "canonical_key": "global_ev_charging_investment_2040__currency",
-            "canonical_id": "global_ev_charging_investment_2040",
-            "dimension": "currency",
-            "name": "Global EV charging investment (2040)",
-            "unit": "U",      # backward-compatible first-letter field (unit_tag holds the real tag)
-            "unit_tag": "USD",
-            "unit_family": "currency",
-            "keywords": [
-                "ev", "electric", "vehicle",
-                "charger", "chargers", "charging", "infrastructure", "network",
-                "investment", "spend", "spending", "capex", "expenditure",
-                "global", "worldwide",
-                "2040", "currency", "usd",
-            ],
-        },
-    )
-
     return metric_schema_frozen
-
-
-    return frozen
-
-#   - Adds a canonical slot for charger infrastructure CAGR (2026->2040)
-#   - Keeps semantics single-sourced under metric_schema_frozen
-def _fix2v_extend_metric_schema_ev_chargers_cagr(metric_schema_frozen: dict) -> dict:
-    """Add charger CAGR schema key additively (safe no-op if already present)."""
-    try:
-        if not isinstance(metric_schema_frozen, dict):
-            return metric_schema_frozen
-        # Do not override if exists
-        if "global_ev_chargers_cagr_2026_2040__percent" in metric_schema_frozen:
-            return metric_schema_frozen
-
-        metric_schema_frozen = dict(metric_schema_frozen)
-
-        metric_schema_frozen["global_ev_chargers_cagr_2026_2040__percent"] = dict(
-            metric_id="global_ev_chargers_cagr_2026_2040",
-            canonical_id="global_ev_chargers_cagr_2026_2040",
-            metric_name="Global EV charging infrastructure CAGR (2026–2040)",
-            dimension="percent",
-            unit_family="percent",
-            unit_tag="percent",
-            # Deterministic keyword allowlist (no fuzzy matching)
-            keywords=[
-                "global", "worldwide",
-                "ev", "charging", "charging infrastructure",
-                "cagr", "compound annual growth rate",
-                "2026", "2040",
-            ],
-        )
-        return metric_schema_frozen
-    except Exception:
-        return metric_schema_frozen
-
-#   - Adds a canonical slot for Global EV sales (YTD 2025) in unit_sales
-#   - Intended for deterministic diff testing using Rhomotion-style sources
-def _fix2ab_extend_metric_schema_global_ev_sales_ytd_2025(metric_schema_frozen: dict) -> dict:
-    """Add Global EV Sales (YTD 2025) schema key additively (safe no-op if already present)."""
-    try:
-        if not isinstance(metric_schema_frozen, dict):
-            return metric_schema_frozen
-        if "global_ev_sales_ytd_2025__unit_sales" in metric_schema_frozen:
-            return metric_schema_frozen
-
-        metric_schema_frozen = dict(metric_schema_frozen)
-
-        metric_schema_frozen["global_ev_sales_ytd_2025__unit_sales"] = dict(
-            metric_id="global_ev_sales_ytd_2025",
-            canonical_id="global_ev_sales_ytd_2025",
-            metric_name="Global EV sales (YTD 2025)",
-            dimension="unit_sales",
-            unit_family="magnitude",
-            unit_tag="million units",
-            unit="M",
-            # Deterministic keyword allowlist (no fuzzy matching)
-            keywords=[
-                "global", "worldwide",
-                "ev", "sales",
-                "ytd", "year-to-date",
-                "2025",
-                "million", "units",
-            ],
-        )
-        return metric_schema_frozen
-    except Exception:
-        return metric_schema_frozen
-
 
 # RANGE + SOURCE ATTRIBUTION (DETERMINISTIC, NO LLM)
 
@@ -15363,18 +15309,7 @@ def attach_source_snapshots_to_analysis(analysis: dict, web_context: dict) -> di
     try:
         _schema0 = analysis.get('metric_schema_frozen')
         if not isinstance(_schema0, dict) or not _schema0:
-            _schema_seed = {}
-            for _fn_name in (
-                '_fix2u_extend_metric_schema_ev_chargers',
-                '_fix2v_extend_metric_schema_ev_chargers_cagr',
-                '_fix2ab_extend_metric_schema_global_ev_sales_ytd_2025',
-            ):
-                try:
-                    _fn = globals().get(_fn_name)
-                    if callable(_fn):
-                        _schema_seed = _fn(_schema_seed) or _schema_seed
-                except Exception:
-                    pass
+            _schema_seed = _seed_metric_schema_frozen_v1({})
             analysis['metric_schema_frozen'] = _schema_seed
             try:
                 if not isinstance(analysis.get('debug'), dict):
@@ -15421,21 +15356,7 @@ def attach_source_snapshots_to_analysis(analysis: dict, web_context: dict) -> di
         # requires a baseline keyspace, and the deterministic schema extensions are safe.
         _schema0 = analysis.get("metric_schema_frozen")
         if not isinstance(_schema0, dict) or not _schema0:
-            _schema_seed = {}
-
-            # Apply known deterministic schema extensions (additive)
-            for _fn_name in (
-                "_fix2u_extend_metric_schema_ev_chargers",
-                "_fix2v_extend_metric_schema_ev_chargers_cagr",
-                "_fix2ab_extend_metric_schema_global_ev_sales_ytd_2025",
-            ):
-                try:
-                    _fn = globals().get(_fn_name)
-                    if callable(_fn):
-                        _schema_seed = _fn(_schema_seed) or _schema_seed
-                except Exception:
-                    pass
-
+            _schema_seed = _seed_metric_schema_frozen_v1({})
             analysis["metric_schema_frozen"] = _schema_seed
     except Exception:
         pass
@@ -15965,543 +15886,8 @@ def parse_human_number(value_str: str, unit: str) -> Optional[float]:
 
 
 
-def _yureeka_diff_metrics_by_name_wrap1(prev_response: dict, cur_response: dict):
-    """
-    Canonical-first diff with:
-      - HARD STOP when prev canonical_key is missing in current (no name fallback)
-      - Row-level metric_definition sourced from PREVIOUS (original new analysis) schema:
-          prev_response['metric_schema_frozen'][canonical_key] (preferred)
-          else prev_response['primary_metrics_canonical'][canonical_key]
-      - Backward compatible: still returns 'name' (non-empty) and existing fields.
+# (REFACTOR148) Removed dead canonical-first diff wrapper (_yureeka_diff_metrics_by_name_wrap1).
 
-    Returns:
-      metric_changes, unchanged, increased, decreased, found
-    """
-    import re
-
-    # Defaults (used unless schema provides overrides)
-    ABS_EPS = 1e-9
-    REL_EPS = 0.0005
-
-    def norm_name(s: str) -> str:
-        return re.sub(r"[^a-z0-9]+", " ", (s or "").lower()).strip()
-
-    def parse_num(v, unit=""):
-        fn = globals().get("parse_human_number")
-        if callable(fn):
-            try:
-                return fn(str(v), unit)
-            except Exception:
-                return None
-        try:
-            return float(str(v).replace(",", "").strip())
-        except Exception:
-            return None
-
-    # - Prefer value_norm/base_unit when present (analysis/evolution alignment)
-    # - Fall back to existing parse_num(value, unit) when canonical fields missing
-    def get_canonical_value_and_unit(m: dict):
-        """
-        Returns: (val: float|None, unit: str)
-        Priority:
-          1) value_norm (float-like) + base_unit (if present)
-          2) parse_num(value, unit)
-        """
-        m = m if isinstance(m, dict) else {}
-
-        # 1) canonical path
-        if m.get("value_norm") is not None:
-            try:
-                v = float(m.get("value_norm"))
-                u = str(m.get("base_unit") or m.get("unit") or "").strip()
-                try:
-                    if str(m.get("unit_family") or "").strip().lower() == "currency":
-                        _cc = str(m.get("currency_code") or "").strip().upper()
-                        if _cc:
-                            u = f"{_cc}:{u}" if u else _cc
-                except Exception:
-                    pass
-                return v, u
-            except Exception:
-                pass
-
-        # 2) legacy parse path
-        # When canonical-for-render is active, do NOT infer/parse numbers from
-        # free-form raw strings for CURRENT-side metrics. We only trust
-        # schema-canonical value_norm emitted by the rebuild layer.
-        #
-        # Activation: cur_response['_disable_numeric_inference_v27'] == True
-        # Safety: render/diff-layer only. Does not touch fastpath/hashing/etc.
-        try:
-            if isinstance(cur_response, dict) and cur_response.get("_disable_numeric_inference_v27"):
-                u = str(m.get("unit") or "").strip()
-                return None, u
-        except Exception:
-            pass
-        u = str(m.get("unit") or "").strip()
-        v = parse_num(m.get("value"), u)
-        return v, u
-
-    # NOTE (IMPORTANT):
-    # - Anchor_hash equality should NOT force "unchanged" if numeric values differ.
-    #   It means "we matched the same evidence anchor" (identity/matching), not
-    #   that the metric's value necessarily didn't change.
-    # - This patch keeps anchor_same, but uses it only for match_confidence +
-    #   diagnostics, not as a classification override.
-    def _get_anchor_hash_from_metric(m: dict):
-        try:
-            if isinstance(m, dict):
-                ah = m.get("anchor_hash") or m.get("anchor") or m.get("anchorHash")
-                return str(ah) if ah else None
-        except Exception:
-            return None
-
-    def _get_prev_anchor_hash(prev_resp: dict, ckey: str, pm: dict):
-        # 1) direct on metric row
-        ah = _get_anchor_hash_from_metric(pm)
-        if ah:
-            return ah
-
-        # 2) prev_response.metric_anchors[ckey].anchor_hash
-        try:
-            ma = (prev_resp or {}).get("metric_anchors")
-            if isinstance(ma, dict):
-                a = ma.get(ckey)
-                if isinstance(a, dict):
-                    ah2 = a.get("anchor_hash") or a.get("anchor")
-                    if ah2:
-                        return str(ah2)
-        except Exception:
-            return None
-
-    def _get_cur_anchor_hash(cur_resp: dict, ckey: str, cm: dict):
-        # 1) direct on metric row (evolution rebuild puts anchor_hash here)
-        ah = _get_anchor_hash_from_metric(cm)
-        if ah:
-            return ah
-
-        # 2) cur_response.metric_anchors[ckey].anchor_hash (if present)
-        try:
-            ma = (cur_resp or {}).get("metric_anchors")
-            if isinstance(ma, dict):
-                a = ma.get(ckey)
-                if isinstance(a, dict):
-                    ah2 = a.get("anchor_hash") or a.get("anchor")
-                    if ah2:
-                        return str(ah2)
-        except Exception:
-            return None
-
-    # - Populate context_snippet/source_url from prev_response.metric_anchors[ckey] when available
-    # - Output enrichment only
-    def _get_prev_anchor_obj(prev_resp: dict, ckey: str):
-        try:
-            ma = (prev_resp or {}).get("metric_anchors")
-            if isinstance(ma, dict):
-                a = ma.get(ckey)
-                return a if isinstance(a, dict) else {}
-        except Exception:
-            return {}
-
-    def _anchor_meta(prev_resp: dict, cur_resp: dict, ckey: str, pm: dict, cm: dict):
-        """
-        Returns: (source_url, context_snippet, anchor_confidence)
-        Priority:
-          1) prev_response.metric_anchors[ckey] (baseline anchoring is authoritative)
-          2) current metric row fields (if present)
-          3) prev metric row fields (if present)
-        """
-        a = _get_prev_anchor_obj(prev_resp, ckey)
-
-        src = a.get("source_url") or a.get("url")
-        ctx = a.get("context_snippet") or a.get("context")
-        conf = a.get("anchor_confidence")
-
-        if not src:
-            try:
-                src = (cm or {}).get("source_url") or (cm or {}).get("url")
-            except Exception:
-                pass
-                src = None
-        if not ctx:
-            try:
-                ctx = (cm or {}).get("context_snippet") or (cm or {}).get("context")
-            except Exception:
-                pass
-                ctx = None
-
-        if not src:
-            try:
-                src = (pm or {}).get("source_url") or (pm or {}).get("url")
-            except Exception:
-                pass
-                src = None
-        if not ctx:
-            try:
-                ctx = (pm or {}).get("context_snippet") or (pm or {}).get("context")
-            except Exception:
-                pass
-                ctx = None
-
-        try:
-            if isinstance(ctx, str):
-                ctx = ctx.strip()[:220] or None
-            else:
-                ctx = None
-        except Exception:
-            pass
-            ctx = None
-
-        try:
-            conf = float(conf) if conf is not None else None
-        except Exception:
-            pass
-            conf = None
-
-        return src, ctx, conf
-
-    def prettify_ckey(ckey: str) -> str:
-        ckey = str(ckey or "").strip()
-        if not ckey:
-            return "Unknown Metric"
-        parts = ckey.split("__", 1)
-        left = parts[0].replace("_", " ").strip()
-        right = parts[1].replace("_", " ").strip() if len(parts) > 1 else ""
-        left = " ".join(w.capitalize() for w in left.split())
-        return f"{left} ({right})" if right else left
-
-    def get_metric_definition(prev_resp: dict, ckey: str) -> dict:
-        """
-        Pull authoritative definition from the ORIGINAL analysis run (prev_response).
-        """
-        prev_resp = prev_resp if isinstance(prev_resp, dict) else {}
-
-        schema = prev_resp.get("metric_schema_frozen")
-        if isinstance(schema, dict):
-            d = schema.get(ckey)
-            if isinstance(d, dict) and d:
-                out = dict(d)
-                out.setdefault("canonical_key", ckey)
-                return out
-
-        prev_can = prev_resp.get("primary_metrics_canonical")
-        if isinstance(prev_can, dict):
-            d = prev_can.get(ckey)
-            if isinstance(d, dict) and d:
-                out = {
-                    "canonical_key": ckey,
-                    "canonical_id": d.get("canonical_id"),
-                    "dimension": d.get("dimension"),
-                    "name": d.get("name") or d.get("original_name"),
-                    "unit": d.get("unit"),
-                    "geo_scope": d.get("geo_scope"),
-                    "geo_name": d.get("geo_name"),
-                    "keywords": d.get("keywords"),
-                }
-                return {k: v for k, v in out.items() if v not in (None, "", [], {})}
-
-        return {"canonical_key": ckey, "name": prettify_ckey(ckey)}
-
-    def get_display_name(prev_resp: dict, prev_can_obj: dict, cur_can_obj: dict, ckey: str) -> str:
-        schema = prev_resp.get("metric_schema_frozen")
-        if isinstance(schema, dict):
-            sm = schema.get(ckey)
-            if isinstance(sm, dict):
-                v = sm.get("name")
-                if isinstance(v, str) and v.strip():
-                    return v.strip()
-
-        if isinstance(prev_can_obj, dict):
-            for k in ("name", "original_name"):
-                v = prev_can_obj.get(k)
-                if isinstance(v, str) and v.strip():
-                    return v.strip()
-
-        if isinstance(cur_can_obj, dict):
-            for k in ("name", "original_name"):
-                v = cur_can_obj.get(k)
-                if isinstance(v, str) and v.strip():
-                    return v.strip()
-
-        return prettify_ckey(ckey)
-
-    # - If schema provides abs_eps/rel_eps use them, else default.
-    def get_eps_for_metric(prev_resp: dict, ckey: str):
-        ae = ABS_EPS
-        re_ = REL_EPS
-        try:
-            schema = (prev_resp or {}).get("metric_schema_frozen")
-            if isinstance(schema, dict):
-                d = schema.get(ckey)
-                if isinstance(d, dict):
-                    if d.get("abs_eps") is not None:
-                        try:
-                            ae = float(d.get("abs_eps"))
-                        except Exception:
-                            pass
-                    if d.get("rel_eps") is not None:
-                        try:
-                            re_ = float(d.get("rel_eps"))
-                        except Exception:
-                            pass
-        except Exception:
-            return ae, re_
-
-    prev_response = prev_response if isinstance(prev_response, dict) else {}
-    cur_response = cur_response if isinstance(cur_response, dict) else {}
-
-    # Why:
-    # - Some pipelines persist metric_anchors as a list of records:
-    #     [{"canonical_key": ..., "anchor_hash": ..., ...}, ...]
-    # - Diff expects a dict mapping canonical_key -> anchor object.
-    # Determinism:
-    # - Pure reshaping; no new anchors invented.
-    def _coerce_metric_anchors_to_dict(resp: dict):
-        try:
-            if not isinstance(resp, dict):
-                return resp
-            ma = resp.get("metric_anchors")
-            if isinstance(ma, dict) or ma is None:
-                return resp
-            if isinstance(ma, list):
-                out = {}
-                for a in ma:
-                    if not isinstance(a, dict):
-                        continue
-                    ck = a.get("canonical_key") or a.get("ckey") or a.get("metric_key")
-                    if not ck:
-                        continue
-                    if ck not in out:
-                        out[str(ck)] = a
-                resp["metric_anchors"] = out
-            return resp
-        except Exception:
-            return resp
-
-    prev_response = _coerce_metric_anchors_to_dict(prev_response)
-    cur_response = _coerce_metric_anchors_to_dict(cur_response)
-
-    prev_can = prev_response.get("primary_metrics_canonical")
-    cur_can = cur_response.get("primary_metrics_canonical")
-
-    # Path A: canonical-first
-    if isinstance(prev_can, dict) and isinstance(cur_can, dict) and prev_can:
-        metric_changes = []
-        unchanged = increased = decreased = found = 0
-
-        for ckey, pm in prev_can.items():
-            pm = pm if isinstance(pm, dict) else {}
-            cm = cur_can.get(ckey)
-            cm = cm if isinstance(cm, dict) else {}
-
-            display_name = get_display_name(prev_response, pm, cm, ckey)
-            definition = get_metric_definition(prev_response, ckey)
-
-            prev_raw = pm.get("raw") if pm.get("raw") is not None else pm.get("value")
-
-            # ✅ HARD STOP: canonical key missing in current => not_found (no name fallback)
-            if ckey not in cur_can or not isinstance(cur_can.get(ckey), dict):
-                _src, _ctx, _aconf = _anchor_meta(prev_response, cur_response, ckey, pm, {})
-
-                metric_changes.append({
-                    "name": display_name,
-                    "previous_value": prev_raw,
-                    "current_value": "N/A",
-                    "change_pct": None,
-                    "change_type": "not_found",
-                    "match_confidence": 0.0,
-                    "context_snippet": _ctx,
-                    "source_url": _src,
-                    "anchor_used": False,  # not applicable when current metric missing
-                    "canonical_key": ckey,
-                    "metric_definition": definition,
-                    "anchor_confidence": _aconf,
-                })
-                continue
-
-            found += 1
-
-            cur_raw = cm.get("raw") if cm.get("raw") is not None else cm.get("value")
-
-            prev_ah = _get_prev_anchor_hash(prev_response, ckey, pm)
-            cur_ah = _get_cur_anchor_hash(cur_response, ckey, cm)
-            anchor_same = bool(prev_ah and cur_ah and str(prev_ah) == str(cur_ah))
-
-            prev_val, prev_unit_cmp = get_canonical_value_and_unit(pm)
-            cur_val, cur_unit_cmp = get_canonical_value_and_unit(cm)
-
-            abs_eps, rel_eps = get_eps_for_metric(prev_response, ckey)
-
-            change_type = "unknown"
-            change_pct = None
-
-            # Why:
-            # - anchor_same means "we matched the same evidence anchor"
-            # - It MUST NOT short-circuit classification to "unchanged" when values differ.
-            # - This fixes the exact bug you observed: prev_value_norm != cur_value_norm
-            #   while change_type incorrectly says "unchanged".
-            if prev_val is not None and cur_val is not None:
-                if abs(prev_val - cur_val) <= max(abs_eps, abs(prev_val) * rel_eps):
-                    change_type = "unchanged"
-                    change_pct = 0.0
-                    unchanged += 1
-                elif cur_val > prev_val:
-                    change_type = "increased"
-                    change_pct = ((cur_val - prev_val) / max(abs_eps, abs(prev_val))) * 100.0
-                    increased += 1
-                else:
-                    change_type = "decreased"
-                    change_pct = ((cur_val - prev_val) / max(abs_eps, abs(prev_val))) * 100.0
-                    decreased += 1
-            # If we cannot compare numerically, fall back:
-            # - If anchors match, treat as unchanged ONLY as a last resort (formatting issue)
-            elif anchor_same:
-                change_type = "unchanged"
-                change_pct = 0.0
-                unchanged += 1
-
-            unit_mismatch = False
-            try:
-                if prev_unit_cmp and cur_unit_cmp and str(prev_unit_cmp) != str(cur_unit_cmp):
-                    unit_mismatch = True
-            except Exception:
-                pass
-                unit_mismatch = False
-
-            _src, _ctx, _aconf = _anchor_meta(prev_response, cur_response, ckey, pm, cm)
-
-            match_conf = 92.0
-            try:
-                if anchor_same:
-                    match_conf = 98.0
-            except Exception:
-                pass
-                match_conf = 92.0
-
-            metric_changes.append({
-                "name": display_name,
-                "previous_value": prev_raw,
-                "current_value": cur_raw,
-                "change_pct": change_pct,
-                "change_type": change_type,
-                "match_confidence": float(match_conf),
-
-                "context_snippet": _ctx,
-                "source_url": _src,
-
-                # anchor identity (matching), not classification
-                "anchor_used": bool(anchor_same),
-                "prev_anchor_hash": prev_ah,
-                "cur_anchor_hash": cur_ah,
-
-                "canonical_key": ckey,
-                "metric_definition": definition,
-
-                "anchor_confidence": _aconf,
-
-                # expose canonical comparison basis for debugging/convergence
-                "prev_value_norm": prev_val,
-                "cur_value_norm": cur_val,
-                "prev_unit_cmp": prev_unit_cmp,
-                "cur_unit_cmp": cur_unit_cmp,
-                "unit_mismatch": bool(unit_mismatch),
-                "abs_eps_used": abs_eps,
-                "rel_eps_used": rel_eps,
-            })
-
-        return metric_changes, unchanged, increased, decreased, found
-
-    # Path B: legacy name fallback
-    prev_metrics = prev_response.get("primary_metrics") or {}
-    cur_metrics = cur_response.get("primary_metrics") or {}
-    if not isinstance(prev_metrics, dict):
-        prev_metrics = {}
-    if not isinstance(cur_metrics, dict):
-        cur_metrics = {}
-
-    prev_index = {}
-    for k, m in prev_metrics.items():
-        if isinstance(m, dict):
-            name = m.get("name") or k
-            prev_index[norm_name(name)] = (name, m)
-
-    cur_index = {}
-    for k, m in cur_metrics.items():
-        if isinstance(m, dict):
-            name = m.get("name") or k
-            cur_index[norm_name(name)] = (name, m)
-
-    metric_changes = []
-    unchanged = increased = decreased = found = 0
-
-    for nk, (display_name, pm) in prev_index.items():
-        prev_raw = pm.get("raw") if pm.get("raw") is not None else pm.get("value")
-
-        if nk not in cur_index:
-            metric_changes.append({
-                "name": display_name or "Unknown Metric",
-                "previous_value": prev_raw,
-                "current_value": "N/A",
-                "change_pct": None,
-                "change_type": "not_found",
-                "match_confidence": 0.0,
-                "context_snippet": None,
-                "source_url": None,
-                "anchor_used": False,
-            })
-            continue
-
-        found += 1
-        _, cm = cur_index[nk]
-        cur_raw = cm.get("raw") if cm.get("raw") is not None else cm.get("value")
-
-        prev_val, _prev_unit_cmp = get_canonical_value_and_unit(pm)
-        cur_val, _cur_unit_cmp = get_canonical_value_and_unit(cm)
-
-        prev_ah = _get_anchor_hash_from_metric(pm)
-        cur_ah = _get_anchor_hash_from_metric(cm)
-        anchor_same = bool(prev_ah and cur_ah and str(prev_ah) == str(cur_ah))
-
-        change_type = "unknown"
-        change_pct = None
-
-        if prev_val is not None and cur_val is not None:
-            if abs(prev_val - cur_val) <= max(ABS_EPS, abs(prev_val) * REL_EPS):
-                change_type = "unchanged"
-                change_pct = 0.0
-                unchanged += 1
-            elif cur_val > prev_val:
-                change_type = "increased"
-                change_pct = ((cur_val - prev_val) / max(ABS_EPS, abs(prev_val))) * 100.0
-                increased += 1
-            else:
-                change_type = "decreased"
-                change_pct = ((cur_val - prev_val) / max(ABS_EPS, abs(prev_val))) * 100.0
-                decreased += 1
-        elif anchor_same:
-            change_type = "unchanged"
-            change_pct = 0.0
-            unchanged += 1
-
-        metric_changes.append({
-            "name": display_name or "Unknown Metric",
-            "previous_value": prev_raw,
-            "current_value": cur_raw,
-            "change_pct": change_pct,
-            "change_type": change_type,
-            "match_confidence": 90.0 if anchor_same else 80.0,
-            "context_snippet": None,
-            "source_url": None,
-
-            "anchor_used": bool(anchor_same),
-            "prev_anchor_hash": prev_ah,
-            "cur_anchor_hash": cur_ah,
-
-            "prev_value_norm": prev_val,
-            "cur_value_norm": cur_val,
-        })
-
-    return metric_changes, unchanged, increased, decreased, found
 
 
 
@@ -24893,25 +24279,10 @@ def main():
 
 
                 try:
-                    fn_fix2u = globals().get("_fix2u_extend_metric_schema_ev_chargers")
-                    if callable(fn_fix2u):
-                        primary_data["metric_schema_frozen"] = fn_fix2u(primary_data.get("metric_schema_frozen") or {})
+                    primary_data["metric_schema_frozen"] = _seed_metric_schema_frozen_v1(primary_data.get("metric_schema_frozen") or {})
                 except Exception:
                     pass
 
-                try:
-                    fn_fix2v = globals().get("_fix2v_extend_metric_schema_ev_chargers_cagr")
-                    if callable(fn_fix2v):
-                        primary_data["metric_schema_frozen"] = fn_fix2v(primary_data.get("metric_schema_frozen") or {})
-                except Exception:
-                    pass
-
-                try:
-                    fn_fix2ab = globals().get("_fix2ab_extend_metric_schema_global_ev_sales_ytd_2025")
-                    if callable(fn_fix2ab):
-                        primary_data["metric_schema_frozen"] = fn_fix2ab(primary_data.get("metric_schema_frozen") or {})
-                except Exception:
-                    pass
 
                 # - Build schema proposals from primary_metrics_provisional using freeze_metric_schema.
                 # - Auto-promote into metric_schema_frozen (governance can later restrict via allowlist).
