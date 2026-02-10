@@ -132,7 +132,6 @@ def _coerce_google_oauth_scopes(scopes) -> list:
 
 import base64
 import hashlib
-import difflib
 import gspread
 from pypdf import PdfReader
 from google.oauth2.service_account import Credentials
@@ -146,7 +145,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "REFACTOR150"
+_YUREEKA_CODE_VERSION_LOCK = "REFACTOR151"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 
 # REFACTOR129: run-level beacons (reset per evolution run)
@@ -167,6 +166,16 @@ FORCE_LATEST_PREV_SNAPSHOT_V1 = True
 # - Registers a canonical entries list idempotently at import time.
 
 _PATCH_TRACKER_CANONICAL_ENTRIES_V1 = [
+    {
+        'patch_id': 'REFACTOR151',
+        'date': '2026-02-10',
+        'summary': 'Downsizing: remove unused import difflib + remove redundant alias imports (_es_hashlib, _re_fix2d2k) and duplicate re import. No pipeline logic changes; triad invariants preserved.',
+        'files': ['REFACTOR151.py'],
+        'supersedes': ['REFACTOR150'],
+        'acceptance_notes': 'Prod Evolution stable (100); injection override preserved; Δt gating preserved; run_source_anchored_evolution callable; no schema/key changes.'
+    },
+
+
     {
         'patch_id': 'REFACTOR150',
         'date': '2026-02-10',
@@ -1084,11 +1093,10 @@ INJ_TRACE_PATCH_VERSION = "fix41q_inj_trace_v1_always_emit"
 # - Lightweight schema + universe hashing for convergence checks
 # - One-button end-state validation harness (callable)
 # NOTE: Additive only; existing logic remains intact.
-import hashlib as _es_hashlib
 
 def _es_hash_text(s: str) -> str:
     try:
-        return _es_hashlib.sha256((s or "").encode("utf-8")).hexdigest()
+        return hashlib.sha256((s or "").encode("utf-8")).hexdigest()
     except Exception:
         return ""
 
@@ -1476,7 +1484,6 @@ def add_to_history(analysis: dict) -> bool:
 
 
     import json
-    import re
     import streamlit as st
     from datetime import datetime
 
@@ -2270,7 +2277,6 @@ def add_to_history(analysis: dict) -> bool:
     #   and/or inside evidence entries (not only in analysis["metric_anchors"]).
     # - This patch copies existing anchor metadata only (no fabrication, no refetch).
     try:
-        import re
         import hashlib
 
         def _norm_ctx(s: str) -> str:
@@ -2873,7 +2879,6 @@ def unit_family(unit_tag: str) -> str:
 # - Some sources yield numbers without an attached unit token (unit_tag="").
 # - We conservatively infer unit_tag/unit_family from nearby context text.
 # - This does NOT weaken FIX2D24 year-blocking; it only restores missing unit metadata.
-import re as _re_fix2d2k
 
 # REFACTOR20 (BUGFIX): boundary-aware currency evidence detector
 # - Prevent false positives like 'eur'/'euro' inside 'Europe' from upgrading unit_family to currency.
@@ -3515,7 +3520,6 @@ def rebuild_metrics_from_snapshots(
     NOTE: Dead/unreachable legacy code previously below an early return has been removed
     (explicitly approved).
     """
-    import re
     import hashlib
 
     # - Prevents NameError if typing symbols are not imported globally.
@@ -6755,7 +6759,6 @@ def scrape_url(url: str) -> Optional[str]:
     Returns:
       - Clean visible text (<= 3000 chars) or None
     """
-    import re
 
     url_s = (url or "").strip()
     if not url_s:
@@ -6866,7 +6869,6 @@ def fetch_web_context(
     - Uses scrape_url() which now has ScrapingDog + safe fallback scraper
     - Restores legacy contract: web_context["sources"] AND ["web_sources"]
     """
-    import re
     from datetime import datetime, timezone
 
     # REFACTOR129: reset run-level beacons for overlap suppression + precision tiebreak
@@ -9075,7 +9077,6 @@ def get_canonical_metric_id(metric_name: str) -> Tuple[str, str]:
         "Global Market Value" -> ("market_size", "Market Size")
         "CAGR 2024-2030" -> ("cagr_2024_2030", "CAGR (2024-2030)")
     """
-    import re
 
     if not metric_name:
         return ("unknown", "Unknown Metric")
@@ -9209,7 +9210,6 @@ def get_canonical_metric_id(metric_name: str) -> Tuple[str, str]:
 
 # GEO + PROXY TAGGING (DETERMINISTIC)
 
-import re
 from typing import Dict, Any, Tuple, List, Optional
 
 REGION_KEYWORDS = {
@@ -10482,7 +10482,6 @@ def attribute_span_to_sources(
       - Uses measure_kind tags when available to avoid semantic leakage
       - Keeps deterministic tie-breaking
     """
-    import re
     import hashlib
 
     unit_tag_hint = normalize_unit_tag(metric_unit)
@@ -11796,7 +11795,6 @@ def fetch_url_content_with_status(url: str, timeout: int = 25, force_pdf: bool =
       - Falls back to ScrapingDog when blocked/empty and SCRAPINGDOG_KEY is available
       - Avoids returning binary garbage as "text"
     """
-    import re
     import requests
 
     def _normalize_url(s: str) -> str:
@@ -14222,7 +14220,6 @@ def attach_source_snapshots_to_analysis(analysis: dict, web_context: dict) -> di
     except Exception:
         pass
 
-    import re
     from datetime import datetime, timezone
 
     try:
@@ -14949,7 +14946,6 @@ def attach_source_snapshots_to_analysis(analysis: dict, web_context: dict) -> di
     #   as schema units (NO double scaling), constrained to the metric's chosen source_url.
     # - Pure post-processing: NO IO, NO refetch, NO hashing changes.
     try:
-        import re
         _pr = analysis.get("primary_response") if isinstance(analysis, dict) else None
         _pmc = _pr.get("primary_metrics_canonical") if isinstance(_pr, dict) else None
         _schema = (
@@ -16297,7 +16293,6 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
 
     Always returns a dict.
     """
-    import re
 
     # REFACTOR139: inline FIX2D82/FIX2D86 percent-key sanitation on previous_data
     # (previously installed via late monkeypatch wrappers).
@@ -19521,7 +19516,6 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
     def _v29_phoneish(text):
         # Catch common phone patterns including "+1-888-600-6441" and fragments.
         try:
-            import re
             t = _v29_s(text)
             if not t:
                 return False
@@ -19678,7 +19672,6 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
 
     def _v29_keywords(schema_row):
         try:
-            import re
             if not isinstance(schema_row, dict):
                 return []
             nm = _v29_lower(schema_row.get("name") or schema_row.get("label") or schema_row.get("display_name") or "")
@@ -21956,7 +21949,6 @@ def extract_numbers_with_context(text, source_url: str = "", max_results: int = 
     - Captures currency + scale + percent + common magnitude suffixes
     - Adds anchor_hash for stable matching
     """
-    import re
     import hashlib
 
     if not text or not str(text).strip():
@@ -22433,7 +22425,6 @@ def calculate_context_match(keywords: List[str], context: str) -> float:
 def render_source_anchored_results(results, query: str):
     """Render source-anchored evolution results (guarded + backward compatible + tuned debug UI)."""
     import math
-    import re
     from collections import Counter
 
     st.header("📈 Source-Anchored Evolution Analysis")
@@ -25757,7 +25748,6 @@ def rebuild_metrics_from_snapshots_with_anchors_fix16(prev_response: dict, basel
       - Hard disallow junk/year-like unitless candidates for non-year metrics
       - Hard unit expectation gating for currency/percent/rate/ratio dimensions
     """
-    import re
 
     if not isinstance(prev_response, dict):
         return {}
@@ -26048,7 +26038,6 @@ def rebuild_metrics_from_snapshots_schema_only_fix16(prev_response: dict, baseli
       - Applies fix15 junk/year exclusion + fix16 extra year-token disallow
       - Deterministic selection/tie-breaks
     """
-    import re
 
     if not isinstance(prev_response, dict):
         return {}
@@ -26909,7 +26898,6 @@ def _analysis_canonical_final_selector_v1(
     web_context: dict = None,
 ) -> tuple:
     """Pure selector: returns (best_metric_or_None, meta_dict)."""
-    import re
 
     meta = {
         "selector_used": "analysis_canonical_v1",
@@ -29236,7 +29224,6 @@ def _refactor28_schema_only_rebuild_authoritative_v1(
     Returns:
       Dict[str, Dict] shaped like primary_metrics_canonical.
     """
-    import re
 
     # Why:
     #   - When anchors are not used (anchor_used:false), schema-only rebuild can still
