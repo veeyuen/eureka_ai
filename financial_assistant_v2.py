@@ -53,6 +53,7 @@ import os
 import re
 import json
 import streamlit as st
+import requests
 
 
 # REFACTOR108: Shared Sheets read-cache (used by sheets_get_all_values_cached). Keep TTL short to prevent stale baseline selection.
