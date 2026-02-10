@@ -147,7 +147,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "REFACTOR146"
+_YUREEKA_CODE_VERSION_LOCK = "REFACTOR147"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 
 # REFACTOR129: run-level beacons (reset per evolution run)
@@ -167,7 +167,7 @@ FORCE_LATEST_PREV_SNAPSHOT_V1 = True
 # - Downsizing step 1: remove accumulated per-patch try/append scaffolding.
 # - Registers a canonical entries list idempotently at import time.
 
-_PATCH_TRACKER_CANONICAL_ENTRIES_V1 = [{'patch_id': 'REFACTOR134', 'date': '2026-02-08', 'summary': 'Fix REFACTOR133 downsizing regression: restore a callable core implementation for run_source_anchored_evolution by introducing _refactor134_run_source_anchored_evolution_core_v1 and wiring _REFACTOR37_RUN_SOURCE_ANCHORED_EVOLUTION_IMPL to it. No schema/key/unit/diff changes; preserves Streamlit-safe single-file invariant.', 'files': ['REFACTOR134.py'], 'supersedes': ['REFACTOR133'], 'acceptance_notes': 'App no longer errors "run_source_anchored_evolution implementation is not callable". Triad outputs should match REFACTOR132: prod stable with Δt populated; injection overrides stable with blank Δt; PDF skip/fast-path/schema freeze unchanged.'}, {'patch_id': 'REFACTOR135', 'date': '2026-02-08', 'summary': 'Add million-scale precision tie-break (million cue + decimal preference) to schema_only_rebuild_fix17 selection and always emit debug.precision_tiebreak_v1 for chargers_2040 showing top candidates and chosen reason. No schema/key-grammar changes; strict comparability preserved; Streamlit-safe.', 'files': ['REFACTOR135.py'], 'supersedes': ['REFACTOR134']},
+_PATCH_TRACKER_CANONICAL_ENTRIES_V1 = [{'patch_id': 'REFACTOR147', 'date': '2026-02-10', 'summary': 'Downsizing: remove truly unused helper functions (no runtime references).', 'notes': ['Deletes seven dead helpers that had exactly one occurrence (definition only): calculate_time_ago, compute_component_similarity, get_metric_value_span, spans_overlap, compute_percent_change, normalize_name, _fix39_schema_unit_required.', 'No pipeline behavior changes; triad invariants preserved.'], 'files': ['REFACTOR147.py'], 'supersedes': ['REFACTOR146']}, {'patch_id': 'REFACTOR134', 'date': '2026-02-08', 'summary': 'Fix REFACTOR133 downsizing regression: restore a callable core implementation for run_source_anchored_evolution by introducing _refactor134_run_source_anchored_evolution_core_v1 and wiring _REFACTOR37_RUN_SOURCE_ANCHORED_EVOLUTION_IMPL to it. No schema/key/unit/diff changes; preserves Streamlit-safe single-file invariant.', 'files': ['REFACTOR134.py'], 'supersedes': ['REFACTOR133'], 'acceptance_notes': 'App no longer errors "run_source_anchored_evolution implementation is not callable". Triad outputs should match REFACTOR132: prod stable with Δt populated; injection overrides stable with blank Δt; PDF skip/fast-path/schema freeze unchanged.'}, {'patch_id': 'REFACTOR135', 'date': '2026-02-08', 'summary': 'Add million-scale precision tie-break (million cue + decimal preference) to schema_only_rebuild_fix17 selection and always emit debug.precision_tiebreak_v1 for chargers_2040 showing top candidates and chosen reason. No schema/key-grammar changes; strict comparability preserved; Streamlit-safe.', 'files': ['REFACTOR135.py'], 'supersedes': ['REFACTOR134']},
 {'patch_id': 'REFACTOR136', 'date': '2026-02-09', 'summary': 'UI polish: remove accidental Streamlit "magic" output leakage caused by a non-docstring triple-quoted string inside attach_source_snapshots_to_analysis; convert it into a real function docstring so it no longer renders in the app. No behavior change to snapshot attachment; Streamlit-safe.', 'files': ['REFACTOR136.py'], 'supersedes': ['REFACTOR135']},
 {'patch_id': 'REFACTOR137', 'date': '2026-02-09', 'summary': 'UI restoration only: reinstate Sources & Reliability, Evidence Quality Scores, and Data Visualization panels by porting the corresponding UI blocks from FIX2D88 into the REFACTOR136 UI stack. No pipeline logic changes; optional Plotly import guards prevent crashes if Plotly is unavailable; Streamlit-safe single-file.', 'files': ['REFACTOR137.py'], 'supersedes': ['REFACTOR136'], 'acceptance_notes': 'Panels visible in both Analysis and Evolution; Evidence scores show live veracity_scores in Analysis; Data viz renders when visualization_data exists; triad mechanics unchanged.'},
 {'patch_id': 'REFACTOR138', 'date': '2026-02-09', 'summary': 'UI consolidation + diagnostics: de-duplicate the legacy "Sources & Evidence" section by routing all source display through the restored Sources & Reliability panel, and add a collapsed Diagnostics expander (schema key count, fastpath/injection, snapshot pick) for both Analysis and Evolution. No pipeline logic changes; Streamlit-safe.', 'files': ['REFACTOR138.py'], 'supersedes': ['REFACTOR137'], 'acceptance_notes': 'No regressions in triad mechanics; Sources/Evidence shown once via Sources & Reliability; Diagnostics is optional (collapsed by default).'},
@@ -8016,23 +8016,6 @@ def create_fallback_response(query: str, search_count: int, web_context: Dict) -
 
 # 7B. ANCHORED EVOLUTION QUERY
 
-def calculate_time_ago(timestamp_str: str) -> str:
-    """Calculate human-readable time difference"""
-    try:
-        prev_time = datetime.fromisoformat(timestamp_str.replace("Z", "+00:00"))
-        delta = datetime.now() - prev_time.replace(tzinfo=None)
-
-        hours = delta.total_seconds() / 3600
-        if hours < 24:
-            return f"{hours:.1f} hours ago"
-        elif hours < 168:  # 7 days
-            return f"{hours/24:.1f} days ago"
-        elif hours < 720:  # 30 days
-            return f"{hours/168:.1f} weeks ago"
-        else:
-            return f"{hours/720:.1f} months ago"
-    except:
-        return "unknown time ago"
 
 # 8. VALIDATION & SCORING
 
@@ -11177,69 +11160,6 @@ def compute_semantic_hash(finding: str) -> str:
     return hashlib.md5(normalized.encode()).hexdigest()[:12]
 
 
-def compute_component_similarity(comp1: Dict, comp2: Dict) -> float:
-    """
-    Compute similarity between two finding component dictionaries.
-    Returns a score from 0-100.
-    """
-    if not comp1 or not comp2:
-        return 0
-
-    score = 0
-    weights = {
-        "direction": 25,
-        "percentage": 25,
-        "value": 20,
-        "subject": 15,
-        "timeframe": 10,
-        "keywords": 5
-    }
-
-    # Direction match
-    if comp1.get("direction") and comp2.get("direction"):
-        if comp1["direction"] == comp2["direction"]:
-            score += weights["direction"]
-    elif not comp1.get("direction") and not comp2.get("direction"):
-        score += weights["direction"] * 0.5  # Both neutral
-
-    # Percentage match (within 2% tolerance)
-    if comp1.get("percentage") is not None and comp2.get("percentage") is not None:
-        diff = abs(comp1["percentage"] - comp2["percentage"])
-        if diff <= 2:
-            score += weights["percentage"]
-        elif diff <= 5:
-            score += weights["percentage"] * 0.5
-
-    # Value match (within 10% tolerance)
-    if comp1.get("value") is not None and comp2.get("value") is not None:
-        v1, v2 = comp1["value"], comp2["value"]
-        # Normalize by unit
-        if comp1.get("value_unit") == comp2.get("value_unit"):
-            if v1 > 0 and v2 > 0:
-                ratio = min(v1, v2) / max(v1, v2)
-                if ratio >= 0.9:
-                    score += weights["value"]
-                elif ratio >= 0.8:
-                    score += weights["value"] * 0.5
-
-    # Subject match
-    if comp1.get("subject") and comp2.get("subject"):
-        if comp1["subject"] == comp2["subject"]:
-            score += weights["subject"]
-
-    # Timeframe match
-    if comp1.get("timeframe") and comp2.get("timeframe"):
-        if comp1["timeframe"] == comp2["timeframe"]:
-            score += weights["timeframe"]
-
-    # Keyword overlap
-    kw1 = set(comp1.get("keywords", []))
-    kw2 = set(comp2.get("keywords", []))
-    if kw1 and kw2:
-        overlap = len(kw1 & kw2) / len(kw1 | kw2)
-        score += weights["keywords"] * overlap
-
-    return score
 
 
 # UPDATED METRIC DIFF COMPUTATION
@@ -11348,124 +11268,13 @@ def _fmt_currency_first(raw: str, unit: str) -> str:
 
     # Fallback
     return f"{currency}{raw} {unit}".strip()
-def get_metric_value_span(metric: Dict) -> Dict[str, Any]:
-    """
-    Return a numeric span for a metric to support range-aware canonical metrics.
-
-    Output:
-      {
-        "min": float|None,
-        "max": float|None,
-        "mid": float|None,   # representative value (median if range, else parsed value)
-        "unit": str,         # normalized (upper/stripped), preserves %/$ units if present
-        "is_range": bool
-      }
-    """
-    if not isinstance(metric, dict):
-        return {"min": None, "max": None, "mid": None, "unit": "", "is_range": False}
-
-    unit = (metric.get("unit") or "").strip()
-
-    # If metric already has a range object, prefer it
-    r = metric.get("range")
-    if isinstance(r, dict):
-        vmin = r.get("min")
-        vmax = r.get("max")
-        # ensure numeric
-        try:
-            vmin = float(vmin) if vmin is not None else None
-        except Exception:
-            pass
-            vmin = None
-        try:
-            vmax = float(vmax) if vmax is not None else None
-        except Exception:
-            pass
-            vmax = None
-
-        # Representative = median of candidates if provided, else midpoint of min/max
-        candidates = r.get("candidates")
-        nums = []
-        if isinstance(candidates, list):
-            for c in candidates:
-                try:
-                    nums.append(float(c))
-                except Exception:
-                    pass
-        if nums:
-            nums_sorted = sorted(nums)
-            mid = nums_sorted[len(nums_sorted) // 2]
-        else:
-            mid = None
-            if vmin is not None and vmax is not None:
-                mid = (vmin + vmax) / 2.0
-            elif vmin is not None:
-                mid = vmin
-            elif vmax is not None:
-                mid = vmax
-
-        return {
-            "min": vmin,
-            "max": vmax,
-            "mid": mid,
-            "unit": unit,
-            "is_range": True
-        }
-
-    # Non-range metric: parse single numeric value
-    val = parse_to_float(metric.get("value"))
-    return {
-        "min": val,
-        "max": val,
-        "mid": val,
-        "unit": unit,
-        "is_range": False
-    }
 
 
-def spans_overlap(a: Dict[str, Any], b: Dict[str, Any], rel_tol: float = 0.05) -> bool:
-    """
-    Decide whether two spans overlap "enough" to be considered stable.
-    rel_tol provides a small widening to avoid false drift from rounding.
-    """
-    if not a or not b:
-        return False
-    a_min, a_max = a.get("min"), a.get("max")
-    b_min, b_max = b.get("min"), b.get("max")
-
-    if a_min is None or a_max is None or b_min is None or b_max is None:
-        return False
-
-    # Widen spans slightly
-    a_pad = max(abs(a_max), abs(a_min), 1.0) * rel_tol
-    b_pad = max(abs(b_max), abs(b_min), 1.0) * rel_tol
-
-    a_min2, a_max2 = a_min - a_pad, a_max + a_pad
-    b_min2, b_max2 = b_min - b_pad, b_max + b_pad
-
-    return not (a_max2 < b_min2 or b_max2 < a_min2)
 
 
-def compute_percent_change(old_val: Optional[float], new_val: Optional[float]) -> Optional[float]:
-    """
-    Compute percent change. Returns None if either value is None or old is 0.
-    """
-    if old_val is None or new_val is None:
-        return None
-    if old_val == 0:
-        return None if new_val == 0 else float('inf')
-    return round(((new_val - old_val) / abs(old_val)) * 100, 2)
 
 # NAME MATCHING (DETERMINISTIC)
 
-def normalize_name(name: str) -> str:
-    """Normalize name for matching"""
-    if not name:
-        return ""
-    n = name.lower().strip()
-    n = re.sub(r'[^\w\s]', '', n)
-    n = re.sub(r'\s+', ' ', n)
-    return n
 
 
 # DETERMINISTIC QUERY STRUCTURE EXTRACTION
@@ -24906,24 +24715,6 @@ def render_native_comparison(baseline: Dict, compare: Dict):
 #     * set unit_mismatch flag / change_type to "unit_mismatch" where possible
 # - Purely additive; does not refactor upstream pipelines.
 
-def _fix39_schema_unit_required(metric_def: dict, canonical_key: str = "") -> bool:
-    try:
-        uf = str((metric_def or {}).get("unit_family") or (metric_def or {}).get("unit") or "").strip().lower()
-        if uf in {"currency", "percent", "rate", "ratio"}:
-            return True
-    except Exception:
-        pass
-    ck = (canonical_key or "").strip().lower()
-    if ck.endswith("__currency") or ck.endswith("__percent") or ck.endswith("__rate") or ck.endswith("__ratio"):
-        return True
-    # unit_tag explicit
-    try:
-        ut = str((metric_def or {}).get("unit_tag") or "").strip()
-        if ut:
-            # if schema explicitly wants a unit token, treat as required
-            return True
-    except Exception:
-        return False
 
 def main():
     st.set_page_config(
