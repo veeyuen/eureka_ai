@@ -136,7 +136,6 @@ import difflib
 import gspread
 from pypdf import PdfReader
 from google.oauth2.service_account import Credentials
-from dataclasses import dataclass
 from typing import Dict, List, Optional, Any, Union, Tuple
 from datetime import datetime, timedelta, timezone
 from bs4 import BeautifulSoup
@@ -147,7 +146,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "REFACTOR149"
+_YUREEKA_CODE_VERSION_LOCK = "REFACTOR150"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 
 # REFACTOR129: run-level beacons (reset per evolution run)
@@ -168,6 +167,14 @@ FORCE_LATEST_PREV_SNAPSHOT_V1 = True
 # - Registers a canonical entries list idempotently at import time.
 
 _PATCH_TRACKER_CANONICAL_ENTRIES_V1 = [
+    {
+        'patch_id': 'REFACTOR150',
+        'date': '2026-02-10',
+        'summary': 'Downsizing: remove two nested dead helper defs (_fix2d69a_norm_extraction_result_REMOVED, _fix2d15_candidate_ok) and delete unused deterministic diff dataclasses + dataclass import. No pipeline behavior changes; triad invariants preserved.',
+        'files': ['REFACTOR150.py'],
+        'supersedes': ['REFACTOR149'],
+        'acceptance_notes': 'App launches; triad outputs stable (prod unchanged; injection overrides preserved); Δt gating intact; run_source_anchored_evolution remains callable.'
+    },
     {
         'patch_id': 'REFACTOR149',
         'date': '2026-02-10',
@@ -7469,30 +7476,6 @@ def fetch_web_context(
 
                 # numeric extraction (analysis-aligned if fn exists)
 
-                def _fix2d69a_norm_extraction_result_REMOVED(_res):
-                    """Return a list of number dicts from extractor result.
-
-                    Accepts:
-                      - list
-                      - tuple/list of (numbers, meta) where numbers is list
-                      - None / other -> []
-                    """
-                    try:
-                        if _res is None:
-                            return []
-                        if isinstance(_res, list):
-                            return _res
-                        if isinstance(_res, tuple) or isinstance(_res, list):
-                            # e.g. (nums, meta)
-                            if len(_res) >= 1 and isinstance(_res[0], list):
-                                return _res[0]
-                        # sometimes a dict wrapper
-                        if isinstance(_res, dict) and isinstance(_res.get('numbers'), list):
-                            return _res.get('numbers') or []
-                    except Exception:
-                        pass
-                    return []
-
                 nums = []
                 meta["fix2d68_extract_attempted"] = bool(callable(fn_extract))
                 meta["fix2d68_extract_input_len"] = int(len(cleaned) if isinstance(cleaned, str) else 0)
@@ -8394,63 +8377,6 @@ def calculate_final_confidence(
 
     # Ensure result is in valid range
     return round(max(0, min(100, final)), 1)
-
-# 8A. DETERMINISTIC DIFF ENGINE
-# Pure Python computation - no LLM variance
-
-@dataclass
-class MetricDiff:
-    """Single metric change record"""
-    name: str
-    old_value: Optional[float]
-    new_value: Optional[float]
-    old_raw: str  # Original string representation
-    new_raw: str
-    unit: str
-    change_pct: Optional[float]
-    change_type: str  # 'increased', 'decreased', 'unchanged', 'added', 'removed'
-
-@dataclass
-class EntityDiff:
-    """Single entity ranking change record"""
-    name: str
-    old_rank: Optional[int]
-    new_rank: Optional[int]
-    old_share: Optional[str]
-    new_share: Optional[str]
-    rank_change: Optional[int]  # Positive = moved up
-    change_type: str  # 'moved_up', 'moved_down', 'unchanged', 'added', 'removed'
-
-@dataclass
-class FindingDiff:
-    """Single finding change record"""
-    old_text: Optional[str]
-    new_text: Optional[str]
-    similarity: float  # 0-100
-    change_type: str  # 'retained', 'modified', 'added', 'removed'
-
-@dataclass
-class EvolutionDiff:
-    """Complete diff between two analyses"""
-    old_timestamp: str
-    new_timestamp: str
-    time_delta_hours: Optional[float]
-    metric_diffs: List[MetricDiff]
-    entity_diffs: List[EntityDiff]
-    finding_diffs: List[FindingDiff]
-    stability_score: float  # 0-100
-    summary_stats: Dict[str, int]
-
-# CANONICAL METRIC REGISTRY & SEMANTIC FINDING HASH
-# Add this section after the dataclass definitions (around line 1587)
-
-# CANONICAL METRIC REGISTRY
-# Removes LLM control over metric identity
-
-# Metric type definitions with aliases
-# - Remove standalone "sales" from Revenue aliases (too ambiguous)
-# - Add money-explicit revenue phrases instead ("sales revenue", "sales value", etc.)
-# - Add a couple of volume-style aliases under units_sold ("sales volume", "volume sales")
 
 METRIC_REGISTRY = {
     # Market Size metrics
@@ -28031,49 +27957,6 @@ def rebuild_metrics_from_snapshots_analysis_canonical_v1(prev_response: dict, ba
             return True
         except Exception:
             return True
-
-    def _fix2d15_candidate_ok(cand: dict, spec: dict, canonical_key: str, kw_norm: list) -> (bool, str):
-        try:
-            if _fix2d15_is_bare_year_token(cand) and not _fix2d15_expects_year_value(spec, canonical_key):
-                return False, "bare_year_token"
-
-            if not _fix2d15_unit_family_ok(cand, spec):
-                return False, "unit_family_mismatch"
-
-            ctx = _norm(cand.get("context_snippet") or cand.get("context") or cand.get("context_window") or "")
-            rawn = _norm(cand.get("raw") or "")
-            dom = _fix2d15_metric_domain_tokens(canonical_key, spec)
-
-            # FIX2D19: strong required domain-token binding
-            req_dom = _fix2d19_required_domain_tokens(canonical_key, spec)
-            if req_dom:
-                _req_hit = 0
-                for r in req_dom:
-                    if not r:
-                        continue
-                    rr = _norm(r)
-                    if rr and (rr in ctx or rr in rawn):
-                        _req_hit += 1
-                if _req_hit <= 0:
-                    return False, 'missing_required_domain_token'
-
-
-            hit_kw = 0
-            for k in (kw_norm or []):
-                if k and (k in ctx or k in rawn):
-                    hit_kw += 1
-
-            hit_dom = 0
-            for d in (dom or []):
-                if d and (d in ctx or d in rawn):
-                    hit_dom += 1
-
-            if (kw_norm or dom) and (hit_kw <= 0 and hit_dom <= 0):
-                return False, "no_keyword_or_domain_hits"
-
-            return True, ""
-        except Exception:
-            return True, ""
 
     candidates.sort(key=_cand_sort_key)
 
