@@ -53,7 +53,13 @@ import os
 import re
 import json
 import streamlit as st
-import requests
+
+# REFACTOR153: Ensure requests is available for SerpAPI + HTTP fetch paths (downsizing fix).
+try:
+    import requests  # type: ignore
+except Exception:  # pragma: no cover
+    requests = None  # type: ignore
+
 
 
 # REFACTOR108: Shared Sheets read-cache (used by sheets_get_all_values_cached). Keep TTL short to prevent stale baseline selection.
@@ -144,7 +150,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "REFACTOR152"
+_YUREEKA_CODE_VERSION_LOCK = "REFACTOR153"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 
 # REFACTOR129: run-level beacons (reset per evolution run)
@@ -165,6 +171,15 @@ FORCE_LATEST_PREV_SNAPSHOT_V1 = True
 # - Registers a canonical entries list idempotently at import time.
 
 _PATCH_TRACKER_CANONICAL_ENTRIES_V1 = [
+    {
+        'patch_id': 'REFACTOR153',
+        'date': '2026-02-11',
+        'summary': 'Bugfix: restore requests availability for SerpAPI + HTTP fetch paths. Adds guarded global import and a clear error message when requests is unavailable. No pipeline behavior changes intended; fixes NameError "requests is not defined".',
+        'files': ['REFACTOR153.py'],
+        'supersedes': ['REFACTOR152'],
+        'acceptance_notes': 'SerpAPI search no longer errors NameError; prod/injection triad outputs expected to remain stable; Δt gating unchanged; run_source_anchored_evolution remains callable.'
+    },
+
     {
         'patch_id': 'REFACTOR152',
         'date': '2026-02-11',
@@ -5685,6 +5700,9 @@ def search_serpapi(query: str, num_results: int = 10) -> List[Dict]:
     }
 
     try:
+        # REFACTOR153: requests may be absent in minimal envs; handle gracefully.
+        if requests is None:
+            raise RuntimeError('requests library is not available')
         resp = requests.get("https://serpapi.com/search", params=params, timeout=10)
         resp.raise_for_status()
         data = resp.json()
