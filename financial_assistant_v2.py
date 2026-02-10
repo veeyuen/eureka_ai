@@ -147,7 +147,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "REFACTOR148"
+_YUREEKA_CODE_VERSION_LOCK = "REFACTOR149"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 
 # REFACTOR129: run-level beacons (reset per evolution run)
@@ -168,6 +168,14 @@ FORCE_LATEST_PREV_SNAPSHOT_V1 = True
 # - Registers a canonical entries list idempotently at import time.
 
 _PATCH_TRACKER_CANONICAL_ENTRIES_V1 = [
+    {
+        'patch_id': 'REFACTOR149',
+        'date': '2026-02-10',
+        'summary': 'Controlled downsizing: remove obsolete pre-status fetch_url_content() helper and drop dead extractor fallback (extract_numeric_candidates). Simplify fetch/extract selector chains to use only the authoritative helpers (fetch_url_content_with_status, extract_numbers_with_context) while preserving existing behavior and triad invariants.',
+        'files': ['REFACTOR149.py'],
+        'supersedes': ['REFACTOR148'],
+        'acceptance_notes': 'Triad outputs should match REFACTOR148 (prod stable; injection overrides; Δt gating intact); app launches; run_source_anchored_evolution remains callable.'
+    },
     {
         'patch_id': 'REFACTOR148',
         'date': '2026-02-10',
@@ -7326,7 +7334,7 @@ def fetch_web_context(
 
     # 4) Scrape + extract numbers (snapshot-friendly scraped_meta)
     fn_fp = globals().get("fingerprint_text")
-    fn_extract = globals().get("extract_numbers_with_context") or globals().get("extract_numeric_candidates") or globals().get("extract_numbers_from_text")
+    fn_extract = globals().get("extract_numbers_with_context") or globals().get("extract_numbers_from_text")
 
     scraped_attempted = 0
     scraped_ok_text = 0
@@ -11841,72 +11849,8 @@ def extract_query_structure(query: str) -> Dict[str, Any]:
 
 # 8D. SOURCE-ANCHORED EVOLUTION
 # Re-fetch the SAME sources from previous analysis for true stability
-# Enhanced fetch_url_content function to use scrapingdog as fallback
-
-def _extract_pdf_text_from_bytes(pdf_bytes: bytes, max_pages: int = 6, max_chars: int = 7000) -> Optional[str]:
-    """
-    Extract readable text from PDF bytes deterministically.
-    Limits pages/chars for speed and consistent output.
-    """
-    try:
-        reader = PdfReader(io.BytesIO(pdf_bytes))
-        texts = []
-        for i, page in enumerate(reader.pages[:max_pages]):
-            t = page.extract_text() or ""
-            t = t.replace("\x00", " ").strip()
-            if t:
-                texts.append(t)
-        joined = "\n".join(texts).strip()
-        if len(joined) < 200:
-            return None
-        return joined[:max_chars]
-    except Exception:
-        return None
 
 
-def fetch_url_content(url: str) -> Optional[str]:
-    """Fetch content from a specific URL with ScrapingDog fallback"""
-
-    def extract_text(html: str) -> Optional[str]:
-        """Extract clean text from HTML"""
-        soup = BeautifulSoup(html, 'html.parser')
-        for tag in soup(["script", "style", "nav", "footer", "header", "aside"]):
-            tag.decompose()
-        text = soup.get_text()
-        lines = (line.strip() for line in text.splitlines())
-        clean_text = ' '.join(line for line in lines if line)
-        return clean_text[:5000] if len(clean_text) > 200 else None
-
-    # Try 1: Direct request
-    try:
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-        }
-        resp = requests.get(url, headers=headers, timeout=10)
-        resp.raise_for_status()
-
-        if 'captcha' not in resp.text.lower():
-            content = extract_text(resp.text)
-            if content:
-                return content
-    except:
-        pass
-
-    # Try 2: ScrapingDog API
-    if SCRAPINGDOG_KEY:
-        try:
-            api_url = "https://api.scrapingdog.com/scrape"
-            params = {"api_key": SCRAPINGDOG_KEY, "url": url, "dynamic": "false"}
-            resp = requests.get(api_url, params=params, timeout=30)
-            if resp.status_code == 200:
-                content = extract_text(resp.text)
-                if content:
-                    return content
-        except:
-            pass
-
-    return None
 
 
 def fetch_url_content_with_status(url: str, timeout: int = 25, force_pdf: bool = False):
@@ -29041,7 +28985,7 @@ def _fix24_build_scraped_meta(urls: list, max_chars_per_source: int = 180000) ->
         pass
 
     scraped_meta = {}
-    fetch_fn = globals().get("fetch_url_content_with_status") or globals().get("fetch_url_content")
+    fetch_fn = globals().get("fetch_url_content_with_status")
     extract_fn = globals().get("extract_numbers_with_context")
 
     for u in urls or []:
@@ -29053,7 +28997,7 @@ def _fix24_build_scraped_meta(urls: list, max_chars_per_source: int = 180000) ->
         if not url:
             continue
         try:
-            if callable(fetch_fn) and fetch_fn.__name__.endswith("_with_status"):
+            if callable(fetch_fn):
                 try:
                     if str(url).lower().endswith(".pdf"):
                         text, status = fetch_fn(url, force_pdf=True)
@@ -29061,9 +29005,6 @@ def _fix24_build_scraped_meta(urls: list, max_chars_per_source: int = 180000) ->
                         text, status = fetch_fn(url)
                 except TypeError:
                     text, status = fetch_fn(url)
-            elif callable(fetch_fn):
-                text = fetch_fn(url)
-                status = "success_direct" if (text and str(text).strip()) else "empty"
             else:
                 text, status = (None, "no_fetch_fn")
 
