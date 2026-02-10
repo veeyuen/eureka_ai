@@ -54,7 +54,7 @@ import re
 import json
 import streamlit as st
 
-# REFACTOR153: Ensure requests is available for SerpAPI + HTTP fetch paths (downsizing fix).
+# REFACTOR154: Downsizing (low-risk): remove redundant typing imports and local imports (no behavior change).
 try:
     import requests  # type: ignore
 except Exception:  # pragma: no cover
@@ -150,7 +150,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "REFACTOR153"
+_YUREEKA_CODE_VERSION_LOCK = "REFACTOR154"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 
 # REFACTOR129: run-level beacons (reset per evolution run)
@@ -171,6 +171,15 @@ FORCE_LATEST_PREV_SNAPSHOT_V1 = True
 # - Registers a canonical entries list idempotently at import time.
 
 _PATCH_TRACKER_CANONICAL_ENTRIES_V1 = [
+    {
+        'patch_id': 'REFACTOR154',
+        'date': '2026-02-11',
+        'summary': 'DOWNSIZING (low-risk): remove redundant typing imports (duplicate module-level and function-local) and a couple of redundant local imports (re/hashlib) where globals already provide them. No pipeline behavior changes intended; reduces surface area and risk of future NameError/dup-import drift.',
+        'files': ['REFACTOR154.py'],
+        'supersedes': ['REFACTOR153'],
+        'acceptance_notes': 'App launches; triad outputs should remain stable (prod unchanged; injection overrides preserved); Δt gating intact; SerpAPI + HTTP fetch paths still functional; run_source_anchored_evolution remains callable.'
+    },
+
     {
         'patch_id': 'REFACTOR153',
         'date': '2026-02-11',
@@ -3533,12 +3542,6 @@ def rebuild_metrics_from_snapshots(
     NOTE: Dead/unreachable legacy code previously below an early return has been removed
     (explicitly approved).
     """
-    import re
-    import hashlib
-
-    # - Prevents NameError if typing symbols are not imported globally.
-    from typing import Dict, Any, List
-
     prev_response = prev_response if isinstance(prev_response, dict) else {}
 
     # - Backward compatible: does not change existing behavior if metric_anchors exists.
@@ -9230,7 +9233,6 @@ def get_canonical_metric_id(metric_name: str) -> Tuple[str, str]:
 
 # GEO + PROXY TAGGING (DETERMINISTIC)
 
-from typing import Dict, Any, Tuple, List, Optional
 
 REGION_KEYWORDS = {
     "APAC": ["apac", "asia pacific", "asia-pacific"],
