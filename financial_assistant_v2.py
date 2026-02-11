@@ -104,7 +104,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "REFACTOR162"
+_YUREEKA_CODE_VERSION_LOCK = "REFACTOR163"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 
 # REFACTOR129: run-level beacons (reset per evolution run)
@@ -125,6 +125,20 @@ FORCE_LATEST_PREV_SNAPSHOT_V1 = True
 # - Registers a canonical entries list idempotently at import time.
 
 _PATCH_TRACKER_CANONICAL_ENTRIES_V1 = [
+{
+    'patch_id': 'REFACTOR163',
+    'date': '2026-02-11',
+    'summary': 'Controlled downsizing (low-risk): remove dead numeric-extraction fallback wrapper and inline two single-use helpers (unit_clean_first_letter, now_utc) to reduce surface area. No pipeline behavior changes intended.',
+    'notes': [
+        'Deleted extract_numbers_from_text() legacy wrapper and removed fallback lookup to it in the scrape/extract path (extract_numbers_with_context remains authoritative).',
+        'Inlined unit_clean_first_letter() logic at its sole callsite inside get_canonical_value_and_unit(); removed the helper.',
+        'Inlined now_utc() into _yureeka_now_iso_utc(); removed now_utc() helper.',
+        'No changes to schema-frozen keys, strict unit comparability, snapshot selection/rehydration, Evolution diff path, Δt gating, or SerpAPI plumbing.',
+    ],
+    'files': ['REFACTOR163.py'],
+    'supersedes': ['REFACTOR162'],
+    'acceptance_notes': 'Expected triad-stable: prod stability 100% (4/4 unchanged), injection overrides preserved, Δt gating intact (prod populated, injection blank).',
+},
 {
     'patch_id': 'REFACTOR162',
     'date': '2026-02-11',
@@ -6544,7 +6558,7 @@ def fetch_web_context(
 
     # 4) Scrape + extract numbers (snapshot-friendly scraped_meta)
     fn_fp = globals().get("fingerprint_text")
-    fn_extract = globals().get("extract_numbers_with_context") or globals().get("extract_numbers_from_text")
+    fn_extract = globals().get("extract_numbers_with_context")
 
     scraped_attempted = 0
     scraped_ok_text = 0
@@ -7044,13 +7058,6 @@ def fetch_web_context(
 
     return out
 
-
-def unit_clean_first_letter(unit: str) -> str:
-    """Normalize units to first letter (T/B/M/K/%), ignoring $ and spaces."""
-    if not unit:
-        return ""
-    u = unit.replace("$", "").replace(" ", "").strip().upper()
-    return u[0] if u else ""
 
 # 7. LLM QUERY FUNCTIONS
 
@@ -11163,19 +11170,6 @@ def get_extractor_fingerprint() -> str:
     return "extract_v4_pdf_tables_forcepdf_2026-01-29"
 
 
-def extract_numbers_from_text(text: str) -> List[Dict]:
-    """
-    Backward-compatible wrapper.
-
-    v7_34 tightening:
-    - Delegate to extract_numbers_with_context() so junk suppression is applied consistently.
-    """
-    try:
-        return extract_numbers_with_context(text or "", source_url="", max_results=600) or []
-    except Exception:
-        return []
-
-
 def _parse_iso_dt(ts: Optional[str]) -> Optional[datetime]:
     if not ts:
         return None
@@ -11188,15 +11182,10 @@ def _parse_iso_dt(ts: Optional[str]) -> Optional[datetime]:
     except Exception:
         return None
 
-def now_utc() -> datetime:
-    """Timezone-aware UTC now (prevents naive/aware datetime bugs)."""
-    return datetime.now(timezone.utc)
-
-
 def _yureeka_now_iso_utc() -> str:
     """UTC ISO-8601 timestamp with offset (e.g., 2026-01-23T11:13:15.665069+00:00)."""
     try:
-        return now_utc().isoformat()
+        return datetime.now(timezone.utc).isoformat()
     except Exception:
         try:
             from datetime import datetime, timezone
