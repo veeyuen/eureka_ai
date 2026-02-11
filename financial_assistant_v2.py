@@ -104,7 +104,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "REFACTOR170"
+_YUREEKA_CODE_VERSION_LOCK = "REFACTOR171"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 
 # REFACTOR129: run-level beacons (reset per evolution run)
@@ -125,6 +125,18 @@ FORCE_LATEST_PREV_SNAPSHOT_V1 = True
 # - Registers a canonical entries list idempotently at import time.
 
 _PATCH_TRACKER_CANONICAL_ENTRIES_V1 = [
+{
+    'patch_id': 'REFACTOR171',
+    'date': '2026-02-11',
+    'summary': "Bugfix: restore module-level SCOPES for Google Sheets OAuth and make add_to_history() return early to session fallback when Sheets is unavailable (prevents 'SCOPES not defined' and None.append_row errors). No intended changes to triad mechanics, schema-frozen keys, strict comparability, injection overrides, snapshot selection/rehydration, SerpAPI plumbing, or Δt gating.",
+    'notes': [
+        'Define SCOPES at module scope and use _coerce_google_oauth_scopes(SCOPES) in get_google_sheet/get_google_spreadsheet to prevent NameError.',
+        'Fix add_to_history(): when get_google_sheet() returns None, append to st.session_state analysis_history and return True immediately (prevents NoneType.append_row).',
+    ],
+    'files': ['REFACTOR171.py'],
+    'supersedes': ['REFACTOR170']
+},
+
 {
     'patch_id': 'REFACTOR170',
     'date': '2026-02-11',
@@ -1202,6 +1214,13 @@ def _es_stable_sort_key(v):
 # Restored in REFACTOR170 (was accidentally removed in REFACTOR169).
 MAX_HISTORY_ITEMS = 50
 
+
+# Google Sheets OAuth scopes (module-level; used by get_google_sheet/get_google_spreadsheet)
+SCOPES = [
+    "https://www.googleapis.com/auth/spreadsheets",
+    "https://www.googleapis.com/auth/drive",
+]
+
 def get_google_sheet():
     """Connect to Google Sheet (cached connection)"""
     try:
@@ -1649,13 +1668,18 @@ def add_to_history(analysis: dict) -> bool:
         sheet = None
 
     if not sheet:
-        if "analysis_history" not in st.session_state:
-            st.session_state.analysis_history = []
-        st.session_state.analysis_history.append(analysis)
+        # Sheets unavailable: fall back to in-session history and exit early
+        try:
+            if "analysis_history" not in st.session_state:
+                st.session_state.analysis_history = []
+            st.session_state.analysis_history.append(analysis)
+        except Exception:
+            pass
         try:
             st.session_state["last_analysis"] = analysis
         except Exception:
-            return False
+            pass
+        return True
 
     try:
         analysis_id = generate_analysis_id()
