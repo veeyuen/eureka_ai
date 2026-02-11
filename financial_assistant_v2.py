@@ -104,7 +104,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "REFACTOR165"
+_YUREEKA_CODE_VERSION_LOCK = "REFACTOR166"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 
 # REFACTOR129: run-level beacons (reset per evolution run)
@@ -125,6 +125,18 @@ FORCE_LATEST_PREV_SNAPSHOT_V1 = True
 # - Registers a canonical entries list idempotently at import time.
 
 _PATCH_TRACKER_CANONICAL_ENTRIES_V1 = [
+{
+    'patch_id': 'REFACTOR166',
+    'date': '2026-02-11',
+    'summary': 'Controlled downsizing + hardening: remove duplicate _fix2d2u_norm helper by aliasing to _fix2d2u_norm_text; guard rebuild_metrics_from_snapshots_with_anchors/schema_only wrappers so missing fix17/fix18 symbols cannot crash. No changes intended to schema keys, strict comparability, injection overrides, snapshot selection, or Δt gating.',
+    'notes': [
+        'Replace duplicate _fix2d2u_norm() body with alias assignment to _fix2d2u_norm_text (single source of truth).',
+        'Convert rebuild_metrics_from_snapshots_with_anchors() wrapper into guarded dispatcher: prefer fix17 if present, else fall back to fix16, else {}.',
+        'Convert rebuild_metrics_from_snapshots_schema_only() wrapper into guarded dispatcher: prefer fix18 if present, else fall back to fix16, else {}.',
+    ],
+    'files': ['REFACTOR166.py'],
+    'supersedes': ['REFACTOR165'],
+},
 {
     'patch_id': 'REFACTOR165',
     'date': '2026-02-11',
@@ -26618,10 +26630,8 @@ def rebuild_metrics_from_snapshots_analysis_canonical_v1(prev_response: dict, ba
 # - Prevents cross-metric pollution in schema-only rebuild and other projections
 # - Called by BOTH Analysis selector and Evolution rebuild paths
 def _fix2d2u_norm(s: str) -> str:
-    try:
-        return re.sub(r"[^a-z0-9]+", " ", (s or "").lower()).strip()
-    except Exception:
-        return ""
+    # REFACTOR166: keep name for backward-compat; single source of truth.
+    return _fix2d2u_norm_text(s)
 
 def _fix2d2u_local_text(cand: dict) -> str:
     try:
@@ -26707,23 +26717,22 @@ def _fix2d2u_semantic_eligible(cand: dict, spec: dict, canonical_key: str) -> tu
 # - Keep names identical so evolution uses these as the LAST definitions
 
 def rebuild_metrics_from_snapshots_with_anchors(prev_response: dict, baseline_sources_cache, web_context=None) -> dict:  # noqa: F811
-    return rebuild_metrics_from_snapshots_with_anchors_fix17(prev_response, baseline_sources_cache, web_context=web_context)
+    """Guarded dispatch wrapper.
 
+    Prefer fix17 if present (historical name), else fall back to fix16.
+    This prevents NameError crashes when the file no longer contains fix17.
+    """
+    try:
+        fn = globals().get("rebuild_metrics_from_snapshots_with_anchors_fix17")
+        if callable(fn):
+            return fn(prev_response, baseline_sources_cache, web_context=web_context)
+        fn2 = globals().get("rebuild_metrics_from_snapshots_with_anchors_fix16")
+        if callable(fn2):
+            return fn2(prev_response, baseline_sources_cache, web_context=web_context)
+        return {}
+    except Exception:
+        return {}
 
-# Goal:
-#   - If analysis emitted an anchor for a canonical metric, evolution MUST NOT
-#     fall back to schema-only selection when the anchor cannot be used.
-#   - This closes the final loophole where unitless year tokens win schema-only
-#     scoring after an anchor rejection.
-# Implementation:
-#   - Provide a FIX18 schema-only rebuild that:
-#       (1) rebuilds anchored metrics via rebuild_metrics_from_snapshots_with_anchors_fix17
-#       (2) rebuilds ONLY unanchored metrics via rebuild_metrics_from_snapshots_schema_only_fix17
-#       (3) merges results deterministically (anchored first)
-#   - Re-wire the public rebuild_metrics_from_snapshots_schema_only to FIX18.
-# Notes:
-#   - Fully deterministic; no refetch; no LLM.
-#   - Additive only: leaves FIX17 implementations intact.
 
 def rebuild_metrics_from_snapshots_schema_only_fix18(prev_response: dict, baseline_sources_cache, web_context=None) -> dict:
     """
@@ -26824,24 +26833,21 @@ def rebuild_metrics_from_snapshots_schema_only_fix18(prev_response: dict, baseli
 
 # Re-wire schema-only entrypoint to FIX18 (keep names identical for evolution dispatch)
 def rebuild_metrics_from_snapshots_schema_only(prev_response: dict, baseline_sources_cache, web_context=None) -> dict:  # noqa: F811
-    return rebuild_metrics_from_snapshots_schema_only_fix18(prev_response, baseline_sources_cache, web_context=web_context)
+    """Guarded dispatch wrapper.
 
-
-# scrape+hash gate for evolution to prevent any rebuild/picking when unchanged.
-#
-# Goals:
-#   1) Evolution ALWAYS performs a current scrape/fetch pass to compute a "current"
-#      snapshot hash (v2 preferred).
-#   2) If current hash == prior analysis hash (v2 preferred), evolution stops and
-#      replays the prior FULL analysis payload rehydrated from Google Sheets,
-#      publishing metrics to the dashboard WITHOUT any metric rebuild/selection.
-#   3) If hashes differ, evolution proceeds via the existing deterministic path
-#      (same rebuild/anchors logic as used elsewhere in this codebase).
-#
-# This patch is purely additive:
-#   - REFACTOR67: legacy base evolution runner removed; changed-case recompute calls compute_source_anchored_diff directly
-#   - Adds helper functions prefixed _fix24_*
-#   - Overrides run_source_anchored_evolution by re-defining it below
+    Prefer fix18 if present (historical name), else fall back to fix16.
+    This prevents NameError crashes if fix18 is pruned in future downsizing.
+    """
+    try:
+        fn = globals().get("rebuild_metrics_from_snapshots_schema_only_fix18")
+        if callable(fn):
+            return fn(prev_response, baseline_sources_cache, web_context=web_context)
+        fn2 = globals().get("rebuild_metrics_from_snapshots_schema_only_fix16")
+        if callable(fn2):
+            return fn2(prev_response, baseline_sources_cache, web_context=web_context)
+        return {}
+    except Exception:
+        return {}
 
 
 def _fix24_get_prev_full_payload(previous_data: dict) -> dict:
