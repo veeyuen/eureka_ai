@@ -54,7 +54,7 @@ import re
 import json
 import streamlit as st
 
-# REFACTOR154: Downsizing (low-risk): remove redundant typing imports and local imports (no behavior change).
+# REFACTOR155: Downsizing (low-risk): prune obsolete legacy diff-binding fallback ladders (no behavior change).
 try:
     import requests  # type: ignore
 except Exception:  # pragma: no cover
@@ -150,7 +150,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "REFACTOR154"
+_YUREEKA_CODE_VERSION_LOCK = "REFACTOR155"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 
 # REFACTOR129: run-level beacons (reset per evolution run)
@@ -171,6 +171,17 @@ FORCE_LATEST_PREV_SNAPSHOT_V1 = True
 # - Registers a canonical entries list idempotently at import time.
 
 _PATCH_TRACKER_CANONICAL_ENTRIES_V1 = [
+    {
+        'patch_id': 'REFACTOR155',
+        'date': '2026-02-11',
+        'summary': 'Controlled downsizing (low-risk): prune obsolete legacy diff-binding fallback ladders that referenced non-existent entrypoints; no behavior change.',
+        'notes': [
+            'Removed redundant candidate-name fallback loops in _yureeka_ensure_final_bindings_v1 and in the Evolution binding manifest (REFACTOR17 block).',
+            'Removed the last-resort globals() scan for diff_metrics_by_name variants (no variants remain in-file).',
+        ],
+        'files': ['REFACTOR155.py'],
+        'supersedes': ['REFACTOR154'],
+    },
     {
         'patch_id': 'REFACTOR154',
         'date': '2026-02-11',
@@ -454,31 +465,6 @@ def _yureeka_ensure_final_bindings_v1():
 
     if callable(fn):
         bound_from = "diff_metrics_by_name"
-    else:
-        for _cand_name in [
-            "_yureeka_diff_metrics_by_name_v24",
-            "diff_metrics_by_name_V24_BASE",
-            "diff_metrics_by_name",
-            "_refactor09_diff_metrics_by_name",
-            "diff_metrics_by_name_FIX41_V34C_UNWRAP",
-            "diff_metrics_by_name_FIX41_V34_ANCHOR_JOIN",
-            "diff_metrics_by_name_FIX40_V32_PREFER_PMC",
-            "diff_metrics_by_name_FIX34_V24_STRICT",
-            "diff_metrics_by_name_FIX33_V23_CANONICAL_CLEAR",
-            "diff_metrics_by_name_FIX2D34",
-        ]:
-            try:
-                _cand = globals().get(_cand_name)
-            except Exception:
-                _cand = None
-            if callable(_cand):
-                fn = _cand
-                bound_from = _cand_name
-                try:
-                    globals()["diff_metrics_by_name"] = fn
-                except Exception:
-                    pass
-                break
 
     try:
         globals()["_YUREEKA_DIFF_METRICS_BY_NAME_BOUND_FROM"] = bound_from
@@ -16929,44 +16915,6 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
         if callable(_cand):
             _fn = _cand
             _bf = "diff_metrics_by_name"
-        if not callable(_fn):
-            for _cand_name in [
-                "diff_metrics_by_name",
-                "_yureeka_diff_metrics_by_name_v24",
-                "diff_metrics_by_name_V24_BASE",
-                "_refactor09_diff_metrics_by_name",
-                "diff_metrics_by_name_FIX41_V34C_UNWRAP",
-                "diff_metrics_by_name_FIX41_V34_ANCHOR_JOIN",
-                "diff_metrics_by_name_FIX40_V32_PREFER_PMC",
-                "diff_metrics_by_name_FIX34_V24_STRICT",
-                "diff_metrics_by_name_FIX33_V23_CANONICAL_CLEAR",
-                "diff_metrics_by_name_FIX2D34",
-            ]:
-                try:
-                    _cand = globals().get(_cand_name)
-                except Exception:
-                    _cand = None
-                if callable(_cand):
-                    _fn = _cand
-                    _bf = _cand_name
-                    try:
-                        globals()["diff_metrics_by_name"] = _cand
-                    except Exception:
-                        pass
-                    break
-
-        # Last resort: scan globals for any callable that looks like a diff_metrics_by_name variant.
-        if not callable(_fn):
-            try:
-                _hits = []
-                for _k, _v in list(globals().items()):
-                    if "diff_metrics_by_name" in str(_k) and callable(_v):
-                        _hits.append((_k, _v))
-                if _hits:
-                    _hits.sort(key=lambda t: str(t[0]))
-                    _bf, _fn = _hits[-1]
-            except Exception:
-                pass
 
         try:
             if _bf:
