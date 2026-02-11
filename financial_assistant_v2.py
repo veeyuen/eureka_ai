@@ -20659,22 +20659,6 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
     except Exception:
         pass
 
-            # Stability score mirror (clamped to [0, 100])
-            _ss = None
-            if isinstance(output.get("stability_score"), (int, float)):
-                _ss = float(output.get("stability_score"))
-            else:
-                _r = output.get("results")
-                if isinstance(_r, dict) and isinstance(_r.get("stability_score"), (int, float)):
-                    _ss = float(_r.get("stability_score"))
-            if _ss is not None:
-                if _ss < 0:
-                    _ss = 0.0
-                if _ss > 100:
-                    _ss = 100.0
-                output["stability_score"] = round(_ss, 1)
-    except Exception:
-        pass
 
 
     # Why:
