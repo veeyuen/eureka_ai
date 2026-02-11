@@ -104,7 +104,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "REFACTOR164"
+_YUREEKA_CODE_VERSION_LOCK = "REFACTOR165"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 
 # REFACTOR129: run-level beacons (reset per evolution run)
@@ -125,6 +125,21 @@ FORCE_LATEST_PREV_SNAPSHOT_V1 = True
 # - Registers a canonical entries list idempotently at import time.
 
 _PATCH_TRACKER_CANONICAL_ENTRIES_V1 = [
+{
+    'patch_id': 'REFACTOR165',
+    'date': '2026-02-11',
+    'summary': 'Controlled downsizing: remove dead indirection helpers make_sheet_safe_json + parse_human_number by inlining their logic at call sites; also remove a duplicated stability_score mirror block that could cause indentation/syntax issues. No diff behavior change intended.',
+    'notes': [
+        'Inline sheet-safe JSON serialization (always valid JSON under SHEETS_CELL_LIMIT) inside the snapshot write shrinker; remove make_sheet_safe_json() and its globals().get indirection.',
+        'Inline human-number parsing (T/B/M/K/% magnitude normalization) inside diff numeric parsing; remove parse_human_number() and its globals().get indirection.',
+        'Remove a duplicated stability_score mirror block (no behavioral change intended; prevents indentation/syntax hazards).',
+        'No changes to schema-frozen keys, strict unit comparability, snapshot selection/rehydration, Evolution recompute/diff path, injection override behavior, Δt gating semantics (prod populated, injection blank), or SerpAPI plumbing.',
+    ],
+    'files': ['REFACTOR165.py'],
+    'supersedes': ['REFACTOR164'],
+    'acceptance_notes': 'Expected triad-stable: prod stability 100% (4/4 unchanged), injection overrides preserved, Δt gating intact (prod populated, injection blank).',
+},
+
 {
     'patch_id': 'REFACTOR164',
     'date': '2026-02-11',
@@ -2359,11 +2374,29 @@ def add_to_history(analysis: dict) -> bool:
 
     def _try_make_sheet_json(obj: dict) -> str:
         try:
-            fn = globals().get("make_sheet_safe_json")
-            if callable(fn):
-                return fn(obj)
+            # Summarize heavy fields first (keeps payload JSON valid and smaller).
+            compact = _summarize_heavy_fields_for_sheets(obj if isinstance(obj, dict) else {'value': obj})
+            if isinstance(compact, dict):
+                compact['_sheets_safe'] = True
+            s = json.dumps(compact, ensure_ascii=False, default=str)
+            if isinstance(s, str) and len(s) <= SHEETS_CELL_LIMIT:
+                return s
+            # Always return valid JSON under the cell limit (no mid-string truncation).
+            preview = s[:2000] if isinstance(s, str) else ''
+            wrapper = {'_sheets_safe': True, '_truncated': True, 'preview': preview, 'meta': {'orig_len': len(s) if isinstance(s, str) else None, 'max_chars': SHEETS_CELL_LIMIT}}
+            ws = json.dumps(wrapper, ensure_ascii=False, default=str)
+            if isinstance(ws, str) and len(ws) <= SHEETS_CELL_LIMIT:
+                return ws
+            # Tighten preview further if needed.
+            wrapper['preview'] = preview[: max(0, SHEETS_CELL_LIMIT - 300)]
+            ws = json.dumps(wrapper, ensure_ascii=False, default=str)
+            if isinstance(ws, str) and len(ws) <= SHEETS_CELL_LIMIT:
+                return ws
+            # Final fallback: omit preview entirely.
+            wrapper.pop('preview', None)
+            return json.dumps(wrapper, ensure_ascii=False, default=str)
         except Exception:
-            return json.dumps(obj, ensure_ascii=False, default=str)
+            return json.dumps(obj if isinstance(obj, dict) else {'value': obj}, ensure_ascii=False, default=str)
 
     def _shrink_for_sheets(original: dict) -> dict:
         base_copy = dict(original)
@@ -11650,84 +11683,6 @@ def _summarize_heavy_fields_for_sheets(obj: dict) -> dict:
     return out
 
 
-def make_sheet_safe_json(obj: dict, max_chars: int = 45000) -> str:
-    """
-    Serialize sheet-safe JSON under the cell limit.
-
-    NOTE / CONFLICT:
-      - The prior implementation used _truncate_for_sheets() on the JSON string, which can produce
-        invalid JSON (cut mid-string). Invalid JSON rows are skipped by get_history() (json.loads fails),
-        so evolution can't pick them up.
-      - This patch preserves summarization but replaces raw string truncation with a JSON wrapper
-        that is ALWAYS valid JSON.
-
-    Output behavior:
-      - If JSON fits: returns full compact JSON string.
-      - If too large: returns a valid JSON wrapper with a preview + metadata.
-    """
-    import json
-
-    # Keep existing behavior: summarize heavy fields
-    compact = _summarize_heavy_fields_for_sheets(obj if isinstance(obj, dict) else {"value": obj})
-    if isinstance(compact, dict):
-        compact["_sheets_safe"] = True
-
-    # Try to serialize
-    try:
-        s = json.dumps(compact, ensure_ascii=False, default=str)
-    except Exception:
-        pass
-        # ultra-safe fallback (still return valid JSON)
-        try:
-            s = json.dumps({"_sheets_safe": True, "_sheet_write": {"error": "json.dumps failed"}}, ensure_ascii=False)
-        except Exception:
-            return '{"_sheets_safe":true,"_sheet_write":{"error":"json.dumps failed"}}'
-
-    # If it fits, return as-is
-    if isinstance(s, str) and len(s) <= int(max_chars or 45000):
-        return s
-
-    # - Never return mid-string truncations that break json.loads in get_history().
-    try:
-        preview_len = max(0, int(max_chars or 45000) - 700)  # leave room for wrapper fields
-        wrapper = {
-            "_sheets_safe": True,
-            "_sheet_write": {
-                "truncated": True,
-                "mode": "sheets_safe_wrapper",
-                "note": "Payload exceeded cell limit; stored preview only. Full snapshots must be stored separately if needed.",
-            },
-            # Keep a preview for UI/debugging
-            "preview": s[:preview_len],
-        }
-
-        # Optional: carry minimal identity fields for convenience (additive)
-        if isinstance(obj, dict):
-            wrapper["question"] = (obj.get("question") or "")[:200]
-            wrapper["timestamp"] = obj.get("timestamp")
-            wrapper["code_version"] = obj.get("code_version") or (obj.get("primary_response") or {}).get("code_version")
-
-            # Carry snapshot pointers even when the payload is wrapped.
-            # Without these fields, evolution cannot rehydrate full snapshots
-            # from the Snapshots worksheet (or local fallback) and will fail
-            # the snapshot gate with "No valid snapshots".
-            try:
-                _ssh = obj.get("source_snapshot_hash") or (obj.get("results") or {}).get("source_snapshot_hash")
-                _ref = obj.get("snapshot_store_ref") or (obj.get("results") or {}).get("snapshot_store_ref")
-                if _ssh:
-                    wrapper["source_snapshot_hash"] = _ssh
-                if _ref:
-                    wrapper["snapshot_store_ref"] = _ref
-            except Exception:
-                return json.dumps(wrapper, ensure_ascii=False, default=str)
-    except Exception:
-        return '{"_sheets_safe":true,"_sheet_write":{"truncated":true,"mode":"sheets_safe_wrapper","note":"wrapper failed"}}'
-
-
-# Purpose:
-#   - Store full baseline_sources_cache outside Google Sheets when rows
-#     are too large (Sheets wrapper / preview mode).
-#   - Allow deterministic rehydration for evolution (no refetch).
 def _snapshot_store_dir() -> str:
     import os
     d = os.path.join(os.getcwd(), "snapshot_store")
@@ -13433,17 +13388,36 @@ def attach_source_snapshots_to_analysis(analysis: dict, web_context: dict) -> di
 
     def _parse_num(value, unit_hint=""):
         try:
-            fn = globals().get("parse_human_number")
-            if callable(fn):
-                return fn(str(value), unit_hint)
-        except Exception:
-            pass
-        # fallback
-        try:
-            s = str(value).strip().replace(",", "")
+            if value is None:
+                return None
+            s = str(value).strip()
             if not s:
                 return None
-            return float(re.findall(r"-?\d+(?:\.\d+)?", s)[0])
+            s = s.replace('$', '').replace(',', '').strip()
+            if s.startswith('(') and s.endswith(')'):
+                s = '-' + s[1:-1].strip()
+            v = None
+            try:
+                v = float(s)
+            except Exception:
+                m = re.findall(r"-?\d+(?:\.\d+)?", s)
+                if not m:
+                    return None
+                v = float(m[0])
+            u = normalize_unit(unit_hint)
+            # Normalize magnitudes into BILLIONS for currency-like magnitudes.
+            if u == 'T':
+                return v * 1000.0
+            if u == 'B':
+                return v
+            if u == 'M':
+                return v / 1000.0
+            if u == 'K':
+                return v / 1_000_000.0
+            # Percent: keep as percent number.
+            if u == '%':
+                return v
+            return v
         except Exception:
             return None
 
@@ -14865,78 +14839,6 @@ def normalize_unit(unit: str) -> str:
 
 
 
-
-def parse_human_number(value_str: str, unit: str) -> Optional[float]:
-    """
-    Parse number + unit into a comparable float scale.
-    - For T/B/M: returns value in billions (B) to compare apples-to-apples.
-    - For %: returns numeric percent.
-    """
-    if value_str is None:
-        return None
-
-    s = str(value_str).strip()
-    if not s:
-        return None
-
-    # remove currency symbols/commas/space
-    s = s.replace("$", "").replace(",", "").strip()
-
-    # handle parentheses for negatives e.g. (12.3)
-    if s.startswith("(") and s.endswith(")"):
-        s = "-" + s[1:-1].strip()
-
-    try:
-        v = float(s)
-    except Exception:
-        return None
-
-    u = normalize_unit(unit)
-
-    # Normalize magnitudes into BILLIONS for currency-like units
-    if u == "T":
-        return v * 1000.0
-    if u == "B":
-        return v
-    if u == "M":
-        return v / 1000.0
-    if u == "K":
-        return v / 1_000_000.0
-
-    # Percent: keep as percent number
-    if u == "%":
-        return v
-
-    # Unknown unit: leave as-is (still useful for ratio filtering)
-    return v
-
-
-
-
-
-
-
-
-
-
-
-
-# (REFACTOR148) Removed dead canonical-first diff wrapper (_yureeka_diff_metrics_by_name_wrap1).
-
-
-
-
-# Why:
-# - REFACTOR59/60 downsizing removed legacy Diff Panel V2 builder defs.
-# - compute_source_anchored_diff expects a callable v2 entrypoint to populate
-#   metric_changes_v2 (and optionally override metric_changes via canonical-first join).
-# - When the v2 entrypoint is missing, Evolution reports "no metrics to display"
-#   despite primary_metrics_canonical being present.
-#
-# What:
-# - Provide a small, deterministic, schema-agnostic canonical-first join row builder:
-#   build_diff_metrics_panel_v2__rows_refactor47(prev_response, cur_response) -> (rows, summary)
-# - Keep strict unit comparability (no silent nonsense deltas).
 
 def _refactor61__unwrap_pmc(obj):
     """Best-effort unwrap for primary_metrics_canonical across historical payload shapes."""
