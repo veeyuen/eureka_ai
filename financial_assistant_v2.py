@@ -1,52 +1,6 @@
 # YUREEKA AI RESEARCH ASSISTANT v7.41
-# With Web Search, Evidence-Based Verification, Confidence Scoring
-# SerpAPI Output with Evolution Layer Version
-# Updated SerpAPI parameters for stable output
-# Deterministic Output From LLM
-# Deterministic Evolution Core Using Python Diff Engine
-# Anchored Evolution Analysis Using JSON As Input Into Model
-# Implementation of Source-Based Evolution
-# Saving of JSON output Files into Google Sheets
-# Canonical Metric Registry + Semantic Hashing of Findings
-# Removal of Evolution Decisions from LLM
-# Further Enhancements to Minimize Evolution Drift (Metric)
-# Saving of Extraction Cache in JSON
-# Prioritize High Quality Sources With Source Freshness Tracking
-# Timestamps = Timezone Naive
-# Improved Stability of Handling of Duplicate Canonicalized IDs
-# Deterministic Main and Side Topic Extractor
-# Range Aware Canonical Metrics
-# Range + Source Attribution
-# Proxy Labeler + Geo Tagging
-# Improved Main Topic + Side Topic Extractor Using Deterministic-->NLP-->LLM layer
-# Guardrails For Main + Side Topic Handling
-# Numeric Consistency Scores
-# Multi-Side Enumerations
-# Dashboard Unit Presentation Fixes (Main + Evolution)
-# Domain-Agnostic Question Profiling
-# Baseline Caching Contains HTTP Validators + Numeric Data
-# URL canonicalization
-# Evolution Layer Leverage On New Analysis Pipeline to Minimise Volatility
-# Canonicalization of Evolution Layer Metrics To Match Analysis Layer
-# Fix URL/path Collapese Issue Causing + Tighten Evolution Extraction (Topic Gating)
-# canonical-key-first matching
-# Evolution Pipeline to Consume analysis upstream artifacts
-# safety-net hard gates (minimal) before matching
-# Tighten canonical identity + unit-family constraints
-# Fingerprint freshness gating to evolution
-# Fix SerpAPI access and fetching
-# Keeps your snapshot-friendly scraped_meta (with extracted numbers + fingerprint fields)
-# Safe fallback scraper when ScrapingDog is unavailable
-# Prevent caching "empty results" from SerpAPI (no poisoned cache)
-# Restoration of Range Estimates For Metrics
-# Improved Junk Tagging and Rejection
-# One Canononical Operator for Analysis + Evolution Layers
-# Metric Aware Range Construction Everywhere
-# Anchor Matching Correctness
-# Unit Measure + Attribute Association e.g. M + units (sold)
-# Enriched metric_schema_frozen (analysis side)
-# THIS VERSION HAS THE PLUMBING LOCKED-DOWN
-# ONLY THE METRIC EXTRACTION LAYER FOR EVOLUTION REQUIRES WORK
+# Streamlit-safe single-file build (refactor series).
+# NOTE: Long historical banner comments removed in REFACTOR159 (no behavior change).
 
 import io
 import os
@@ -150,7 +104,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "REFACTOR158"
+_YUREEKA_CODE_VERSION_LOCK = "REFACTOR159"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 
 # REFACTOR129: run-level beacons (reset per evolution run)
@@ -172,6 +126,20 @@ FORCE_LATEST_PREV_SNAPSHOT_V1 = True
 
 _PATCH_TRACKER_CANONICAL_ENTRIES_V1 = [
 {
+    'patch_id': 'REFACTOR159',
+    'date': '2026-02-11',
+    'summary': 'Controlled downsizing (no behavior change): prune redundant default toggle constants that are only accessed via globals().get(..., default), and remove the large top-of-file historical banner comment block.',
+    'notes': [
+        'Deleted default assignments: _FIX2D20_DISABLE_FIX2D18, _FIX2D20_DISABLE_FIX2D19, INCLUDE_INJECTED_URLS_IN_SNAPSHOT_HASH, INJECTED_URL_HASH_POLICY_ALIGN_WITH_BASELINE, _FIX2D2U_ENABLE.',
+        'These toggles are read via globals().get(..., default) and/or env vars; removing the defaults preserves identical runtime behavior while reducing file size.',
+        'Removed only comment-only historical banner block at the top (no runtime effect).',
+    ],
+    'files': ['REFACTOR159.py'],
+    'supersedes': ['REFACTOR158'],
+    'acceptance_notes': 'Expected triad-stable: no pipeline logic changes (comment-only + default-toggle pruning). Validate triad: 4 keys; prod stability 100%; injection overrides preserved; Δt gating intact; SerpAPI requests import OK.',
+},
+
+{
     'patch_id': 'REFACTOR158',
     'date': '2026-02-11',
     'summary': 'Controlled downsizing (no behavior change): delete the large shadowed legacy body of rebuild_metrics_from_snapshots_schema_only_fix16 and simplify the REFACTOR28 FIX16 wrapper block (remove _refactor28__schema_only_wrapped guard + redundant rebinding scaffolds).',
@@ -181,7 +149,7 @@ _PATCH_TRACKER_CANONICAL_ENTRIES_V1 = [
     ],
     'files': ['REFACTOR158.py'],
     'supersedes': ['REFACTOR157'],
-    'acceptance_notes': 'Triad stable: 4 schema-frozen keys; prod stability 100%; injection overrides preserved; Δt gating intact; SerpAPI requests import still guarded.',
+    'acceptance_notes': 'Expected triad-stable: no pipeline logic changes (comment-only + default-toggle pruning). Validate triad: 4 keys; prod stability 100%; injection overrides preserved; Δt gating intact; SerpAPI requests import OK.',
 },
 
     {
@@ -629,9 +597,6 @@ except Exception:
 # - Rewire Analysis + Evolution to resolve canonical keys via canonical_identity_spine.resolve_key_v1 (schema-first)
 # - Enforce no-canonical-outside-spine gate at primary_metrics_canonical commit and schema_only_rebuild selection
 # - Prune yearlike candidates for unit/count metrics even when unit evidence was context/window backfilled
-_FIX2D20_DISABLE_FIX2D18 = False
-_FIX2D20_DISABLE_FIX2D19 = False
-
 # - We have repeated evidence of year tokens (e.g., 2024/2030) being committed
 #   with method/unit missing. This patch records *where* and *what* is being
 #   committed so we can fix the correct choke point without more speculation.
@@ -6299,7 +6264,6 @@ def _inj_diag_hash_inputs_from_bsc(baseline_sources_cache: Any) -> list:
 #   - Does NOT modify fastpath logic.
 #   - Does NOT change metric selection (synthetic records have no extracted_numbers).
 #   - Only activates when INCLUDE_INJECTED_URLS_IN_SNAPSHOT_HASH is True.
-INCLUDE_INJECTED_URLS_IN_SNAPSHOT_HASH = False  # ✅ default OFF (locked fastpath safe)
 
 def _inj_hash_should_include() -> bool:
     """Single switch for inclusion; additive-only. Supports env override."""
@@ -6328,7 +6292,6 @@ def _inj_hash_should_include() -> bool:
 # Notes:
 #   - Fastpath logic is NOT modified.
 #   - This only affects hash identity input construction; metric selection remains unchanged.
-INJECTED_URL_HASH_POLICY_ALIGN_WITH_BASELINE = True  # ✅ default ON (policy-aligned)
 
 def _inj_hash_policy_explicit_disable() -> bool:
     try:
@@ -27699,9 +27662,6 @@ def rebuild_metrics_from_snapshots_analysis_canonical_v1(prev_response: dict, ba
 # - Uses LOCAL context_snippet (not page-wide context_window)
 # - Prevents cross-metric pollution in schema-only rebuild and other projections
 # - Called by BOTH Analysis selector and Evolution rebuild paths
-
-_FIX2D2U_ENABLE = True
-
 def _fix2d2u_norm(s: str) -> str:
     try:
         return re.sub(r"[^a-z0-9]+", " ", (s or "").lower()).strip()
