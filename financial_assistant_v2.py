@@ -104,7 +104,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "REFACTOR166"
+_YUREEKA_CODE_VERSION_LOCK = "REFACTOR167"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 
 # REFACTOR129: run-level beacons (reset per evolution run)
@@ -125,6 +125,19 @@ FORCE_LATEST_PREV_SNAPSHOT_V1 = True
 # - Registers a canonical entries list idempotently at import time.
 
 _PATCH_TRACKER_CANONICAL_ENTRIES_V1 = [
+{
+    'patch_id': 'REFACTOR167',
+    'date': '2026-02-11',
+    'summary': 'Controlled downsizing: remove unused metric-anchors emission and anchor-aware rebuild scaffolding (with_anchors fix16 + dispatcher), and simplify anchor retrieval. No changes intended to schema keys, strict comparability, injection overrides, snapshot selection, or Δt gating.',
+    'notes': [
+        'Delete _emit_metric_anchors_in_analysis_payload() and its callsite; analysis payload no longer emits metric_anchors.',
+        'Delete rebuild_metrics_from_snapshots_with_anchors_fix16() and rebuild_metrics_from_snapshots_with_anchors() legacy fallback scaffolding; callsites were already guarded via globals().get().',
+        'Delete _get_metric_anchors_any() helper; anchor retrieval now uses prev_response.get("metric_anchors") only.',
+        'Remove dead canonical_for_render fallback branch that referenced rebuild_metrics_from_snapshots_with_anchors_fix16 (now absent).',
+    ],
+    'files': ['REFACTOR167.py'],
+    'supersedes': ['REFACTOR166'],
+},
 {
     'patch_id': 'REFACTOR166',
     'date': '2026-02-11',
@@ -1305,177 +1318,6 @@ def generate_analysis_id() -> str:
 # Determinism:
 # - Only uses existing evidence/candidates already present in the analysis payload.
 # - No re-fetching; no heuristic matching.
-def _emit_metric_anchors_in_analysis_payload(analysis_obj: dict) -> dict:
-    try:
-        if not isinstance(analysis_obj, dict):
-            return analysis_obj
-
-        # If already present and non-empty, keep as-is
-        existing = analysis_obj.get("metric_anchors")
-        if isinstance(existing, dict) and existing:
-            return analysis_obj
-
-        # Identify the primary response container (some payloads store it nested)
-        pr = analysis_obj.get("primary_response") if isinstance(analysis_obj.get("primary_response"), dict) else None
-        pr = pr or analysis_obj
-
-        # Canonical metrics (preferred)
-        pmc = pr.get("primary_metrics_canonical") if isinstance(pr, dict) else None
-        if not isinstance(pmc, dict) or not pmc:
-            pmc = analysis_obj.get("primary_metrics_canonical") if isinstance(analysis_obj.get("primary_metrics_canonical"), dict) else {}
-
-        # Candidate lookup table from baseline snapshots (if present)
-        bsc = None
-        try:
-            r = analysis_obj.get("results")
-            if isinstance(r, dict) and isinstance(r.get("baseline_sources_cache"), list):
-                bsc = r.get("baseline_sources_cache")
-        except Exception:
-            pass
-            bsc = None
-        if bsc is None and isinstance(analysis_obj.get("baseline_sources_cache"), list):
-            bsc = analysis_obj.get("baseline_sources_cache")
-
-        def _safe_str(x):
-            try:
-                return str(x).strip()
-            except Exception:
-                return ""
-
-        # Build (anchor_hash -> best candidate) index deterministically
-        anchor_to_candidate = {}
-        cand_to_candidate = {}
-        try:
-            if isinstance(bsc, list):
-                for sr in bsc:
-                    if not isinstance(sr, dict):
-                        continue
-                    surl = sr.get("source_url") or sr.get("url")
-                    for n in (sr.get("extracted_numbers") or []):
-                        if not isinstance(n, dict):
-                            continue
-                        ah = _safe_str(n.get("anchor_hash"))
-                        cid = _safe_str(n.get("candidate_id"))
-                        if ah and ah not in anchor_to_candidate:
-                            anchor_to_candidate[ah] = dict(n, source_url=n.get("source_url") or surl)
-                        if cid and cid not in cand_to_candidate:
-                            cand_to_candidate[cid] = dict(n, source_url=n.get("source_url") or surl)
-        except Exception:
-            pass
-
-        metric_anchors = {}
-
-        # Deterministic iteration for stable JSON output
-        for ckey in sorted([str(k) for k in (pmc or {}).keys()]):
-            m = pmc.get(ckey)
-            if not isinstance(m, dict):
-                continue
-
-            # Pick anchor identifiers from evidence first (most authoritative)
-            ev = m.get("evidence") or []
-            if not isinstance(ev, list):
-                ev = []
-
-            best = None
-            for e in ev:
-                if not isinstance(e, dict):
-                    continue
-                ah = _safe_str(e.get("anchor_hash") or e.get("anchor"))
-                cid = _safe_str(e.get("candidate_id"))
-                if ah or cid:
-                    best = e
-                    break
-
-            # Fallback: sometimes metric row carries anchor_hash directly
-            if best is None:
-                best = {
-                    "anchor_hash": m.get("anchor_hash") or m.get("anchor"),
-                    "candidate_id": m.get("candidate_id"),
-                    "source_url": m.get("source_url") or m.get("url"),
-                    "context_snippet": m.get("context_snippet") or m.get("context"),
-                    "anchor_confidence": m.get("anchor_confidence"),
-                }
-
-            ah = _safe_str(best.get("anchor_hash") or best.get("anchor"))
-            cid = _safe_str(best.get("candidate_id"))
-            surl = best.get("source_url") or best.get("url")
-            ctx = best.get("context_snippet") or best.get("context")
-            aconf = best.get("anchor_confidence")
-
-            # Enrich from candidate index if needed
-            if (not surl) or (not ctx):
-                cand = None
-                if ah and ah in anchor_to_candidate:
-                    cand = anchor_to_candidate.get(ah)
-                elif cid and cid in cand_to_candidate:
-                    cand = cand_to_candidate.get(cid)
-                if isinstance(cand, dict):
-                    surl = surl or (cand.get("source_url") or cand.get("url"))
-                    ctx = ctx or (cand.get("context_snippet") or cand.get("context"))
-
-            # Only emit if we actually have an anchor id
-            if not (ah or cid):
-                continue
-
-            try:
-                if isinstance(ctx, str):
-                    ctx = ctx.strip()[:220]
-                else:
-                    ctx = None
-            except Exception:
-                pass
-                ctx = None
-
-            try:
-                aconf = float(aconf) if aconf is not None else None
-            except Exception:
-                pass
-                aconf = None
-
-            metric_anchors[ckey] = {
-                "canonical_key": ckey,
-                "anchor_hash": ah or None,
-                "candidate_id": cid or None,
-                "source_url": surl or None,
-                "context_snippet": ctx,
-                "anchor_confidence": aconf,
-            }
-
-            try:
-                if ah and not _safe_str(m.get("anchor_hash")):
-                    m["anchor_hash"] = ah
-                if cid and not _safe_str(m.get("candidate_id")):
-                    m["candidate_id"] = cid
-                if surl and not (m.get("source_url") or m.get("url")):
-                    m["source_url"] = surl
-                if ctx and not (m.get("context_snippet") or m.get("context")):
-                    m["context_snippet"] = ctx
-                if aconf is not None and m.get("anchor_confidence") is None:
-                    m["anchor_confidence"] = aconf
-            except Exception:
-                pass
-
-        if metric_anchors:
-            try:
-                analysis_obj["metric_anchors"] = metric_anchors
-            except Exception:
-                pass
-            try:
-                if isinstance(pr, dict):
-                    pr.setdefault("metric_anchors", metric_anchors)
-            except Exception:
-                pass
-            try:
-                analysis_obj.setdefault("results", {})
-                if isinstance(analysis_obj["results"], dict):
-                    analysis_obj["results"].setdefault("metric_anchors", metric_anchors)
-            except Exception:
-                pass
-
-        return analysis_obj
-    except Exception:
-        return analysis_obj
-
 def add_to_history(analysis: dict) -> bool:
     """
     Save analysis to Google Sheet (or session fallback).
@@ -1496,12 +1338,6 @@ def add_to_history(analysis: dict) -> bool:
     # REFACTOR36: harden against None callers (prevents NoneType.get crashes)
     if not isinstance(analysis, dict):
         return False
-
-
-    try:
-        analysis = _emit_metric_anchors_in_analysis_payload(analysis)
-    except Exception:
-        pass
 
 
     import json
@@ -18254,14 +18090,6 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                 except Exception:
                     pass
                     canonical_for_render = {}
-            if (not canonical_for_render) and callable(globals().get("rebuild_metrics_from_snapshots_with_anchors_fix16")):
-                try:
-                    _fn2 = globals().get("rebuild_metrics_from_snapshots_with_anchors_fix16")
-                    canonical_for_render = _fn2(baseline_sources_cache, _schema, _anchors, _prev_canon)
-                    _canonical_for_render_fn = "rebuild_metrics_from_snapshots_with_anchors_fix16"
-                except Exception:
-                    pass
-                    canonical_for_render = {}
             if (not canonical_for_render) and callable(globals().get("rebuild_metrics_from_snapshots_schema_only")):
                 try:
                     _fn3 = globals().get("rebuild_metrics_from_snapshots_schema_only")
@@ -24355,40 +24183,6 @@ if __name__ == "__main__":
     pass
 
 
-def _get_metric_anchors_any(prev_response: dict) -> dict:
-    """Best-effort retrieval of metric_anchors from any plausible location (additive helper)."""
-    try:
-        if not isinstance(prev_response, dict):
-            return {}
-        for path in (
-            ("metric_anchors",),
-            ("results", "metric_anchors"),
-            ("primary_response", "metric_anchors"),
-            ("primary_response", "results", "metric_anchors"),
-        ):
-            cur = prev_response
-            ok = True
-            for k in path:
-                if isinstance(cur, dict) and k in cur:
-                    cur = cur[k]
-                else:
-                    ok = False
-                    break
-            if ok and isinstance(cur, dict) and cur:
-                return cur
-        return {}
-    except Exception:
-        return {}
-
-
-# Goals (deterministic, no re-architecture):
-#   1) De-year schema keyword scoring for non-year metrics
-#   2) Hard unit expectation gating (unitless years can't win currency/percent)
-#   3) Absolute anchor priority when anchors exist
-# Notes:
-#   - Additive only: we define FIX16 rebuild functions and re-wire dispatch
-#   - No refetch, no heuristics beyond schema/unit/anchors
-
 def _fix16_is_year_token(s: str) -> bool:
     try:
         s2 = str(s or "").strip()
@@ -24596,106 +24390,6 @@ def _fix16_candidate_allowed(c: dict, metric_spec: dict, canonical_key: str = ""
     except Exception:
         return True
 
-
-def rebuild_metrics_from_snapshots_with_anchors_fix16(prev_response: dict, baseline_sources_cache, web_context=None) -> dict:
-    """
-    FIX16 anchor-aware rebuild:
-      - Absolute anchor priority when anchor_hash exists in prev_response.metric_anchors
-      - Hard disallow junk/year-like unitless candidates for non-year metrics
-      - Hard unit expectation gating for currency/percent/rate/ratio dimensions
-    """
-    import re
-
-    if not isinstance(prev_response, dict):
-        return {}
-
-    metric_anchors = (
-        prev_response.get("metric_anchors")
-        or (prev_response.get("primary_response") or {}).get("metric_anchors")
-        or (prev_response.get("results") or {}).get("metric_anchors")
-        or {}
-    )
-    if not isinstance(metric_anchors, dict) or not metric_anchors:
-        return {}
-
-    metric_schema = (
-        prev_response.get("metric_schema_frozen")
-        or (prev_response.get("primary_response") or {}).get("metric_schema_frozen")
-        or (prev_response.get("results") or {}).get("metric_schema_frozen")
-        or {}
-    )
-
-    # Build deterministic candidate index (anchor_hash -> best candidate)
-    fn_idx = globals().get("_es_build_candidate_index_deterministic")
-    cand_index = fn_idx(baseline_sources_cache) if callable(fn_idx) else {}
-
-    rebuilt = {}
-
-    for canonical_key, a in (metric_anchors or {}).items():
-        if not isinstance(a, dict):
-            continue
-        ah = a.get("anchor_hash") or a.get("anchor") or ""
-        if not ah:
-            continue
-
-        spec = (metric_schema.get(canonical_key) if isinstance(metric_schema, dict) else None) or {}
-        spec = dict(spec)
-        spec.setdefault("name", a.get("name") or canonical_key)
-        spec.setdefault("canonical_key", canonical_key)
-
-        c = cand_index.get(ah)
-        if not isinstance(c, dict):
-            continue
-
-        # FIX16 eligibility hard-gates
-        if not _fix16_candidate_allowed(c, spec, canonical_key=canonical_key):
-            continue
-
-            try:
-                _ok_u, _why_u = _fix2d2u_semantic_eligible_global(c, spec, str(canonical_key))
-                if not _ok_u:
-                    continue
-            except Exception:
-                pass
-
-        # annotate chosen winner injection status for beacon/debug
-        try:
-            _k = str(canonical_key)
-            _rec = _inj_priority_dbg.get(_k) if isinstance(_inj_priority_dbg, dict) else None
-            if isinstance(_rec, dict):
-                _rec["chosen_url"] = str(best.get("source_url") or "")
-                _rec["chosen_injected"] = bool(_is_injected_candidate_v1(best))
-        except Exception:
-            pass
-
-        rebuilt[canonical_key] = {
-            "canonical_key": canonical_key,
-            "name": spec.get("name") or canonical_key,
-            "value": c.get("value"),
-            "unit": c.get("unit") or "",
-            "value_norm": c.get("value_norm"),
-            "source_url": c.get("source_url") or "",
-            "anchor_hash": c.get("anchor_hash") or ah,
-            "evidence": [{
-                "source_url": c.get("source_url") or "",
-                "raw": c.get("raw") or "",
-                "context_snippet": (c.get("context_snippet") or c.get("context") or c.get("context_window") or "")[:400],
-                "anchor_hash": c.get("anchor_hash") or ah,
-                "method": "anchor_hash_rebuild_fix16",
-            }],
-            "anchor_used": True,
-        }
-
-    return rebuilt
-
-
-# Objective:
-# - Deterministically map a selected set of injected/observed extractions into
-#   existing Analysis canonical_keys so they participate in diffing.
-# - Rules are explicit and auditable: domain + year + exact context substrings,
-#   with deterministic unit_tag/measure_kind tagging.
-# - Canonical authority remains single-sourced via _analysis_canonical_final_selector_v1
-#   (this mapping only influences candidate eligibility for a target canonical_key).
 
 def _fix2s_extract_year_from_candidate(c: dict) -> int:
     """Deterministically extract a 4-digit year from candidate fields or text."""
@@ -26716,24 +26410,6 @@ def _fix2d2u_semantic_eligible(cand: dict, spec: dict, canonical_key: str) -> tu
 
 # - Keep names identical so evolution uses these as the LAST definitions
 
-def rebuild_metrics_from_snapshots_with_anchors(prev_response: dict, baseline_sources_cache, web_context=None) -> dict:  # noqa: F811
-    """Guarded dispatch wrapper.
-
-    Prefer fix17 if present (historical name), else fall back to fix16.
-    This prevents NameError crashes when the file no longer contains fix17.
-    """
-    try:
-        fn = globals().get("rebuild_metrics_from_snapshots_with_anchors_fix17")
-        if callable(fn):
-            return fn(prev_response, baseline_sources_cache, web_context=web_context)
-        fn2 = globals().get("rebuild_metrics_from_snapshots_with_anchors_fix16")
-        if callable(fn2):
-            return fn2(prev_response, baseline_sources_cache, web_context=web_context)
-        return {}
-    except Exception:
-        return {}
-
-
 def rebuild_metrics_from_snapshots_schema_only_fix18(prev_response: dict, baseline_sources_cache, web_context=None) -> dict:
     """
     FIX18 rebuild:
@@ -26791,10 +26467,7 @@ def rebuild_metrics_from_snapshots_schema_only_fix18(prev_response: dict, baseli
     anchored = fn_anchor(prev_response, baseline_sources_cache, web_context=web_context) if callable(fn_anchor) else {}
 
     # Identify anchored keys (only those with a concrete anchor_hash)
-    metric_anchors_any = globals().get("_get_metric_anchors_any")
-    metric_anchors = metric_anchors_any(prev_response) if callable(metric_anchors_any) else (
-        prev_response.get("metric_anchors") or {}
-    )
+    metric_anchors = prev_response.get("metric_anchors") or {}
     anchored_keys = set()
     try:
         for k, a in (metric_anchors or {}).items():
