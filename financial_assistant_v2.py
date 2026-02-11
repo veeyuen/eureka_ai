@@ -104,7 +104,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "REFACTOR169"
+_YUREEKA_CODE_VERSION_LOCK = "REFACTOR170"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 
 # REFACTOR129: run-level beacons (reset per evolution run)
@@ -125,6 +125,17 @@ FORCE_LATEST_PREV_SNAPSHOT_V1 = True
 # - Registers a canonical entries list idempotently at import time.
 
 _PATCH_TRACKER_CANONICAL_ENTRIES_V1 = [
+{
+    'patch_id': 'REFACTOR170',
+    'date': '2026-02-11',
+    'summary': 'Bugfix: restore missing MAX_HISTORY_ITEMS constant used by get_history default parameter (prevents NameError at import). No intended changes to triad mechanics, schema-frozen keys, strict comparability, injection overrides, snapshot selection/rehydration, SerpAPI plumbing, or Δt gating.',
+    'notes': [
+        'Reintroduce MAX_HISTORY_ITEMS = 50 at module scope (was accidentally removed in REFACTOR169; Streamlit import crashed due to default arg evaluation).',
+        'No other behavior changes.'
+    ],
+    'files': ['REFACTOR170.py'],
+    'supersedes': ['REFACTOR169']
+},
 {
     'patch_id': 'REFACTOR169',
     'date': '2026-02-11',
@@ -1183,6 +1194,13 @@ def _es_stable_sort_key(v):
 
 
 
+
+
+
+# GOOGLE SHEETS HISTORY STORAGE
+# Max number of history rows to load from Sheets/session when hydrating baselines.
+# Restored in REFACTOR170 (was accidentally removed in REFACTOR169).
+MAX_HISTORY_ITEMS = 50
 
 def get_google_sheet():
     """Connect to Google Sheet (cached connection)"""
