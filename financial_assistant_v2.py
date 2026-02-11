@@ -150,7 +150,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "REFACTOR156"
+_YUREEKA_CODE_VERSION_LOCK = "REFACTOR157"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 
 # REFACTOR129: run-level beacons (reset per evolution run)
@@ -171,6 +171,19 @@ FORCE_LATEST_PREV_SNAPSHOT_V1 = True
 # - Registers a canonical entries list idempotently at import time.
 
 _PATCH_TRACKER_CANONICAL_ENTRIES_V1 = [
+    {
+        'patch_id': 'REFACTOR157',
+        'date': '2026-02-11',
+        'summary': 'Controlled downsizing (low-risk): remove redundant FIX2D1 schema-rebuild alias shim (_fix2d1_first_callable_name/_fix2d1_find_callable_by_contains) and its import-time binder block now that authoritative entrypoints are present. No behavior change.',
+        'notes': [
+            'Deleted helper functions: _fix2d1_first_callable_name, _fix2d1_find_callable_by_contains.',
+            'Deleted the import-time try/alias block that attempted to rebind rebuild_metrics_from_snapshots_* symbols for FIX41AFC19.',
+        ],
+        'files': ['REFACTOR157.py'],
+        'supersedes': ['REFACTOR156'],
+        'acceptance_notes': 'Triad stable (4 schema keys; prod stability 100%; injection overrides preserved); Δt gating intact (prod populated; injection blank); authority manifest targets unchanged.',
+    },
+
     {
         'patch_id': 'REFACTOR156',
         'date': '2026-02-11',
@@ -891,52 +904,6 @@ def _emit_key_overlap_debug_v1(prev_metrics, cur_metrics, target_key=None):
             "error": "key_overlap_exception",
             "exception": str(type(_e).__name__),
         }
-
-# - Adds best-effort aliases so FIX41AFC19 display rebuild can find a callable
-# - Wraps Diff Panel V2 _impl call so summary is always defined (no UnboundLocalError)
-def _fix2d1_first_callable_name(candidates):
-    try:
-        for name in candidates:
-            fn = globals().get(name)
-            if callable(fn):
-                return name
-    except Exception:
-        return None
-    return None
-
-def _fix2d1_find_callable_by_contains(substr, deny_exact=None):
-    try:
-        for k, v in globals().items():
-            if deny_exact and k == deny_exact:
-                continue
-            if substr in k and callable(v):
-                return k
-    except Exception:
-        return None
-    return None
-
-# Ensure canonical rebuild symbol exists under the exact names FIX41AFC19 expects
-try:
-    if not callable(globals().get("rebuild_metrics_from_snapshots_analysis_canonical_v1")):
-        _alt = _fix2d1_first_callable_name([
-            "rebuild_metrics_from_snapshots_analysis_canonical_v1_IMPL",
-            "rebuild_metrics_from_snapshots_analysis_canonical_v1_base",
-            "rebuild_metrics_from_snapshots_analysis_canonical_v1_BASE",
-        ]) or _fix2d1_find_callable_by_contains("rebuild_metrics_from_snapshots_analysis_canonical", deny_exact="rebuild_metrics_from_snapshots_analysis_canonical_v1")
-        if _alt and callable(globals().get(_alt)):
-            globals()["rebuild_metrics_from_snapshots_analysis_canonical_v1"] = globals()[_alt]
-
-    if not callable(globals().get("rebuild_metrics_from_snapshots_schema_only_fix16")):
-        _alt = _fix2d1_first_callable_name([
-            "rebuild_metrics_from_snapshots_schema_only_fix16_IMPL",
-            "rebuild_metrics_from_snapshots_schema_only_fix16_base",
-            "rebuild_metrics_from_snapshots_schema_only_fix16_BASE",
-        ]) or _fix2d1_find_callable_by_contains("rebuild_metrics_from_snapshots_schema_only_fix16", deny_exact="rebuild_metrics_from_snapshots_schema_only_fix16")
-        if _alt and callable(globals().get(_alt)):
-            globals()["rebuild_metrics_from_snapshots_schema_only_fix16"] = globals()[_alt]
-except Exception:
-    pass
-
 # - URL shape normalizer (boundary before scraping)
 # - Scrape ledger keyed by url_norm w/ stage+reason
 # - Scraped text accessor to avoid meta-key drift
@@ -4881,9 +4848,7 @@ def get_history(limit: int = MAX_HISTORY_ITEMS) -> List[Dict]:
 def load_api_keys():
     """Load and validate API keys from secrets or environment"""
 
-    _fix41afc5_dbg2 = {"rejected_year_only": 0, "rejected_unitless": 0, "rejected_magnitude_other_unitless": 0}
 
-    _fix41afc5_dbg = {"rejected_year_only": 0, "rejected_unitless": 0, "rejected_magnitude_other_unitless": 0}
     try:
         PERPLEXITY_KEY = st.secrets.get("PERPLEXITY_API_KEY") or os.getenv("PERPLEXITY_API_KEY", "")
         GEMINI_KEY = st.secrets.get("GEMINI_API_KEY") or os.getenv("GEMINI_API_KEY", "")
