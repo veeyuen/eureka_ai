@@ -104,7 +104,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "REFACTOR160"
+_YUREEKA_CODE_VERSION_LOCK = "REFACTOR161"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 
 # REFACTOR129: run-level beacons (reset per evolution run)
@@ -125,6 +125,20 @@ FORCE_LATEST_PREV_SNAPSHOT_V1 = True
 # - Registers a canonical entries list idempotently at import time.
 
 _PATCH_TRACKER_CANONICAL_ENTRIES_V1 = [
+{
+    'patch_id': 'REFACTOR161',
+    'date': '2026-02-11',
+    'summary': 'Controlled downsizing (UI-only): remove the Debug Playbook sidebar expander + its large markdown constant to reduce file size and Streamlit render overhead. No pipeline behavior changes.',
+    'notes': [
+        'Deleted _YUREEKA_DEBUG_PLAYBOOK_MD_V1 (large markdown blob) and _yureeka_show_debug_playbook_in_streamlit_v1() helper.',
+        'Removed the unconditional call to the playbook helper from main().',
+        'No changes to schema-frozen keys, strict unit comparability, snapshot selection/rehydration, Evolution diff path, Δt gating, or SerpAPI plumbing.',
+    ],
+    'files': ['REFACTOR161.py'],
+    'supersedes': ['REFACTOR160'],
+    'acceptance_notes': 'Expected triad-stable: 4 schema keys; prod stability 100%; injection overrides preserved; Δt gating intact (prod populated, injection blank); SerpAPI requests import OK; authority manifest required targets unchanged.',
+},
+
 {
     'patch_id': 'REFACTOR160',
     'date': '2026-02-11',
@@ -504,45 +518,6 @@ def _yureeka_ensure_final_bindings_v1():
 
 _yureeka_lock_version_globals_v1()
 _yureeka_ensure_final_bindings_v1()
-
-
-_YUREEKA_DEBUG_PLAYBOOK_MD_V1 = """## Debug Playbook (REFACTOR22)
-
-This file is **single-file Streamlit-safe** and is intentionally refactored in small, testable steps.
-The refactor harness (when enabled) is the authority for "did we preserve behavior?".
-
-### What to check first (fast triage)
-1) **code_version** in both Analysis and Evolution JSON must match this file’s `_YUREEKA_CODE_VERSION_LOCK`.
-2) Evolution must show **previous_data_rehydrated: true** when running after an Analysis baseline.
-3) Diff Panel V2 must emit **metric_changes_v2** rows with both **prev_value_norm** and **cur_value_norm** for "both-side" metrics.
-
-### If metric_changes_v2 is empty
-- Confirm Analysis was run first and produced **primary_metrics_canonical**.
-- Confirm Evolution JSON has **previous_data_rehydrated: true** and the expected **previous_timestamp**.
-- Inspect `results.debug.diff_panel_v2_trace_v1` (if present) and row-level `diag.diff_join_trace_v1`.
-
-### If code_version looks wrong
-- Streamlit can reuse an older loaded module if the process isn’t restarted.
-- This refactor uses a **version lock**: outputs stamp via `_yureeka_get_code_version()` (not `CODE_VERSION`).
-
-### Key debug fields
-- `debug.binding_manifest_v1`: Which entrypoints were resolved (Diff Panel V2 + legacy diff).
-- `debug.canonical_for_render_v1`: Presence indicator for canonical-for-render debug (should be present).
-- `metric_changes_v2[*].diag`: Per-row join + current-source trace.
-
-"""
-
-
-def _yureeka_show_debug_playbook_in_streamlit_v1():
-    """Streamlit-safe helper: show an optional playbook expander without affecting JSON outputs."""
-    try:
-        if not hasattr(st, "sidebar"):
-            return
-        with st.sidebar.expander("Debug playbook", expanded=False):
-            st.markdown(_YUREEKA_DEBUG_PLAYBOOK_MD_V1)
-    except Exception:
-        pass
-
 
 # Invocation:
 #   - python REFACTOR02_full_codebase_streamlit_safe.py --run_refactor_harness
@@ -23116,8 +23091,6 @@ def main():
     )
 
     st.title("💹 Yureeka Market Intelligence")
-    _yureeka_show_debug_playbook_in_streamlit_v1()
-
     # Info section
     col_info, col_status = st.columns([3, 1])
     with col_info:
