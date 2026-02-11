@@ -21835,21 +21835,6 @@ def render_source_anchored_results(results, query: str):
             table_rows.append(out_row)
 
     st.dataframe(table_rows, use_container_width=True)
-
-
-    # Debug / tuning views
-    # Aggregate rejection reasons across all metrics (quick tuning signal)
-    agg_rej = Counter()
-    for r in rows:
-        if isinstance(r, dict) and isinstance(r.get("rejected_reason_counts"), dict):
-            for k, v in r["rejected_reason_counts"].items():
-                try:
-                    agg_rej[k] += int(v or 0)
-                except Exception:
-                    pass
-
-    if agg_rej:
-    # Full per-metric debug
     # REFACTOR137: Restored UI panels from FIX2D88 (render-only; best-effort for evolution payload).
     try:
         _wc = results.get("web_context") if isinstance(results.get("web_context"), dict) else {}
