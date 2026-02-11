@@ -150,7 +150,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "REFACTOR157"
+_YUREEKA_CODE_VERSION_LOCK = "REFACTOR158"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 
 # REFACTOR129: run-level beacons (reset per evolution run)
@@ -171,6 +171,19 @@ FORCE_LATEST_PREV_SNAPSHOT_V1 = True
 # - Registers a canonical entries list idempotently at import time.
 
 _PATCH_TRACKER_CANONICAL_ENTRIES_V1 = [
+{
+    'patch_id': 'REFACTOR158',
+    'date': '2026-02-11',
+    'summary': 'Controlled downsizing (no behavior change): delete the large shadowed legacy body of rebuild_metrics_from_snapshots_schema_only_fix16 and simplify the REFACTOR28 FIX16 wrapper block (remove _refactor28__schema_only_wrapped guard + redundant rebinding scaffolds).',
+    'notes': [
+        'Removed the earlier pre-REFACTOR28 FIX16 implementation which was overwritten later in-file (kept the authoritative REFACTOR28 wrapper).',
+        'Promoted the REFACTOR28 FIX16 wrapper to a single unconditional definition; preserved the schema_only binding to FIX16 as before.',
+    ],
+    'files': ['REFACTOR158.py'],
+    'supersedes': ['REFACTOR157'],
+    'acceptance_notes': 'Triad stable: 4 schema-frozen keys; prod stability 100%; injection overrides preserved; Δt gating intact; SerpAPI requests import still guarded.',
+},
+
     {
         'patch_id': 'REFACTOR157',
         'date': '2026-02-11',
@@ -25944,754 +25957,6 @@ def _fix2s_apply_observed_to_canonical_rules_v1(candidates: list, metric_schema:
         return diag
 
 
-def rebuild_metrics_from_snapshots_schema_only_fix16(prev_response: dict, baseline_sources_cache, web_context=None) -> dict:
-    """
-    FIX16 schema-only rebuild:
-      - Removes YYYY tokens from keyword scoring for non-year metrics
-      - Hard unit expectation gating
-      - Applies fix15 junk/year exclusion + fix16 extra year-token disallow
-      - Deterministic selection/tie-breaks
-    """
-    import re
-
-    if not isinstance(prev_response, dict):
-        return {}
-
-    metric_schema = (
-        prev_response.get("metric_schema_frozen")
-        or (prev_response.get("primary_response") or {}).get("metric_schema_frozen")
-        or (prev_response.get("results") or {}).get("metric_schema_frozen")
-        or {}
-    )
-    if not isinstance(metric_schema, dict) or not metric_schema:
-        return {}
-
-    # Flatten snapshot candidates (no re-fetch)
-    if isinstance(baseline_sources_cache, dict) and isinstance(baseline_sources_cache.get("snapshots"), list):
-        sources = baseline_sources_cache.get("snapshots", [])
-    elif isinstance(baseline_sources_cache, list):
-        sources = baseline_sources_cache
-    else:
-        sources = []
-
-    # Purpose:
-    #   The Analysis-parity rebuild consumes a "snapshot pool" shaped like:
-    #     [{source_url, extracted_numbers, ...}, ...]
-    #   In several evolution runs, injected URLs were fetched + extracted (source_results),
-    #   but their extracted_numbers were NOT present in baseline_sources_cache["snapshots"],
-    #   so rebuild never saw them.
-    #
-    # This patch additively admits injected fetched sources into the snapshot pool by:
-    #   - reading baseline_sources_cache["source_results"] when present
-    #   - filtering strictly to injected URLs (normalized membership)
-    #   - appending a snapshot-shaped dict into `sources`
-    # Non-negotiables:
-    #   - additive only; no behavior change for non-injected sources
-    #   - no domain hardcoding; uses diag_injected_urls admitted/ui list
-    _fix2aa_diag = {
-        "enabled": True,
-        "source_results_seen": 0,
-        "injected_norm_set_size": 0,
-        "admitted_to_snapshot_pool": 0,
-        "admitted_urls": [],
-        "skipped_already_present": 0,
-        "skipped_not_injected": 0,
-        "skipped_no_extracted_numbers": 0,
-        "skipped_bad_shape": 0,
-    }
-    try:
-        if isinstance(web_context, dict) and isinstance(baseline_sources_cache, dict):
-            # Build injected normalized set
-            _d = web_context.get("diag_injected_urls") or web_context.get("extra_urls_debug") or {}
-            _inj_norm = set()
-            if isinstance(_d, dict):
-                _ad = _inj_diag_norm_url_list(_d.get("admitted") or _d.get("extra_urls_admitted") or [])
-                _ui = _inj_diag_norm_url_list(_d.get("ui_norm") or _d.get("extra_urls_ui_norm") or _d.get("extra_urls_normalized") or [])
-                _inj_norm = set(_ad or _ui or [])
-            _fix2aa_diag["injected_norm_set_size"] = int(len(_inj_norm))
-
-            # Build set of already-present source URLs in snapshot pool (normalized)
-            _present = set()
-            try:
-                for _s in (sources or []):
-                    if not isinstance(_s, dict):
-                        continue
-                    _u0 = _s.get("source_url") or _s.get("url") or ""
-                    _present.add((_canonicalize_injected_url(_u0) if callable(globals().get("_canonicalize_injected_url")) else str(_u0 or "")).strip())
-            except Exception:
-                pass
-                _present = set()
-
-            _sr_list = baseline_sources_cache.get("source_results")
-            if isinstance(_sr_list, list) and _sr_list:
-                _fix2aa_diag["source_results_seen"] = int(len(_sr_list))
-                for _sr in _sr_list:
-                    if not isinstance(_sr, dict):
-                        _fix2aa_diag["skipped_bad_shape"] += 1
-                        continue
-                    _u = _sr.get("source_url") or _sr.get("url") or ""
-                    _un = (_canonicalize_injected_url(_u) if callable(globals().get("_canonicalize_injected_url")) else str(_u or "")).strip()
-                    if not _un or (_un not in _inj_norm):
-                        _fix2aa_diag["skipped_not_injected"] += 1
-                        continue
-                    if _un in _present:
-                        _fix2aa_diag["skipped_already_present"] += 1
-                        continue
-                    _xs = _sr.get("extracted_numbers")
-                    if not isinstance(_xs, list) or not _xs:
-                        _fix2aa_diag["skipped_no_extracted_numbers"] += 1
-                        continue
-
-                    # Admit as snapshot-shaped dict
-                    sources.append({
-                        "source_url": _u,
-                        "extracted_numbers": _xs,
-                        "fix2aa_admitted_from": "source_results",
-                    })
-                    _present.add(_un)
-                    _fix2aa_diag["admitted_to_snapshot_pool"] += 1
-                    if len(_fix2aa_diag["admitted_urls"]) < 50:
-                        _fix2aa_diag["admitted_urls"].append(_u)
-    except Exception:
-        pass
-        # diagnostics only; never block rebuild
-        pass
-    try:
-        if isinstance(web_context, dict):
-            web_context["fix2aa_injected_snapshot_admission_v1"] = _fix2aa_diag
-    except Exception:
-        pass
-
-    candidates = []
-    for s in sources:
-        if not isinstance(s, dict):
-            continue
-        url = s.get("source_url") or s.get("url") or ""
-        xs = s.get("extracted_numbers")
-        if isinstance(xs, list) and xs:
-            for c in xs:
-                if not isinstance(c, dict):
-                    continue
-                c2 = dict(c)
-                c2.setdefault("source_url", url)
-                candidates.append(c2)
-
-    #   - Only binds candidates originating from injected URLs (admitted/ui list)
-    #   - Uses exact substring + explicit year guards (no fuzzy matching)
-    #   - Adds a per-candidate force key so only the intended schema slot competes
-    _fix2v_injected_norm_set = set()
-    try:
-        if isinstance(web_context, dict):
-            _d = web_context.get("diag_injected_urls") or web_context.get("extra_urls_debug") or {}
-            if isinstance(_d, dict):
-                _ad = _inj_diag_norm_url_list(_d.get("admitted") or _d.get("extra_urls_admitted") or [])
-                _ui = _inj_diag_norm_url_list(_d.get("ui_norm") or _d.get("extra_urls_ui_norm") or _d.get("extra_urls_normalized") or [])
-                _fix2v_injected_norm_set = set(_ad or _ui or [])
-    except Exception:
-        pass
-        _fix2v_injected_norm_set = set()
-
-    def _fix2v_norm_url(u: str) -> str:
-        try:
-            cu = _canonicalize_injected_url(u) if callable(globals().get("_canonicalize_injected_url")) else None
-            return (cu or str(u or "")).strip()
-        except Exception:
-            return str(u or "").strip()
-
-    def _fix2v_extract_years_from_blob(blob: str) -> set:
-        try:
-            ys = set()
-            for mm in re.findall(r"(19\d{2}|20\d{2})", str(blob or "")):
-                try:
-                    ys.add(int(mm))
-                except Exception:
-                    return ys
-        except Exception:
-            return set()
-
-    _fix2v_bind_hits = []
-    for _c in candidates:
-        try:
-            if not isinstance(_c, dict):
-                continue
-            _u = _fix2v_norm_url(_c.get("source_url") or "")
-            _c["_fix2v_source_is_injected"] = bool(_u and (_u in _fix2v_injected_norm_set))
-            if not _c.get("_fix2v_source_is_injected"):
-                continue
-
-            _blob = " ".join([
-                str(_c.get("context_snippet") or ""),
-                str(_c.get("label") or ""),
-                str(_c.get("raw") or ""),
-            ])
-            _blob_n = _norm(_blob)
-            _years = _fix2v_extract_years_from_blob(_blob)
-
-            # --- Bind: 2040 charger infrastructure count (e.g., 206.6 million worldwide) ---
-            if (2040 in _years) and (("charging infrastructure" in _blob_n) or ("ev charging" in _blob_n) or ("chargers" in _blob_n) or ("charger" in _blob_n)):
-                if ("worldwide" in _blob_n) or ("global" in _blob_n):
-                    # If upstream left unit empty but raw contains 'million', use unit_tag M for magnitude
-                    if (not str(_c.get("unit_tag") or _c.get("unit") or "").strip()) and ("million" in str(_c.get("raw") or "").lower()):
-                        _c["unit_tag"] = "M"
-                    _c["fix2v_force_canonical_key"] = "global_ev_chargers_2040__unit_count"
-                    _fix2v_bind_hits.append(dict(kind="count_2040", anchor_hash=_c.get("anchor_hash"), value=_c.get("value_norm") or _c.get("value"), source_url=_c.get("source_url")))
-                    continue
-
-            # --- Bind: CAGR 12.3% from 2026 to 2040 ---
-            if (2026 in _years) and (2040 in _years):
-                if ("cagr" in _blob_n) or ("compound annual growth rate" in _blob_n):
-                    raw_l = str(_c.get("raw") or "").lower()
-                    u_l = str(_c.get("unit") or _c.get("unit_tag") or "").lower()
-                    if ("%" in raw_l) or ("%" in u_l) or ("percent" in u_l) or ("percent" in raw_l):
-                        _c["fix2v_force_canonical_key"] = "global_ev_chargers_cagr_2026_2040__percent"
-                        _fix2v_bind_hits.append(dict(kind="cagr_2026_2040", anchor_hash=_c.get("anchor_hash"), value=_c.get("value_norm") or _c.get("value"), source_url=_c.get("source_url")))
-                        continue
-        except Exception:
-            pass
-            continue
-
-    try:
-        if isinstance(web_context, dict):
-            web_context.setdefault("fix2v_candidate_binding_v1", {})
-            web_context["fix2v_candidate_binding_v1"]["injected_norm_set_size"] = int(len(_fix2v_injected_norm_set))
-            web_context["fix2v_candidate_binding_v1"]["binding_hits"] = _fix2v_bind_hits[:200]
-            web_context["fix2v_candidate_binding_v1"]["binding_hit_count"] = int(len(_fix2v_bind_hits))
-    except Exception:
-        pass
-
-    # Purpose:
-    #   Provide a deterministic "why not canonical?" autopsy for targeted keys.
-    #   Records:
-    #     - candidate pool size
-    #     - eligible vs rejected counts + first-N reject reasons
-    #     - top-scoring candidates (pre-selection) + winner summary
-    # Non-negotiables:
-    #   - additive only; no behavior changes to selection
-    #   - uses existing FIX16 gates; does not bypass selector
-    # Scope:
-    #   Only for the new EV-charger keys introduced in FIX2U/FIX2V.
-    _fix2y_targets = set([
-        "global_ev_chargers_2040__unit_count",
-        "global_ev_chargers_cagr_2026_2040__percent",
-    ])
-    _fix2y_autopsy = {}
-    try:
-        # Make FIX2W eval sampler safe: some branches refer to extracted_candidates.
-        extracted_candidates = candidates  # noqa: F841
-    except Exception:
-        pass
-
-    def _fix2y_gate_reason(_c: dict, _spec: dict, _ck: str) -> str:
-        try:
-            if not isinstance(_c, dict):
-                return "non_dict_candidate"
-            # fix15 junk/year-only exclusion (if present)
-            _fn = globals().get("_candidate_disallowed_for_metric")
-            if callable(_fn):
-                try:
-                    if _fn(_c, dict(_spec or {}, canonical_key=_ck)):
-                        return "fix15_disallowed"
-                except Exception:
-                    return "fix15_disallowed_err"
-            try:
-                _expected_dim = _fix16_expected_dimension(_spec)
-            except Exception:
-                pass
-                _expected_dim = ""
-            try:
-                if not _fix16_unit_compatible(_c, _expected_dim):
-                    return "unit_incompatible"
-            except Exception:
-                pass
-                # if unit compatibility check fails, treat as incompatible for diagnosis only
-                return "unit_incompatible_err"
-            # year-token guard (unitless year-like numerics)
-            try:
-                if not _fix16_metric_is_year_like(_spec, canonical_key=_ck):
-                    _v = _c.get("value") if _c.get("value") is not None else _c.get("value_norm")
-                    _u = (str(_c.get("base_unit") or _c.get("unit") or "")).strip()
-                    if _u == "" and isinstance(_v, (int, float)):
-                        _iv = int(_v)
-                        if 1900 <= _iv <= 2100:
-                            return "unitless_year_guard"
-            except Exception:
-                return "ok"
-        except Exception:
-            return "gate_reason_err"
-
-    def _fix2y_score_hits(_c: dict, _kw_norm: list) -> int:
-        try:
-            ctx = _norm(_c.get("context_snippet") or _c.get("context") or _c.get("context_window") or "")
-            raw = _norm(_c.get("raw") or "")
-            _hits = 0
-            for _k in (_kw_norm or []):
-                if _k and (_k in ctx or _k in raw):
-                    _hits += 1
-            return int(_hits)
-        except Exception:
-            return 0
-
-    # We'll populate _fix2y_autopsy inside the schema loop when the key matches.
-
-    try:
-        _eval_samples = []
-        _eligible_but_unbound = 0
-        if isinstance(extracted_candidates, list):
-            for _c in extracted_candidates:
-                if not isinstance(_c, dict):
-                    continue
-                _is_inj = False
-                try:
-                    _is_inj = bool(_ph2b_norm_url(_c.get("source_url") or "") in _fix2v_injected_norm_set)
-                except Exception:
-                    pass
-                    _is_inj = False
-                if not _is_inj:
-                    continue
-
-                _raw = str(_c.get("context_snippet") or _c.get("snippet") or _c.get("raw") or "")
-                _raw_l = _raw.lower()
-                if ("charg" not in _raw_l) and ("cagr" not in _raw_l) and ("compound annual" not in _raw_l) and ("2040" not in _raw_l):
-                    continue
-
-                has_charging = (("charging infrastructure" in _raw_l) or ("ev charging" in _raw_l) or ("charger" in _raw_l) or ("chargers" in _raw_l))
-                has_global = (("global" in _raw_l) or ("worldwide" in _raw_l))
-                has_2040 = ("2040" in _raw_l) or (str(_c.get("year") or "") == "2040")
-                has_2026 = ("2026" in _raw_l) or (str(_c.get("year") or "") == "2026")
-                has_cagr = (("cagr" in _raw_l) or ("compound annual growth rate" in _raw_l))
-                u_l = str(_c.get("unit") or _c.get("unit_tag") or _c.get("unit_norm") or "").lower()
-                has_percent = ("%" in _raw_l) or ("%" in u_l) or ("percent" in u_l) or ("percent" in _raw_l)
-                has_magnitude_m = (" million" in _raw_l) or (u_l.strip() in ("m", "mn", "million", "mio")) or (str(_c.get("unit") or "").strip() == "M")
-
-                predicted = "none"
-                if has_charging and has_global and has_2040 and (not has_percent) and has_magnitude_m:
-                    predicted = "count_2040"
-                if has_cagr and has_2026 and has_2040 and has_percent:
-                    predicted = "cagr_2026_2040"
-
-                bound_key = str(_c.get("fix2v_force_canonical_key") or "")
-                if predicted != "none" and not bound_key:
-                    _eligible_but_unbound += 1
-
-                _eval_samples.append({
-                    "source_url": _c.get("source_url"),
-                    "source_url_norm": _ph2b_norm_url(_c.get("source_url") or ""),
-                    "value_norm": _c.get("value_norm") if isinstance(_c.get("value_norm"), (int, float)) else _c.get("value"),
-                    "unit": _c.get("unit") or _c.get("unit_tag"),
-                    "has_charging": bool(has_charging),
-                    "has_global": bool(has_global),
-                    "has_2040": bool(has_2040),
-                    "has_2026": bool(has_2026),
-                    "has_cagr": bool(has_cagr),
-                    "has_percent": bool(has_percent),
-                    "has_magnitude_m": bool(has_magnitude_m),
-                    "predicted_rule": predicted,
-                    "bound_key": bound_key or None,
-                })
-                if len(_eval_samples) >= 200:
-                    break
-
-        if isinstance(web_context, dict):
-            web_context.setdefault("fix2v_candidate_binding_v1", {})
-            web_context["fix2v_candidate_binding_v1"]["rule_eval_samples"] = _eval_samples
-            web_context["fix2v_candidate_binding_v1"]["eligible_but_unbound_count"] = int(_eligible_but_unbound)
-    except Exception:
-        pass
-
-    #   - Deterministically synthesize schema-bound candidates from extracted_numbers
-    #   - Injected-only (domain-agnostic): only candidates proven from injected URL set
-    #   - No fuzzy matching: exact substring keyword hits + unit-family compatibility
-    #   - Does NOT bypass the Analysis canonical selector; it only increases eligible pool
-    try:
-        _fix2z_hits = []
-        _fix2z_added = 0
-        _fix2z_seen = 0
-
-        # Build list of schema keys grouped by unit_family for quick scan
-        _fix2z_schema_percent = []
-        _fix2z_schema_magnitude = []
-        for _k, _spec in (metric_schema or {}).items():
-            if not isinstance(_spec, dict):
-                continue
-            _uf = str(_spec.get("unit_family") or "").lower().strip()
-            if _uf == "percent":
-                _fix2z_schema_percent.append((_k, _spec))
-            elif _uf == "magnitude":
-                _fix2z_schema_magnitude.append((_k, _spec))
-
-        def _fix2z_blob(c: dict) -> str:
-            return " ".join([
-                str(c.get("context_snippet") or ""),
-                str(c.get("label") or ""),
-                str(c.get("raw") or ""),
-                str(c.get("context") or ""),
-            ]).strip()
-
-        def _fix2z_is_injected(c: dict) -> bool:
-            if bool(c.get("_fix2v_source_is_injected")):
-                return True
-            try:
-                u = str(c.get("source_url") or "")
-                u_norm = (_inj_diag_norm_url_list([u])[0] if u else "")
-                return (u_norm in _fix2v_injected_norm_set)
-            except Exception:
-                return False
-
-        def _fix2z_has_percent(c: dict, blob_l: str) -> bool:
-            u = str(c.get("unit_tag") or c.get("unit") or "").lower()
-            if ("%" in u) or ("percent" in u):
-                return True
-            if "%" in (str(c.get("raw") or "")):
-                return True
-            if ("%" in blob_l) or (" percent" in blob_l):
-                return True
-            mk = str(c.get("measure_kind") or "").lower()
-            if "pct" in mk or "percent" in mk:
-                return True
-            return False
-
-        def _fix2z_has_magnitude_m(c: dict, blob_l: str) -> bool:
-            u = str(c.get("unit_tag") or c.get("unit") or "").lower()
-            if u == "m" or "million" in u:
-                return True
-            if " million" in blob_l:
-                return True
-            if str(c.get("unit_tag") or "") == "M":
-                return True
-            return False
-
-        def _fix2z_money_context(blob_l: str) -> bool:
-            # Avoid contaminating count metrics with spend/currency context
-            money_terms = ["$", " usd", "usd ", "billion", "bn", "spend", "investment", "capex", "revenue", "worth"]
-            return any(t in blob_l for t in money_terms)
-
-        def _fix2z_keyword_hits(blob_l: str, keywords) -> int:
-            hits = 0
-            if not isinstance(keywords, list):
-                return 0
-            for kw in keywords:
-                kw_s = str(kw or "").strip().lower()
-                if not kw_s:
-                    continue
-                if kw_s.isdigit():
-                    # year tokens must be present literally
-                    if kw_s in blob_l:
-                        hits += 1
-                    continue
-                if kw_s in blob_l:
-                    hits += 1
-            return hits
-
-        # Scan unbound injected candidates and synthesize schema-bound copies
-        for _c in candidates:
-            if not isinstance(_c, dict):
-                continue
-            if _c.get("fix2v_force_canonical_key"):
-                continue  # already bound by FIX2V
-            if not _fix2z_is_injected(_c):
-                continue  # injected-only admission
-            _fix2z_seen += 1
-
-            _blob = _fix2z_blob(_c)
-            _blob_l = _blob.lower()
-
-            # Quick classify candidate type
-            _is_pct = _fix2z_has_percent(_c, _blob_l)
-            _is_mag = _fix2z_has_percent(_c, _blob_l) is False and _fix2z_has_magnitude_m(_c, _blob_l)
-
-            _best = None
-            _best_hits = -1
-            _best_spec = None
-
-            if _is_pct:
-                for _k, _spec in _fix2z_schema_percent:
-                    _hits = _fix2z_keyword_hits(_blob_l, _spec.get("keywords"))
-                    # Require both boundary years if schema implies a window
-                    if ("2026" in [str(x) for x in (_spec.get("keywords") or [])]) and ("2026" not in _blob_l):
-                        continue
-                    if ("2040" in [str(x) for x in (_spec.get("keywords") or [])]) and ("2040" not in _blob_l):
-                        continue
-                    if _hits > _best_hits:
-                        _best_hits = _hits
-                        _best = _k
-                        _best_spec = _spec
-            elif _is_mag:
-                for _k, _spec in _fix2z_schema_magnitude:
-                    # Do not bind magnitude count keys if money context detected
-                    if str(_spec.get("dimension") or "").lower().strip() == "count":
-                        if _fix2z_money_context(_blob_l):
-                            continue
-                    _hits = _fix2z_keyword_hits(_blob_l, _spec.get("keywords"))
-                    # Ensure 2040 is present if schema expects it
-                    if ("2040" in [str(x) for x in (_spec.get("keywords") or [])]) and ("2040" not in _blob_l):
-                        continue
-                    if _hits > _best_hits:
-                        _best_hits = _hits
-                        _best = _k
-                        _best_spec = _spec
-
-            # Deterministic threshold: require a minimum keyword-hit support
-            if _best and _best_spec and _best_hits >= 4:
-                _c2 = dict(_c)
-                _c2["fix2v_force_canonical_key"] = _best
-                _c2["fix2z_bound_by"] = "schema_keywords"
-                _c2["fix2z_keyword_hits"] = int(_best_hits)
-                # Encourage unit tagging consistency (do not overwrite existing unit tags)
-                try:
-                    if not str(_c2.get("unit_tag") or _c2.get("unit") or "").strip():
-                        if str(_best_spec.get("unit_tag") or "").strip():
-                            _c2["unit_tag"] = str(_best_spec.get("unit_tag"))
-                    if str(_best_spec.get("dimension") or "").strip() and not str(_c2.get("dimension") or "").strip():
-                        _c2["dimension"] = str(_best_spec.get("dimension"))
-                    if str(_best_spec.get("unit_family") or "").strip() and not str(_c2.get("unit_family") or "").strip():
-                        _c2["unit_family"] = str(_best_spec.get("unit_family"))
-                except Exception:
-                    pass
-                candidates.append(_c2)
-                _fix2z_added += 1
-                if len(_fix2z_hits) < 200:
-                    _fix2z_hits.append(dict(
-                        bound_key=_best,
-                        keyword_hits=int(_best_hits),
-                        value=_c.get("value_norm") or _c.get("value"),
-                        unit=_c.get("unit_tag") or _c.get("unit"),
-                        source_url=_c.get("source_url"),
-                        anchor_hash=_c.get("anchor_hash"),
-                    ))
-
-        if isinstance(web_context, dict):
-            web_context.setdefault("fix2z_schema_binding_admission_v1", {})
-            web_context["fix2z_schema_binding_admission_v1"]["seen_injected_unbound"] = int(_fix2z_seen)
-            web_context["fix2z_schema_binding_admission_v1"]["synth_candidates_added"] = int(_fix2z_added)
-            web_context["fix2z_schema_binding_admission_v1"]["hits"] = _fix2z_hits
-    except Exception:
-        pass
-
-    def _norm(s: str) -> str:
-        return re.sub(r"[^a-z0-9]+", " ", (s or "").lower()).strip()
-
-    def _cand_sort_key(c: dict):
-        try:
-            return (
-                str(c.get("anchor_hash") or ""),
-                str(c.get("source_url") or ""),
-                int(c.get("start_idx") or 0),
-                str(c.get("raw") or ""),
-                str(c.get("unit") or ""),
-                float(c.get("value_norm") or 0.0),
-            )
-        except Exception:
-            return ("", "", 0, "", "", 0.0)
-
-    # Deterministic global ordering of candidates
-    candidates.sort(key=_cand_sort_key)
-
-    rebuilt = {}
-
-    for canonical_key, sch in metric_schema.items():
-        if not isinstance(sch, dict):
-            continue
-
-        spec = dict(sch)
-        spec.setdefault("canonical_key", canonical_key)
-        spec.setdefault("name", sch.get("name") or canonical_key)
-
-        metric_is_year_like = _fix16_metric_is_year_like(spec, canonical_key=canonical_key)
-
-        keywords = sch.get("keywords") or sch.get("keyword_hints") or []
-        if isinstance(keywords, str):
-            keywords = [keywords]
-        keywords = _fix16_prune_year_keywords(list(keywords), metric_is_year_like)
-        kw_norm = [_norm(k) for k in keywords if k]
-
-        expected_dim = _fix16_expected_dimension(spec)
-
-
-        if canonical_key in _fix2y_targets:
-            try:
-                _a = {
-                    "canonical_key": canonical_key,
-                    "schema_expected_dim": expected_dim,
-                    "keywords": list(keywords) if isinstance(keywords, list) else [],
-                    "kw_norm_count": int(len(kw_norm)) if isinstance(kw_norm, list) else 0,
-                    "pool_total": int(len(candidates)) if isinstance(candidates, list) else 0,
-                    "pool_force_filtered": 0,
-                    "eligible_count": 0,
-                    "rejected_count": 0,
-                    "reject_reasons": {},
-                    "reject_samples": [],
-                    "top_candidates": [],
-                    "winner": {},
-                }
-
-                _force_pool = []
-                for _c0 in (candidates or []):
-                    if not isinstance(_c0, dict):
-                        continue
-                    _fk0 = _c0.get("fix2v_force_canonical_key")
-                    if _fk0 and _fk0 != canonical_key:
-                        continue
-                    _force_pool.append(_c0)
-                _a["pool_force_filtered"] = int(len(_force_pool))
-
-                _eligible = []
-                for _c1 in _force_pool:
-                    _gr = _fix2y_gate_reason(_c1, spec, canonical_key)
-                    if _gr == "ok" and _fix16_candidate_allowed(_c1, spec, canonical_key=canonical_key):
-                        _eligible.append(_c1)
-                    else:
-                        _a["rejected_count"] += 1
-                        _a["reject_reasons"][_gr] = int(_a["reject_reasons"].get(_gr, 0)) + 1
-                        if len(_a["reject_samples"]) < 25:
-                            _a["reject_samples"].append({
-                                "reason": _gr,
-                                "value_norm": _c1.get("value_norm") if isinstance(_c1.get("value_norm"), (int, float)) else _c1.get("value"),
-                                "unit": _c1.get("unit") or _c1.get("unit_tag") or "",
-                                "source_url": _c1.get("source_url") or "",
-                                "anchor_hash": _c1.get("anchor_hash") or "",
-                                "raw_head": (str(_c1.get("raw") or "")[:120]),
-                            })
-
-                _a["eligible_count"] = int(len(_eligible))
-
-                # Rank preview: top candidates by keyword hits then FIX16 sort key
-                _ranked = []
-                for _c2 in _eligible:
-                    _hits2 = _fix2y_score_hits(_c2, kw_norm)
-                    _ranked.append((_hits2, _cand_sort_key(_c2), _c2))
-                _ranked.sort(key=lambda t: (-int(t[0]), t[1]))
-                for _hits2, _sk2, _c2 in _ranked[:10]:
-                    _a["top_candidates"].append({
-                        "hits": int(_hits2),
-                        "value_norm": _c2.get("value_norm") if isinstance(_c2.get("value_norm"), (int, float)) else _c2.get("value"),
-                        "unit": _c2.get("unit") or _c2.get("unit_tag") or "",
-                        "source_url": _c2.get("source_url") or "",
-                        "anchor_hash": _c2.get("anchor_hash") or "",
-                        "raw_head": (str(_c2.get("raw") or "")[:160]),
-                    })
-
-                _fix2y_autopsy[canonical_key] = _a
-            except Exception:
-                pass
-
-        best = None
-        best_tie = None
-
-        for c in candidates:
-            # FIX2V: if candidate is force-bound to a specific canonical slot, only allow it to compete there
-            _fk = c.get("fix2v_force_canonical_key")
-            if _fk and _fk != canonical_key:
-                continue
-
-            # FIX16 hard eligibility gates
-            if not _fix16_candidate_allowed(c, spec, canonical_key=canonical_key):
-                continue
-
-            try:
-                _ok_u, _why_u = _fix2d2u_semantic_eligible(c, spec, canonical_key)
-                if not _ok_u:
-                    continue
-            except Exception:
-                pass
-
-            try:
-                _ok_u, _why_u = _fix2d2u_semantic_eligible(c, spec, canonical_key)
-                if not _ok_u:
-                    continue
-            except Exception:
-                pass
-
-            # FIX2D2R: forbid bare-year tokens when a better sibling exists nearby (parity guard)
-            try:
-                _ek = 'other'
-                _ed = (expected_dim or '').lower().strip()
-                if canonical_key.endswith('__percent') or _ed == 'percent':
-                    _ek = 'percent'
-                elif canonical_key.endswith('__currency') or _ed == 'currency':
-                    _ek = 'currency'
-                elif canonical_key.endswith('__unit_sales') or 'unit' in canonical_key.lower() or 'sales' in canonical_key.lower():
-                    _ek = 'unit'
-                elif canonical_key.endswith('__year') or 'year' in _ed:
-                    _ek = 'year'
-
-                if _ek != 'year' and _fix2d2r_is_bare_year_cand(c) and not str(c.get('unit') or c.get('unit_tag') or '').strip():
-                    if _fix2d2r_has_better_sibling(c, candidates, _ek):
-                        continue
-            except Exception:
-                pass
-
-            # keyword relevance
-            ctx = _norm(c.get("context_snippet") or c.get("context") or c.get("context_window") or "")
-            raw = _norm(c.get("raw") or "")
-
-            hits = 0
-            for k in kw_norm:
-                if k and (k in ctx or k in raw):
-                    hits += 1
-
-            # If there are no keyword hits at all, keep as weak fallback only if unit family matches strongly
-            # but do not select zero-hit candidates over hit candidates.
-            spec_unit_u = str((spec or {}).get('unit') or (spec or {}).get('unit_tag') or '').strip().upper()
-            inj_rank = 0 if bool(c.get('injected', False)) else 1
-            seed_rank = 0 if bool(c.get('seeded', False)) else 1
-            unit_rank = 0
-            if spec_unit_u == 'M':
-                cand_unit_u = str(c.get('unit') or c.get('unit_tag') or '').strip().upper()
-                if cand_unit_u != 'M':
-                    unit_rank = 1
-            # Prefer injected > seeded > unit-tag match > keyword hits
-            tie = (inj_rank, seed_rank, unit_rank, -hits) + _cand_sort_key(c)
-            if best is None or tie < best_tie:
-                best = c
-                best_tie = tie
-
-        if not isinstance(best, dict):
-            continue
-
-        # Require at least one keyword hit unless the schema has no keywords
-        if kw_norm:
-            if best_tie is not None and isinstance(best_tie, tuple):
-                try:
-                    if (-best_tie[0]) <= 0:
-                        continue
-                except Exception:
-                    pass
-
-        rebuilt[canonical_key] = {
-            "canonical_key": canonical_key,
-            "name": spec.get("name") or canonical_key,
-            "value": best.get("value"),
-            "unit": best.get("unit") or "",
-            "value_norm": best.get("value_norm"),
-            "source_url": best.get("source_url") or "",
-            "anchor_hash": best.get("anchor_hash") or "",
-            "evidence": [{
-                "source_url": best.get("source_url") or "",
-                "raw": best.get("raw") or "",
-                "context_snippet": (best.get("context_snippet") or best.get("context") or best.get("context_window") or "")[:400],
-                "anchor_hash": best.get("anchor_hash") or "",
-                "method": "schema_only_rebuild_fix16",
-            }],
-            "anchor_used": False,
-        }
-
-    return rebuilt
-
-
-# - Keep names identical so evolution uses these as the LAST definitions
-# - We expose both functions while preserving older ones for reference
-
-
-# Goal:
-#   - Provide exactly ONE authoritative selector for dashboard-facing "Current"
-#   - Treat candidate.value_norm as schema units (no base-unit assumption)
-#   - Deterministic tie-breaks; NO IO; NO re-fetch; NO hashing changes
-#
-# Notes:
-#   - This is a single-metric selector. Batch rebuild helpers may call it.
-#   - Reuses FIX16 hard eligibility gates (_fix16_candidate_allowed) + FIX16 scoring.
-#   - Adds optional preferred/anchor lock when anchors are present (stays in preferred source).
-
 def _ph2b_norm_url(url: str) -> str:
     try:
         fn = globals().get("_normalize_url")
@@ -29923,81 +29188,70 @@ def _refactor28_schema_only_rebuild_authoritative_v1(
     return out
 
 
-# REFACTOR28: define the authoritative FIX16 schema-only wrapper directly on top of the authoritative base.
-try:
-    _refactor28__schema_only_wrapped = globals().get("_refactor28__schema_only_wrapped", False)
-except Exception:
-    _refactor28__schema_only_wrapped = False
+# REFACTOR28: authoritative FIX16 schema-only wrapper (single definition; guard/duplicates removed in REFACTOR158).
+def rebuild_metrics_from_snapshots_schema_only_fix16(prev_response, snapshot_pool, web_context=None):
+    """Authoritative schema-only rebuild wrapper (REFACTOR28).
 
-if not _refactor28__schema_only_wrapped:
-    def rebuild_metrics_from_snapshots_schema_only_fix16(prev_response, snapshot_pool, web_context=None):  # noqa: F811
-        """Authoritative schema-only rebuild wrapper (REFACTOR28).
-
-        Contract:
-          - Deterministic selection from baseline snapshots (no re-fetch).
-          - Preserves percent-year poisoning sanitization for percent keys.
-          - Ensures currency date-fragment candidates (e.g., 'July 01, 2025') are not eligible.
-        """
+    Contract:
+      - Deterministic selection from baseline snapshots (no re-fetch).
+      - Preserves percent-year poisoning sanitization for percent keys.
+      - Ensures currency date-fragment candidates (e.g., 'July 01, 2025') are not eligible.
+    """
+    rebuilt = {}
+    try:
+        rebuilt = _refactor28_schema_only_rebuild_authoritative_v1(prev_response, snapshot_pool, web_context=web_context)
+    except Exception:
         rebuilt = {}
-        try:
-            rebuilt = _refactor28_schema_only_rebuild_authoritative_v1(prev_response, snapshot_pool, web_context=web_context)
-        except Exception:
-            rebuilt = {}
 
-        # Preserve FIX2D86 sanitization: percent keys must not bind to bare year tokens.
-        try:
-            schema = {}
-            if isinstance(prev_response, dict):
-                schema = prev_response.get("metric_schema_frozen") or (prev_response.get("results") or {}).get("metric_schema_frozen") or {}
-            if isinstance(rebuilt, dict) and rebuilt:
-                rebuilt2, _sdbg = _fix2d86_sanitize_pmc_percent_year_tokens_v1(
-                    pmc=rebuilt,
-                    metric_schema_frozen=schema if isinstance(schema, dict) else {},
-                    label="schema_only_rebuild_refactor28_final",
-                )
-                rebuilt = rebuilt2
-
-                # Preserve FIX2D82: percent keys must also have strong percent evidence (token/unit).
-                try:
-                    fn82 = globals().get("_fix2d82_sanitize_pmc_percent_keys_v2")
-                    if callable(fn82) and isinstance(rebuilt, dict) and rebuilt:
-                        rebuilt3, sdbg2 = fn82(rebuilt, metric_schema_frozen=schema if isinstance(schema, dict) else {}, label="schema_only_rebuild_fix16")
-                        if isinstance(rebuilt3, dict):
-                            rebuilt = rebuilt3
-                        try:
-                            if isinstance(prev_response, dict):
-                                prev_response.setdefault("debug", {})
-                                if isinstance(prev_response.get("debug"), dict):
-                                    prev_response["debug"]["fix2d82_percent_sanitize_schema_only"] = sdbg2
-                        except Exception:
-                            pass
-                except Exception:
-                    pass
-        except Exception:
-            pass
-
-        return rebuilt
-
+    # Preserve FIX2D86 sanitization: percent keys must not bind to bare year tokens.
     try:
-        rebuild_metrics_from_snapshots_schema_only_fix16._fix2d86_wrapped = True  # type: ignore[attr-defined]
-        rebuild_metrics_from_snapshots_schema_only_fix16._refactor28_authoritative = True  # type: ignore[attr-defined]
+        schema = {}
+        if isinstance(prev_response, dict):
+            schema = prev_response.get("metric_schema_frozen") or (prev_response.get("results") or {}).get("metric_schema_frozen") or {}
+        if isinstance(rebuilt, dict) and rebuilt:
+            rebuilt2, _sdbg = _fix2d86_sanitize_pmc_percent_year_tokens_v1(
+                pmc=rebuilt,
+                metric_schema_frozen=schema if isinstance(schema, dict) else {},
+                label="schema_only_rebuild_refactor28_final",
+            )
+            rebuilt = rebuilt2
+
+            # Preserve FIX2D82: percent keys must also have strong percent evidence (token/unit).
+            try:
+                fn82 = globals().get("_fix2d82_sanitize_pmc_percent_keys_v2")
+                if callable(fn82) and isinstance(rebuilt, dict) and rebuilt:
+                    rebuilt3, sdbg2 = fn82(rebuilt, metric_schema_frozen=schema if isinstance(schema, dict) else {}, label="schema_only_rebuild_fix16")
+                    if isinstance(rebuilt3, dict):
+                        rebuilt = rebuilt3
+                    try:
+                        if isinstance(prev_response, dict):
+                            prev_response.setdefault("debug", {})
+                            if isinstance(prev_response.get("debug"), dict):
+                                prev_response["debug"]["fix2d82_percent_sanitize_schema_only"] = sdbg2
+                    except Exception:
+                        pass
+            except Exception:
+                pass
     except Exception:
         pass
 
-    # Rebind canonical symbol names to the authoritative wrapper.
-    try:
-        globals()["rebuild_metrics_from_snapshots_schema_only_fix16"] = rebuild_metrics_from_snapshots_schema_only_fix16
-    except Exception:
-        pass
-    try:
-        globals()["rebuild_metrics_from_snapshots_schema_only"] = rebuild_metrics_from_snapshots_schema_only_fix16
-    except Exception:
-        pass
+    return rebuilt
 
-    try:
-        globals()["_refactor28__schema_only_wrapped"] = True
-    except Exception:
-        pass
+try:
+    rebuild_metrics_from_snapshots_schema_only_fix16._fix2d86_wrapped = True  # type: ignore[attr-defined]
+    rebuild_metrics_from_snapshots_schema_only_fix16._refactor28_authoritative = True  # type: ignore[attr-defined]
+except Exception:
+    pass
+
+# Preserve legacy dispatch: schema-only entrypoint resolves to FIX16 wrapper.
+try:
+    globals()["rebuild_metrics_from_snapshots_schema_only_fix16"] = rebuild_metrics_from_snapshots_schema_only_fix16
+except Exception:
+    pass
+try:
+    globals()["rebuild_metrics_from_snapshots_schema_only"] = rebuild_metrics_from_snapshots_schema_only_fix16
+except Exception:
+    pass
 
 # REFACTOR37 patch tracker
 # REFACTOR38 patch tracker
