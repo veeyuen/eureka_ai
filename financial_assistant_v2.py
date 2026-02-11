@@ -104,7 +104,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "REFACTOR163"
+_YUREEKA_CODE_VERSION_LOCK = "REFACTOR164"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 
 # REFACTOR129: run-level beacons (reset per evolution run)
@@ -125,6 +125,21 @@ FORCE_LATEST_PREV_SNAPSHOT_V1 = True
 # - Registers a canonical entries list idempotently at import time.
 
 _PATCH_TRACKER_CANONICAL_ENTRIES_V1 = [
+{
+    'patch_id': 'REFACTOR164',
+    'date': '2026-02-11',
+    'summary': 'Controlled downsizing (compat cleanup): remove redundant metric_changes_v2 output field + mirroring logic; metric_changes remains the single authoritative diff-row feed. No diff behavior change intended.',
+    'notes': [
+        'Stop exporting results.metric_changes_v2 (it duplicated results.metric_changes in triad outputs).',
+        'Remove/trim compatibility bridges that mirrored/stamped both metric_changes and metric_changes_v2; row Δt gating now stamps metric_changes only.',
+        'Keep build_diff_metrics_panel_v2__rows_refactor47 and canonical-first diff join engine unchanged; metric_changes continues to carry those V2 rows.',
+        'No changes to schema-frozen keys, strict unit comparability, snapshot selection/rehydration, Evolution recompute/diff path, injection override behavior, Δt gating semantics (prod populated, injection blank), or SerpAPI plumbing.',
+    ],
+    'files': ['REFACTOR164.py'],
+    'supersedes': ['REFACTOR163'],
+    'acceptance_notes': 'Expected triad-stable: prod stability 100% (4/4 unchanged), injection overrides preserved, Δt gating intact (prod populated, injection blank). Output is smaller due to removal of redundant metric_changes_v2.',
+},
+
 {
     'patch_id': 'REFACTOR163',
     'date': '2026-02-11',
@@ -414,7 +429,7 @@ def _yureeka_authority_manifest_v1() -> dict:
             "build_diff_metrics_panel_v2",
             "diff_metrics_by_name",
             "_refactor09_diff_metrics_by_name",
-            "metric_changes_v2",
+
         ]
     except Exception:
         keys = []
@@ -5363,7 +5378,6 @@ def _refactor116_apply_effective_timing_and_row_deltas_v1(evo_obj: Any, previous
                     gating["production_rows_with_delta"] += 1
 
         _stamp(res.get("metric_changes"))
-        _stamp(res.get("metric_changes_v2"))
 
         dbg["row_delta_gating_v3"] = dict(gating)
         dbg["row_delta_gating_v4"] = dict(gating)
@@ -11349,16 +11363,17 @@ def _yureeka_humanize_seconds_v1(delta_seconds) -> str:
 
 def _refactor13_get_metric_change_rows_v1(out: dict):
     """
-    Prefer V2 rows if available; fallback to legacy metric_changes.
+    Return canonical-first diff rows.
+    Prefer metric_changes; fallback to metric_changes_v2 for backwards compatibility.
     Returned list is safe (always list).
     """
     try:
         if isinstance(out, dict):
-            rows = out.get("metric_changes_v2")
-            if isinstance(rows, list) and rows:
-                return rows
             rows = out.get("metric_changes")
             if isinstance(rows, list):
+                return rows
+            rows = out.get("metric_changes_v2")
+            if isinstance(rows, list) and rows:
                 return rows
     except Exception:
         pass
@@ -19420,7 +19435,7 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
 
         # If rows were already computed earlier in this function, preserve them.
         try:
-            _existing = output.get("metric_changes_v2")
+            _existing = output.get("metric_changes")
             if isinstance(_existing, list) and _existing:
                 _diff_v2_rows = _existing
                 _diff_v2_summary = None
@@ -19568,12 +19583,6 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
 
         except Exception:
             _diff_v2_rows, _diff_v2_summary = ([], None)
-
-    # Persist V2 artifacts for auditability
-    try:
-        output["metric_changes_v2"] = _diff_v2_rows or []
-    except Exception:
-        pass
     try:
         if isinstance(_diff_v2_summary, dict):
             _dbg = output.setdefault("debug", {})
@@ -19595,7 +19604,7 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
 
     output["metric_changes"] = metric_changes or []
     # REFACTOR68: recompute summary + stability from the final canonical-first diff rows.
-    # This prevents stale 0 counters (and stability=0) when we swap the UI feed to metric_changes_v2.
+    # This prevents stale 0 counters (and stability=0) when we swap the UI feed to canonical-first diff rows.
     try:
         _refactor13_recompute_summary_and_stability_v1(output)
     except Exception:
@@ -20593,16 +20602,15 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
         pass
     # END REFACTOR66
 
-
-    # REFACTOR70: Metric-changes + stability output bridge (safety rail)
+    # REFACTOR70 (trimmed REFACTOR164): Metric-changes + stability output bridge (safety rail)
     #
     # Why:
     # - During controlled downsizing, minor nesting changes can cause the UI/export
     #   path to miss the authoritative metric_changes list.
     #
-    # What:
+    # What (REFACTOR164):
     # - Enforce a single authoritative metric_changes list at output["metric_changes"].
-    # - Mirror to output["metric_changes_v2"] for compatibility.
+    # - Do NOT export metric_changes_v2 (it was redundant and doubled payload size).
     # - Mirror stability_score to top-level when present.
     # - Never emit metric_changes_legacy.
     try:
@@ -20610,34 +20618,46 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
             _mc = None
             if isinstance(output.get("metric_changes"), list):
                 _mc = output.get("metric_changes")
-            elif isinstance(output.get("metric_changes_v2"), list):
-                _mc = output.get("metric_changes_v2")
             else:
                 _r = output.get("results")
-                if isinstance(_r, dict):
-                    if isinstance(_r.get("metric_changes"), list):
-                        _mc = _r.get("metric_changes")
-                    elif isinstance(_r.get("metric_changes_v2"), list):
-                        _mc = _r.get("metric_changes_v2")
+                if isinstance(_r, dict) and isinstance(_r.get("metric_changes"), list):
+                    _mc = _r.get("metric_changes")
             if _mc is None:
                 _mc = []
-            # Ensure lists, and make metric_changes authoritative
             if not isinstance(_mc, list):
                 try:
                     _mc = list(_mc)
                 except Exception:
                     _mc = []
             output["metric_changes"] = _mc
-            output["metric_changes_v2"] = _mc
 
-            # Hard-remove legacy feed
+            # Remove redundant/legacy feeds if present
+            output.pop("metric_changes_v2", None)
             output.pop("metric_changes_legacy", None)
             try:
                 _r = output.get("results")
                 if isinstance(_r, dict):
+                    _r.pop("metric_changes_v2", None)
                     _r.pop("metric_changes_legacy", None)
             except Exception:
                 pass
+
+            # Stability score mirror (clamped to [0, 100])
+            _ss = None
+            if isinstance(output.get("stability_score"), (int, float)):
+                _ss = float(output.get("stability_score"))
+            else:
+                _r = output.get("results")
+                if isinstance(_r, dict) and isinstance(_r.get("stability_score"), (int, float)):
+                    _ss = float(_r.get("stability_score"))
+            if _ss is not None:
+                if _ss < 0:
+                    _ss = 0.0
+                if _ss > 100:
+                    _ss = 100.0
+                output["stability_score"] = round(_ss, 1)
+    except Exception:
+        pass
 
             # Stability score mirror (clamped to [0, 100])
             _ss = None
@@ -20764,8 +20784,8 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
         }
         # REFACTOR74: Diff row count vs schema size (completeness-first invariant)
         _rows_for_cnt = output.get("metric_changes")
-        if not isinstance(_rows_for_cnt, list) or not _rows_for_cnt:
-            _rows_for_cnt = output.get("metric_changes_v2")
+        if not isinstance(_rows_for_cnt, list):
+            _rows_for_cnt = []
         _row_count = int(len(_rows_for_cnt)) if isinstance(_rows_for_cnt, list) else 0
         _expected_rows = int(len(_schema_keys)) if _schema_keys else 0
         try:
@@ -24077,49 +24097,10 @@ def main():
                                     except Exception:
                                         pass
 
-                    # REFACTOR30: avoid double-counting by applying delta stamping once, then propagating
-                    _rows_a = results.get("metric_changes")
-                    _rows_b = results.get("metric_changes_v2")
-                    _primary_rows = _rows_a if isinstance(_rows_a, list) and _rows_a else (_rows_b if isinstance(_rows_b, list) else None)
-
-                    # If metric_changes is missing/empty but v2 exists, alias metric_changes to v2 (UI reads metric_changes).
-                    try:
-                        if isinstance(results, dict) and isinstance(_primary_rows, list):
-                            if (not isinstance(_rows_a, list)) or (len(_rows_a) == 0):
-                                results["metric_changes"] = _primary_rows
-                            if (not isinstance(_rows_b, list)) or (len(_rows_b) == 0):
-                                results["metric_changes_v2"] = _primary_rows
-                    except Exception:
-                        pass
-
+                    # REFACTOR164: metric_changes is the single authoritative diff-row feed.
+                    _primary_rows = results.get("metric_changes")
                     if isinstance(_primary_rows, list):
                         _apply_delta_to_rows(_primary_rows)
-
-                    # Propagate delta fields to the other list (best-effort), keyed by canonical_key
-                    try:
-                        _rows_a2 = results.get("metric_changes")
-                        _rows_b2 = results.get("metric_changes_v2")
-                        if isinstance(_rows_a2, list) and isinstance(_rows_b2, list) and (_rows_a2 is not _rows_b2) and isinstance(_primary_rows, list):
-                            _map = {}
-                            for _pr in _primary_rows:
-                                if isinstance(_pr, dict):
-                                    _ck = _pr.get("canonical_key")
-                                    if isinstance(_ck, str) and _ck and _ck not in _map:
-                                        _map[_ck] = _pr
-                            _secondary = _rows_b2 if _primary_rows is _rows_a2 else _rows_a2
-                            for _sr in _secondary:
-                                if not isinstance(_sr, dict):
-                                    continue
-                                _ck2 = _sr.get("canonical_key")
-                                _src = _map.get(_ck2) if isinstance(_ck2, str) else None
-                                if isinstance(_src, dict):
-                                    _sr["analysis_evolution_delta_human"] = _src.get("analysis_evolution_delta_human") or ""
-                                    _sr["analysis_evolution_delta_seconds"] = _src.get("analysis_evolution_delta_seconds")
-                                else:
-                                    _sr.setdefault("analysis_evolution_delta_human", "")
-                                    _sr.setdefault("analysis_evolution_delta_seconds", None)
-                    except Exception:
-                        pass
 
 
                     # Harness / invariants (soft assertions + diagnostics)
