@@ -104,7 +104,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "REFACTOR168"
+_YUREEKA_CODE_VERSION_LOCK = "REFACTOR169"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 
 # REFACTOR129: run-level beacons (reset per evolution run)
@@ -125,6 +125,18 @@ FORCE_LATEST_PREV_SNAPSHOT_V1 = True
 # - Registers a canonical entries list idempotently at import time.
 
 _PATCH_TRACKER_CANONICAL_ENTRIES_V1 = [
+{
+    'patch_id': 'REFACTOR169',
+    'date': '2026-02-11',
+    'summary': 'Controlled downsizing: prune three unused top-level helpers (_es_hash_text, _es_build_candidate_index_deterministic, _fix2d2u_semantic_eligible_global). No intended changes to triad mechanics, schema-frozen keys, strict comparability, injection overrides, snapshot selection/rehydration, SerpAPI plumbing, or Δt gating.',
+    'notes': [
+        'Remove _es_hash_text and _es_build_candidate_index_deterministic: vestigial deterministic anchor_hash candidate-index builders; not referenced in current code path.',
+        'Remove _fix2d2u_semantic_eligible_global: unused wrapper variant; eligibility gating continues via _fix2d2u_semantic_eligible.',
+        'No other logic modified.'
+    ],
+    'files': ['REFACTOR169.py'],
+    'supersedes': ['REFACTOR168']
+},
 {
     'patch_id': 'REFACTOR168',
     'date': '2026-02-11',
@@ -1140,12 +1152,6 @@ _fix2af_last_scrape_ledger = {}
 # - Lightweight schema + universe hashing for convergence checks
 # - One-button end-state validation harness (callable)
 # NOTE: Additive only; existing logic remains intact.
-def _es_hash_text(s: str) -> str:
-    try:
-        return hashlib.sha256((s or "").encode("utf-8")).hexdigest()
-    except Exception:
-        return ""
-
 def _es_stable_sort_key(v):
     """
     Deterministic sort key that never relies on Python's randomized hash().
@@ -1178,79 +1184,6 @@ def _es_stable_sort_key(v):
 
 
 
-def _es_build_candidate_index_deterministic(baseline_sources_cache):
-    """
-    Deterministically build anchor_hash -> candidate map.
-    If multiple candidates share the same anchor_hash, choose the best by a stable
-    tie-breaker that prefers:
-      - higher anchor_confidence
-      - longer context_snippet (more evidence)
-      - stable context_hash / numeric value / unit
-      - stable source_url
-    """
-    try:
-        buckets = {}
-        for sr in (baseline_sources_cache or []):
-            if not isinstance(sr, dict):
-                continue
-            su = sr.get("source_url") or sr.get("url") or ""
-            for cand in (sr.get("extracted_numbers") or []):
-                if not isinstance(cand, dict):
-                    continue
-                ah = cand.get("anchor_hash") or cand.get("anchor") or ""
-                if not ah:
-                    continue
-                c2 = dict(cand)
-                if "source_url" not in c2:
-                    c2["source_url"] = su
-                buckets.setdefault(ah, []).append(c2)
-
-        out = {}
-        for ah in sorted(buckets.keys()):
-            cands = buckets.get(ah) or []
-            def _cand_key(c):
-                try:
-                    conf = c.get("anchor_confidence")
-                    conf_key = -(float(conf) if conf is not None else 0.0)
-                except Exception:
-                    pass
-                    conf_key = 0.0
-                ctx = (c.get("context_snippet") or c.get("context") or "")
-                ctx_len = -len(str(ctx))
-                ctx_hash = c.get("context_hash") or ""
-                val = c.get("value")
-                unit = c.get("unit") or ""
-            # Reject bare-year tokens for non-year metrics when there is no token unit evidence.
-            if expected_kind != "year":
-                raw_token = (c.get("raw") or "").strip()
-                if _fix27_is_bare_year_token(raw_token, c.get("value_norm")) and not _fix27_has_any_unit_evidence(c):
-                    continue
-            # Typed metrics require explicit token-level unit evidence
-            if expected_kind == "currency" and not _fix27_has_currency_evidence(c):
-                continue
-            if expected_kind == "percent" and not _fix27_has_percent_evidence(c):
-                continue
-            if expected_kind == "unit" and not _fix27_has_any_unit_evidence(c):
-                continue
-                su = c.get("source_url") or ""
-                return (conf_key, ctx_len, str(ctx_hash), _es_stable_sort_key(val), str(unit), str(su))
-            cands_sorted = sorted(cands, key=_cand_key)
-            out[ah] = cands_sorted[0] if cands_sorted else None
-        return out
-    except Exception:
-        return {}
-
-
-
-# GOOGLE SHEETS HISTORY STORAGE
-
-SCOPES = [
-    "https://www.googleapis.com/auth/spreadsheets",
-    "https://www.googleapis.com/auth/drive",
-]
-MAX_HISTORY_ITEMS = 50
-
-@st.cache_resource
 def get_google_sheet():
     """Connect to Google Sheet (cached connection)"""
     try:
@@ -23969,34 +23902,6 @@ def _fix2d2u_norm_text(s: str) -> str:
 
 
 
-
-def _fix2d2u_semantic_eligible_global(cand: dict, spec: dict, canonical_key: str) -> tuple:
-    """(ok, reason) gate; no-op when no required groups."""
-    try:
-        groups = _fix2d2u_required_token_groups(canonical_key, spec or {})
-        if not groups:
-            return True, ""
-        txt = _fix2d2u_local_text(cand)
-        blob = " ".join([_fix2d2u_norm_text(txt), _fix2d2u_norm_text(str(cand.get("raw") or ""))]).strip()
-        for g in groups:
-            hit=False
-            for tok in g:
-                tn=_fix2d2u_norm_text(tok)
-                if tn and tn in blob:
-                    hit=True
-                    break
-            if not hit:
-                return False, "missing_required_tokens:" + "|".join(g[:3])
-        return True, ""
-    except Exception:
-        return True, ""
-
-
-# commit point using a tight local window around the numeric token.
-# - Prevents cross-metric pollution where a China sales snippet populates
-#   chargers/investment/CAGR schema keys.
-# - Requires canonical-key year tokens to appear locally (if present).
-# - Logs reject counts into web_context.debug.fix2d2v_schema_commit_rejects.
 
 def _fix2d63_is_yearlike_value(cand: dict) -> bool:
     try:
