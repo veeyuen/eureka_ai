@@ -150,7 +150,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "REFACTOR155"
+_YUREEKA_CODE_VERSION_LOCK = "REFACTOR156"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 
 # REFACTOR129: run-level beacons (reset per evolution run)
@@ -171,6 +171,20 @@ FORCE_LATEST_PREV_SNAPSHOT_V1 = True
 # - Registers a canonical entries list idempotently at import time.
 
 _PATCH_TRACKER_CANONICAL_ENTRIES_V1 = [
+    {
+        'patch_id': 'REFACTOR156',
+        'date': '2026-02-11',
+        'summary': 'Controlled downsizing (low-risk): remove unused legacy question-profiling template constants and unused version-marker constants that have zero callsites. No pipeline behavior changes intended; reduces file size and surface area.',
+        'notes': [
+            'Removed unused QUESTION_CATEGORY_TEMPLATES (legacy deterministic categorisation templates).',
+            'Removed unused SIDE_CONNECTOR_PATTERNS (legacy side-question connector regex list).',
+            'Removed unused one-off constants: ENDSTATE_FINAL_VERSION, INJ_TRACE_PATCH_VERSION, LLM_CACHE_TTL_HOURS, CODE_VERSION_INJ_HASH_V1, _URL_RE_FIX2D66.',
+        ],
+        'files': ['REFACTOR156.py'],
+        'supersedes': ['REFACTOR155'],
+        'acceptance_notes': 'Triad stable (prod unchanged; injection overrides preserved); Δt gating intact (prod populated; injection blank); SerpAPI/requests path unchanged; authority manifest targets still present.'
+    },
+
     {
         'patch_id': 'REFACTOR155',
         'date': '2026-02-11',
@@ -1093,8 +1107,6 @@ def _fix2af_ledger_put(ledger: dict, url_raw: str, stage: str, reason: str = "",
 
 _fix2af_last_scrape_ledger = {}
 
-ENDSTATE_FINAL_VERSION = "v7_41_endstate_final_1"
-INJ_TRACE_PATCH_VERSION = "fix41q_inj_trace_v1_always_emit"
 
 # - Deterministic sorting / tie-breaking helpers
 # - Deterministic candidate index builder (anchor_hash -> best candidate)
@@ -5580,7 +5592,6 @@ def cache_search_results(query: str, results: List[Dict]):
 
 # LLM RESPONSE CACHE - Prevents variance on identical inputs
 _llm_cache: Dict[str, Tuple[str, datetime]] = {}
-LLM_CACHE_TTL_HOURS = 24  # Cache LLM responses for 24 hours
 
 def get_llm_cache_key(query: str, web_context: Dict) -> str:
     """Generate cache key from query + source URLs"""
@@ -6311,7 +6322,6 @@ def _inj_diag_hash_inputs_from_bsc(baseline_sources_cache: Any) -> list:
 #   - Does NOT change metric selection (synthetic records have no extracted_numbers).
 #   - Only activates when INCLUDE_INJECTED_URLS_IN_SNAPSHOT_HASH is True.
 INCLUDE_INJECTED_URLS_IN_SNAPSHOT_HASH = False  # ✅ default OFF (locked fastpath safe)
-CODE_VERSION_INJ_HASH_V1 = "fix41r_inj_hash_optional_include"  # additive version marker
 
 def _inj_hash_should_include() -> bool:
     """Single switch for inclusion; additive-only. Supports env override."""
@@ -6422,7 +6432,6 @@ def _inj_hash_add_synthetic_sources(
 # - Promote UI raw/diag fields into web_context['extra_urls'] (the admission input).
 # - Synthesize a minimal web_context['diag_injected_urls'] when fetch_web_context was bypassed.
 # - Pure wiring/diagnostics only: no scraping, no selection changes.
-_URL_RE_FIX2D66 = None
 
 
 
@@ -8555,27 +8564,6 @@ YEAR_PATTERN = re.compile(r'(20\d{2})')
 # DETERMINISTIC QUESTION SIGNALS
 # Drives metric table templates (no LLM)
 
-QUESTION_CATEGORY_TEMPLATES = {
-    "country": [
-        "gdp",
-        "gdp_per_capita",
-        "gdp_growth",
-        "population",
-        "exports",
-        "imports",
-        "inflation",
-        "interest_rate",
-    ],
-    "industry": [
-        "market_size_current",
-        "market_size_projected",
-        "cagr",
-        "revenue",
-        "market_share",
-        "units_sold",
-        "average_price",
-    ],
-}
 
 def get_expected_metric_ids_for_category(category: str) -> List[str]:
     """
@@ -11171,25 +11159,6 @@ def _fmt_currency_first(raw: str, unit: str) -> str:
 # - Optional: spaCy dependency parse (if installed)
 # - Optional: embedding similarity (if sentence-transformers/sklearn installed)
 
-SIDE_CONNECTOR_PATTERNS = [
-    r"\bimpact of\b",
-    r"\beffect of\b",
-    r"\binfluence of\b",
-    r"\brole of\b",
-    r"\bdriven by\b",
-    r"\bcaused by\b",
-    r"\bdue to\b",
-    r"\bincluding\b",
-    r"\bincluding but not limited to\b",
-    r"\bwith a focus on\b",
-    r"\bespecially\b",
-    r"\bnotably\b",
-    r"\bplus\b",
-    r"\bas well as\b",
-    r"\band also\b",
-    r"\bvs\b",
-    r"\bversus\b",
-]
 
 QUESTION_CATEGORIES = {
     "country": {
