@@ -104,7 +104,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "REFACTOR161"
+_YUREEKA_CODE_VERSION_LOCK = "REFACTOR162"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 
 # REFACTOR129: run-level beacons (reset per evolution run)
@@ -125,6 +125,18 @@ FORCE_LATEST_PREV_SNAPSHOT_V1 = True
 # - Registers a canonical entries list idempotently at import time.
 
 _PATCH_TRACKER_CANONICAL_ENTRIES_V1 = [
+{
+    'patch_id': 'REFACTOR162',
+    'date': '2026-02-11',
+    'summary': 'Controlled downsizing (UI-only): remove developer debug expanders from Streamlit UI (tuning summary, per-metric match details, debug info, canonical ID mapping debug). No pipeline behavior changes.',
+    'notes': [
+        'Deleted Streamlit expander blocks: 🧰 Tuning Summary, 🧾 Per-metric match details, 🔧 Debug Information, 🔧 Canonical ID Mapping (Debug).',
+        'No changes to schema-frozen keys, strict unit comparability, snapshot selection/rehydration, Evolution diff path, Δt gating, or SerpAPI plumbing.',
+    ],
+    'files': ['REFACTOR162.py'],
+    'supersedes': ['REFACTOR161'],
+    'acceptance_notes': 'Triad stable: prod stability 100% (4/4 unchanged), injection overrides preserved, Δt gating intact (prod populated, injection blank).',
+},
 {
     'patch_id': 'REFACTOR161',
     'date': '2026-02-11',
@@ -21837,100 +21849,7 @@ def render_source_anchored_results(results, query: str):
                     pass
 
     if agg_rej:
-        with st.expander("🧰 Tuning Summary (aggregate rejects across all metrics)"):
-            st.write(dict(agg_rej.most_common(20)))
-
     # Full per-metric debug
-    with st.expander("🧾 Per-metric match details (debug)"):
-        for i, r in enumerate(rows, 1):
-            if not isinstance(r, dict):
-                continue
-
-            metric_label = r.get("metric") or r.get("name") or f"metric_{i}"
-            status_label = r.get("status") or r.get("change_type") or "unknown"
-
-            canonical_key = r.get("canonical_key", "") or ""
-            stage = r.get("match_stage", "") or ""
-            conf = r.get("match_confidence", None)
-            score = r.get("match_score", None)
-
-            header = f"{i}. {metric_label} — {status_label}"
-            meta_bits = []
-            if canonical_key:
-                meta_bits.append(f"ck={canonical_key}")
-            if stage:
-                meta_bits.append(f"stage={stage}")
-            if conf is not None:
-                meta_bits.append(f"conf={_fmt_pct(conf)}")
-            if score is not None:
-                try:
-                    meta_bits.append(f"score={float(score):.2f}")
-                except Exception:
-                    pass
-                    meta_bits.append(f"score={score}")
-
-            if meta_bits:
-                header += f"  ({' • '.join(meta_bits)})"
-
-            with st.expander(header):
-                # Values
-                st.write({
-                    "previous_value": r.get("previous_value"),
-                    "current_value": r.get("current_value"),
-                    "change_pct": r.get("change_pct"),
-                })
-
-                # Candidate considered / rejects
-                st.write("Candidates considered:", _safe_int(r.get("candidates_considered_count"), 0))
-
-                rej = r.get("rejected_reason_counts")
-                if isinstance(rej, dict) and rej:
-                    # sort largest first
-                    try:
-                        rej_sorted = dict(sorted(((k, int(v or 0)) for k, v in rej.items()), key=lambda x: x[1], reverse=True))
-                    except Exception:
-                        pass
-                        rej_sorted = rej
-                    st.write("Rejected reason counts:", rej_sorted)
-
-                # Score breakdown (if present)
-                sb = r.get("score_breakdown")
-                if isinstance(sb, dict) and sb:
-                    st.write("Score breakdown:", sb)
-
-                # Matched candidate (new)
-                mc = r.get("matched_candidate")
-                if isinstance(mc, dict) and mc:
-                    st.markdown("**Matched candidate**")
-                    st.write({
-                        "raw": mc.get("raw"),
-                        "value": mc.get("value"),
-                        "unit": mc.get("unit"),
-                        "source_url": mc.get("source_url"),
-                        "anchor_hash": mc.get("anchor_hash"),
-                        "is_homepage": mc.get("is_homepage"),
-                        "skip_reason": mc.get("skip_reason"),
-                        "quality_score": mc.get("quality_score"),
-                    })
-                    ctx = mc.get("context_snippet")
-                    if ctx:
-                        st.write("Context:")
-                        st.code(str(ctx))
-                else:
-                    # Backward-compatible fields
-                    src = r.get("matched_source") or r.get("source_url")
-                    ctx = r.get("matched_context") or r.get("context_snippet")
-                    if src:
-                        st.write("Source:", src)
-                    if ctx:
-                        st.write("Context:")
-                        st.code(str(ctx))
-
-                # Additional anchor hash compatibility
-                if r.get("matched_anchor_hash"):
-                    st.write("Matched Anchor Hash:", r.get("matched_anchor_hash"))
-
-
     # REFACTOR137: Restored UI panels from FIX2D88 (render-only; best-effort for evolution payload).
     try:
         _wc = results.get("web_context") if isinstance(results.get("web_context"), dict) else {}
@@ -22991,29 +22910,6 @@ def render_native_comparison(baseline: Dict, compare: Dict):
             st.dataframe(diff_rows, use_container_width=True)
 
         # Show canonical ID mapping for debugging
-        with st.expander("🔧 Canonical ID Mapping (Debug)"):
-            st.write("**How metrics were matched:**")
-
-            baseline_canonical = canonicalize_metrics(baseline_metrics)
-            compare_canonical = canonicalize_metrics(compare_metrics)
-
-            col1, col2 = st.columns(2)
-
-            with col1:
-                st.write("**Baseline Metrics:**")
-                for cid, m in baseline_canonical.items():
-                    original = m.get('original_name', 'N/A')
-                    canonical = m.get('name', 'N/A')
-                    st.caption(f"`{cid}`")
-                    st.write(f"  {original} → {canonical}")
-
-            with col2:
-                st.write("**Current Metrics:**")
-                for cid, m in compare_canonical.items():
-                    original = m.get('original_name', 'N/A')
-                    canonical = m.get('name', 'N/A')
-                    st.caption(f"`{cid}`")
-                    st.write(f"  {original} → {canonical}")
     else:
         st.info("No metrics to compare")
 
@@ -23466,17 +23362,6 @@ def main():
             wrapper_output=output,
             )
 
-
-            with st.expander("🔧 Debug Information"):
-                st.write("**Confidence Breakdown:**")
-                st.json({
-                    "base_confidence": base_conf,
-                    "evidence_score": veracity_scores.get("overall", 0),
-                    "final_confidence": final_conf,
-                    "veracity_breakdown": veracity_scores
-                })
-                st.write("**Primary Model Response:**")
-                st.json(primary_data)
 
     with tab2:
         st.markdown("""
