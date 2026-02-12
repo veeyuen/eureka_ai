@@ -104,7 +104,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "REFACTOR172"
+_YUREEKA_CODE_VERSION_LOCK = "REFACTOR173"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 
 # REFACTOR129: run-level beacons (reset per evolution run)
@@ -125,6 +125,19 @@ FORCE_LATEST_PREV_SNAPSHOT_V1 = True
 # - Registers a canonical entries list idempotently at import time.
 
 _PATCH_TRACKER_CANONICAL_ENTRIES_V1 = [
+{
+    'patch_id': 'REFACTOR173',
+    'date': '2026-02-12',
+    'summary': "Controlled downsizing (low-risk): remove unused refactor-harness scaffolding (flag + Streamlit detection helper) that is never invoked, and remove a redundant mid-file CODE_VERSION re-assert block. No intended changes to triad mechanics, schema-frozen keys, strict comparability, injection overrides, snapshot selection/rehydration, SerpAPI plumbing, or Δt gating.",
+    'notes': [
+        'Delete dead harness flag computation (_REFACTOR01_HARNESS_REQUESTED) and its helper (_rf01__running_under_streamlit); no other code references the flag.',
+        'Simplify __main__ guard to call main() directly (harness flag was only gating main but there was no harness runner).',
+        'Remove redundant mid-file CODE_VERSION re-assert block (CODE_VERSION is already locked near the top).',
+    ],
+    'files': ['REFACTOR173.py'],
+    'supersedes': ['REFACTOR172']
+},
+
 {
     'patch_id': 'REFACTOR172',
     'date': '2026-02-12',
@@ -658,52 +671,6 @@ def _yureeka_ensure_final_bindings_v1():
 _yureeka_lock_version_globals_v1()
 _yureeka_ensure_final_bindings_v1()
 
-# Invocation:
-#   - python REFACTOR02_full_codebase_streamlit_safe.py --run_refactor_harness
-#   - or set RUN_REFACTOR_HARNESS=1
-# NOTE:
-#   - Under Streamlit runtime, the harness is forcibly disabled to prevent sys.exit()
-#     from terminating the Streamlit server / failing health checks.
-try:
-    import os as _rf01_os
-    import sys as _rf01_sys
-
-    def _rf01__running_under_streamlit() -> bool:
-        try:
-            argv = _rf01_sys.argv or []
-            if any("streamlit" in str(a).lower() for a in argv[:5]):
-                return True
-        except Exception:
-            pass
-        try:
-            if "streamlit" in _rf01_sys.modules:
-                return True
-            if "streamlit.runtime.scriptrunner" in _rf01_sys.modules:
-                return True
-        except Exception:
-            pass
-        try:
-            for _k in (
-                "STREAMLIT_SERVER_PORT",
-                "STREAMLIT_SERVER_ADDRESS",
-                "STREAMLIT_SERVER_HEADLESS",
-                "STREAMLIT_BROWSER_GATHER_USAGE_STATS",
-            ):
-                if _rf01_os.getenv(_k) is not None:
-                    return True
-        except Exception:
-            pass
-        return False
-
-    _rf01__is_streamlit = _rf01__running_under_streamlit()
-
-    _REFACTOR01_HARNESS_REQUESTED = (
-        (("--run_refactor_harness" in (_rf01_sys.argv or []))
-         or (str(_rf01_os.getenv("RUN_REFACTOR_HARNESS", "")).strip().lower() in ("1", "true", "yes", "y")))
-        and (not _rf01__is_streamlit)
-    )
-except Exception:
-    _REFACTOR01_HARNESS_REQUESTED = False
 
 
 # - Introduces a single deterministic identity tuple and a schema-first resolver.
@@ -26254,14 +26221,6 @@ def _fix2d55_apply_prev_lift(prev_full: dict, web_context: dict = None) -> None:
 
 
 
-# REFACTOR04: VERSION FINAL OVERRIDE (LAST-WINS)
-# - This file contains legacy CODE_VERSION bumps from earlier phases.
-# - Ensure the refactor patch id remains authoritative.
-try:
-    CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
-    globals()["CODE_VERSION"] = CODE_VERSION
-except Exception:
-    pass
 
 # Goal:
 #   - Provide a stable gate for refactor/consolidation work.
@@ -28349,8 +28308,7 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
 # - This block registers the current patch *before* main() executes, so harness/version checks see an up-to-date tracker.
 try:
     if __name__ == "__main__":
-        if not bool(globals().get("_REFACTOR01_HARNESS_REQUESTED")):
-            main()
+        main()
 except Exception:
     try:
         import streamlit as st
