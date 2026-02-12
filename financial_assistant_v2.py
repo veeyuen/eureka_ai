@@ -104,7 +104,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "REFACTOR174"
+_YUREEKA_CODE_VERSION_LOCK = "REFACTOR175"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 
 # REFACTOR129: run-level beacons (reset per evolution run)
@@ -120,11 +120,39 @@ _REFACTOR132_INJECTED_CAGR_RESCUE_V1 = {"applied": 0, "samples": []}
 DISABLE_FASTPATH_FOR_NOW = True
 FORCE_LATEST_PREV_SNAPSHOT_V1 = True
 
+# REFACTOR175: shared tiny helpers (module-scope) to eliminate duplicated nested defs
+def _yureeka_now_iso_v1() -> str:
+    """UTC ISO timestamp (stable helper)."""
+    try:
+        return datetime.now(timezone.utc).isoformat()
+    except Exception:
+        return ""
+
+def _yureeka_sha1_v1(s: str) -> str:
+    """SHA1 hex digest for stable anchor hashing."""
+    try:
+        return hashlib.sha1((s or "").encode("utf-8", errors="ignore")).hexdigest()
+    except Exception:
+        return ""
+
+
 
 # - Downsizing step 1: remove accumulated per-patch try/append scaffolding.
 # - Registers a canonical entries list idempotently at import time.
 
 _PATCH_TRACKER_CANONICAL_ENTRIES_V1 = [
+{
+    'patch_id': 'REFACTOR175',
+    'date': '2026-02-12',
+    'summary': "Controlled downsizing (low-risk): consolidate duplicated nested helper defs (_now_iso and _sha1) into tiny module-scope helpers (_yureeka_now_iso_v1, _yureeka_sha1_v1) and remove the repeated nested def blocks. No intended changes to triad mechanics, schema-frozen keys, strict comparability, injection overrides, snapshot selection/rehydration, SerpAPI plumbing, or Δt gating.",
+    'notes': [
+        'Replace local _now_iso() calls with _yureeka_now_iso_v1().',
+        'Replace local _sha1() calls with _yureeka_sha1_v1().',
+        'Reduces indentation risk in large functions by removing duplicated nested def blocks.',
+    ],
+    'files': ['REFACTOR175.py'],
+    'supersedes': ['REFACTOR174'],
+},
 {
     'patch_id': 'REFACTOR174',
     'date': '2026-02-12',
@@ -2655,19 +2683,6 @@ def canonicalize_numeric_candidate(candidate: dict) -> dict:
             pass
 
 
-    def _sha1(s: str) -> str:
-
-
-        try:
-
-
-            return hashlib.sha1((s or "").encode("utf-8", errors="ignore")).hexdigest()
-
-
-        except Exception:
-            return ""
-
-
     ah = candidate.get("anchor_hash") or candidate.get("anchor")
 
 
@@ -2704,7 +2719,7 @@ def canonicalize_numeric_candidate(candidate: dict) -> dict:
             raw = f"{candidate.get('value')}{candidate.get('unit') or ''}"
 
 
-        ah = _sha1(f"{src}|{str(raw)[:120]}|{ctx}") if (src or ctx) else ""
+        ah = _yureeka_sha1_v1(f"{src}|{str(raw)[:120]}|{ctx}") if (src or ctx) else ""
 
 
         if ah:
@@ -5339,9 +5354,6 @@ def fetch_web_context(
     except Exception:
         pass
 
-    def _now_iso() -> str:
-        return datetime.now(timezone.utc).isoformat()
-
     def _is_probably_url(s: str) -> bool:
         if not s or not isinstance(s, str):
             return False
@@ -5375,7 +5387,7 @@ def fetch_web_context(
         "errors": [],
         "status": "ok",
         "status_detail": "",
-        "fetched_at": _now_iso(),
+        "fetched_at": _yureeka_now_iso_v1(),
         "debug_counts": {},   # ✅ telemetry for dashboard + JSON debugging
     }
 
@@ -5815,7 +5827,7 @@ def fetch_web_context(
 
         meta = {
             "url": url,
-            "fetched_at": _now_iso(),
+            "fetched_at": _yureeka_now_iso_v1(),
             "status": "failed",
             "status_detail": "",
             "content_type": "",
@@ -10998,16 +11010,6 @@ def build_baseline_sources_cache_from_evidence_records(evidence_records):
         return []
 
 
-    def _sha1(s: str) -> str:
-
-        try:
-
-            return hashlib.sha1((s or "").encode("utf-8", errors="ignore")).hexdigest()
-
-        except Exception:
-            return ""
-
-
     def _ensure_anchor_fields(c: dict, source_url: str = "") -> dict:
 
         c = c if isinstance(c, dict) else {}
@@ -11039,7 +11041,7 @@ def build_baseline_sources_cache_from_evidence_records(evidence_records):
 
         if not ah:
 
-            ah = _sha1(f"{source_url}|{raw}|{ctx}")
+            ah = _yureeka_sha1_v1(f"{source_url}|{raw}|{ctx}")
 
             if ah:
 
@@ -12508,9 +12510,6 @@ def attach_source_snapshots_to_analysis(analysis: dict, web_context: dict) -> di
     except Exception:
         pass
 
-    def _now_iso() -> str:
-        return datetime.now(timezone.utc).isoformat()
-
     def _fingerprint(text: str) -> str:
         try:
             fn = globals().get("fingerprint_text")
@@ -12526,13 +12525,6 @@ def attach_source_snapshots_to_analysis(analysis: dict, web_context: dict) -> di
             return ""
 
     # - Does NOT change existing behavior if anchor_hash already present.
-    def _sha1(s: str) -> str:
-        try:
-            import hashlib
-            return hashlib.sha1((s or "").encode("utf-8", errors="ignore")).hexdigest()
-        except Exception:
-            return ""
-
     # - Ensures unit_tag/unit_family/base_unit/value_norm are present when possible.
     # - No behavior change if helper missing.
     _canon_fn = globals().get("canonicalize_numeric_candidate")
@@ -12657,7 +12649,7 @@ def attach_source_snapshots_to_analysis(analysis: dict, web_context: dict) -> di
                 "status": _status,
                 "status_detail": _sd,
                 "numbers_found": int(meta.get("numbers_found") or (len(nums) if isinstance(nums, list) else 0)),
-                "fetched_at": meta.get("fetched_at") or _now_iso(),
+                "fetched_at": meta.get("fetched_at") or _yureeka_now_iso_v1(),
                 "fingerprint": meta.get("fingerprint") or _fingerprint(content),
 
                 # REFACTOR121: store a lightweight excerpt for year-anchor backstop (avoid huge payloads)
@@ -12678,7 +12670,7 @@ def attach_source_snapshots_to_analysis(analysis: dict, web_context: dict) -> di
                         # keep existing anchor_hash if present; else stable fallback
                         "anchor_hash": (
                             nn.get("anchor_hash")
-                            or _sha1(
+                            or _yureeka_sha1_v1(
                                 f"{url}|{str(nn.get('raw') or '')}|{(nn.get('context_snippet') or nn.get('context') or '')[:240]}"
                             )
                         ),
@@ -12748,7 +12740,7 @@ def attach_source_snapshots_to_analysis(analysis: dict, web_context: dict) -> di
                 _bsc_aug, _inj_hash_added, _inj_hash_reasons = _inj_hash_add_synthetic_sources(
                     baseline_sources_cache,
                     _persisted_for_hash,
-                    now_iso=_now_iso(),
+                    now_iso=_yureeka_now_iso_v1(),
                 )
                 baseline_sources_cache = _bsc_aug
         except Exception:
@@ -12870,7 +12862,7 @@ def attach_source_snapshots_to_analysis(analysis: dict, web_context: dict) -> di
                                     "numbers_found": _rf115_numbers_found,
                                     "seeded": True,
                                     "seeded_reason": "schema_seeds",
-                                    "fetched_at": _now_iso(),
+                                    "fetched_at": _yureeka_now_iso_v1(),
                                 })
                                 _existing.add(_u_norm)
                                 _rf115_added.append(_u_norm)
@@ -12898,7 +12890,7 @@ def attach_source_snapshots_to_analysis(analysis: dict, web_context: dict) -> di
                                     "numbers_found": 0,
                                     "seeded": True,
                                     "seeded_reason": "schema_seeds_placeholder",
-                                    "fetched_at": _now_iso(),
+                                    "fetched_at": _yureeka_now_iso_v1(),
                                 })
                                 _existing.add(_u_norm)
                                 _rf115_added.append(_u_norm)
@@ -20118,9 +20110,6 @@ def extract_numbers_with_context(text, source_url: str = "", max_results: int = 
 
     raw = str(text)
 
-    def _sha1(s: str) -> str:
-        return hashlib.sha1((s or "").encode("utf-8", errors="ignore")).hexdigest()
-
     def _normalize_unit(u: str) -> str:
         u = (u or "").strip()
         if not u:
@@ -20454,7 +20443,7 @@ def extract_numbers_with_context(text, source_url: str = "", max_results: int = 
             neg_from_hyphen_range = False
             neg_year_from_range = False
 
-        anchor_hash = _sha1(f"{source_url}|{raw_disp}|{ctx_store}")
+        anchor_hash = _yureeka_sha1_v1(f"{source_url}|{raw_disp}|{ctx_store}")
         # FIX2D69B: defensive tuple normalization (prevent unpack None)
         try:
             _jt = _junk_tag(val, unit, raw_disp, ctx_store)
