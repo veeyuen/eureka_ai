@@ -104,7 +104,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "REFACTOR171"
+_YUREEKA_CODE_VERSION_LOCK = "REFACTOR172"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 
 # REFACTOR129: run-level beacons (reset per evolution run)
@@ -125,6 +125,19 @@ FORCE_LATEST_PREV_SNAPSHOT_V1 = True
 # - Registers a canonical entries list idempotently at import time.
 
 _PATCH_TRACKER_CANONICAL_ENTRIES_V1 = [
+{
+    'patch_id': 'REFACTOR172',
+    'date': '2026-02-12',
+    'summary': "Downsizing (low-risk): simplify Diff Panel V2 wiring by removing redundant compatibility targets (build_diff_metrics_panel_v2, build_diff_metrics_panel_v2__rows) and binding directly to build_diff_metrics_panel_v2__rows_refactor47 in both the authority manifest and the diff computation path. No intended changes to triad mechanics, schema-frozen keys, strict comparability, injection overrides, snapshot selection/rehydration, SerpAPI plumbing, or Δt gating.",
+    'notes': [
+        'Update _yureeka_authority_manifest_v1() to report only the real V2 row builder: build_diff_metrics_panel_v2__rows_refactor47.',
+        'Update compute_source_anchored_diff() binding beacons and V2 builder selection to use build_diff_metrics_panel_v2__rows_refactor47 only (removes fallback probing for removed aliases).',
+        'Remove the tiny legacy wrapper build_diff_metrics_panel_v2() and the back-compat alias build_diff_metrics_panel_v2__rows = build_diff_metrics_panel_v2__rows_refactor47.',
+    ],
+    'files': ['REFACTOR172.py'],
+    'supersedes': ['REFACTOR171']
+},
+
 {
     'patch_id': 'REFACTOR171',
     'date': '2026-02-11',
@@ -511,9 +524,7 @@ def _yureeka_authority_manifest_v1() -> dict:
             "compute_source_anchored_diff",
             "attach_source_snapshots_to_analysis",
             # diff panel + join engine
-            "build_diff_metrics_panel_v2__rows_fix2d2i",
-            "build_diff_metrics_panel_v2__rows",
-            "build_diff_metrics_panel_v2",
+            "build_diff_metrics_panel_v2__rows_refactor47",
             "diff_metrics_by_name",
             "_refactor09_diff_metrics_by_name",
 
@@ -14278,15 +14289,6 @@ def build_diff_metrics_panel_v2__rows_refactor47(prev_response: dict, cur_respon
     }
     return rows, summary
 
-# Compatibility aliases (compute_source_anchored_diff expects one of these)
-try:
-    build_diff_metrics_panel_v2__rows = build_diff_metrics_panel_v2__rows_refactor47  # type: ignore
-except Exception:
-    pass
-
-def build_diff_metrics_panel_v2(prev_response: dict, cur_response: dict):
-    rows, _summary = build_diff_metrics_panel_v2__rows_refactor47(prev_response, cur_response)
-    return rows, _summary
 
 def _fix2d86_sanitize_pmc_percent_year_tokens_v1(pmc: dict, metric_schema_frozen: dict, label: str):
     """
@@ -15137,15 +15139,13 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
         # REFACTOR17: Binding manifest should reflect the *actual* Diff Panel V2 entrypoint.
         _fn_v2 = None
         _bf_v2 = ""
-        for _cand_name in ["build_diff_metrics_panel_v2__rows", "build_diff_metrics_panel_v2"]:
-            try:
-                _cand = globals().get(_cand_name)
-            except Exception:
-                _cand = None
-            if callable(_cand):
-                _fn_v2 = _cand
-                _bf_v2 = _cand_name
-                break
+        try:
+            _cand = globals().get("build_diff_metrics_panel_v2__rows_refactor47")
+        except Exception:
+            _cand = None
+        if callable(_cand):
+            _fn_v2 = _cand
+            _bf_v2 = "build_diff_metrics_panel_v2__rows_refactor47"
         try:
             if _bf_v2:
                 globals()["_YUREEKA_DIFF_PANEL_V2_ENTRYPOINT_BOUND_FROM"] = _bf_v2
@@ -18425,9 +18425,7 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
     _cur_can_v2 = {}
 
     try:
-        _fn_v2 = (globals().get("build_diff_metrics_panel_v2__rows_refactor47")
-                 or globals().get("build_diff_metrics_panel_v2__rows")
-                 or globals().get("build_diff_metrics_panel_v2"))
+        _fn_v2 = (globals().get("build_diff_metrics_panel_v2__rows_refactor47"))
         if callable(_fn_v2):
             # Previous (baseline) canonical map
             try:
