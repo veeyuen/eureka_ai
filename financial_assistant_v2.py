@@ -104,7 +104,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "REFACTOR173"
+_YUREEKA_CODE_VERSION_LOCK = "REFACTOR174"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 
 # REFACTOR129: run-level beacons (reset per evolution run)
@@ -125,6 +125,17 @@ FORCE_LATEST_PREV_SNAPSHOT_V1 = True
 # - Registers a canonical entries list idempotently at import time.
 
 _PATCH_TRACKER_CANONICAL_ENTRIES_V1 = [
+{
+    'patch_id': 'REFACTOR174',
+    'date': '2026-02-12',
+    'summary': "Controlled downsizing (low-risk): simplify patch-tracker registration by binding PATCH_TRACKER_V1 directly to the canonical entries list (remove _yureeka_register_patch_tracker_v1). Also replace a globals().get() compatibility shim with a direct call to apply_schema_validation_and_evidence_gating() in the Analysis pipeline. No intended changes to triad mechanics, schema-frozen keys, strict comparability, injection overrides, snapshot selection/rehydration, SerpAPI plumbing, or Δt gating.",
+    'notes': [
+        'PATCH_TRACKER_V1 now mirrors _PATCH_TRACKER_CANONICAL_ENTRIES_V1 (Streamlit reruns start from a clean module state).',
+        'Simplified apply_schema_validation_and_evidence_gating invocation (function is always present in this single-file build).',
+    ],
+    'files': ['REFACTOR174.py'],
+    'supersedes': ['REFACTOR173'],
+},
 {
     'patch_id': 'REFACTOR173',
     'date': '2026-02-12',
@@ -462,32 +473,12 @@ _PATCH_TRACKER_CANONICAL_ENTRIES_V1 = [
 
 , {'patch_id': 'REFACTOR113', 'date': '2026-02-03', 'summary': 'Hard enforce year-anchor gating for year-stamped schema keys (no weak fallback); emit missing_reason_v1 for blocked/missing year anchors; normalize source row status when status_detail indicates success.', 'files': ['REFACTOR113.py'], 'supersedes': ['REFACTOR112']}, {'patch_id': 'REFACTOR114', 'date': '2026-02-03', 'summary': 'Fix injected URL semantics: stop treating forced/seed source lists as injection; do not auto-fill diag_extra_urls_ui_raw; remove legacy fix2d65b_injected_urls fallbacks from injection detection + per-row delta gating so production runs regain Δt and only true UI injections suppress it.', 'files': ['REFACTOR114.py'], 'supersedes': ['REFACTOR113']}]
 
-def _yureeka_register_patch_tracker_v1(_entries=_PATCH_TRACKER_CANONICAL_ENTRIES_V1):
-    try:
-        PATCH_TRACKER_V1 = globals().get("PATCH_TRACKER_V1")
-        if not isinstance(PATCH_TRACKER_V1, list):
-            PATCH_TRACKER_V1 = []
-        _existing = set()
-        for _e in PATCH_TRACKER_V1:
-            if isinstance(_e, dict) and _e.get("patch_id") is not None:
-                _existing.add(str(_e.get("patch_id")))
-        for _e in (_entries or []):
-            if not isinstance(_e, dict):
-                continue
-            _pid = _e.get("patch_id")
-            if _pid is None:
-                continue
-            _pid_s = str(_pid)
-            if _pid_s in _existing:
-                continue
-            PATCH_TRACKER_V1.append(dict(_e))
-            _existing.add(_pid_s)
-        globals()["PATCH_TRACKER_V1"] = PATCH_TRACKER_V1
-    except Exception:
-        pass
-
-# Register immediately (Streamlit rerun-safe, idempotent).
-_yureeka_register_patch_tracker_v1()
+# Patch tracker registry (latest-first).
+# Streamlit reruns start from a clean module state, so we can bind directly.
+try:
+    PATCH_TRACKER_V1 = list(_PATCH_TRACKER_CANONICAL_ENTRIES_V1 or [])
+except Exception:
+    PATCH_TRACKER_V1 = []
 
 
 def _yureeka_get_code_version(_lock=_YUREEKA_CODE_VERSION_LOCK):
@@ -22264,9 +22255,7 @@ def main():
                     )
 
                 try:
-                    fn = globals().get("apply_schema_validation_and_evidence_gating")
-                    if callable(fn):
-                        primary_data = fn(primary_data)
+                    primary_data = apply_schema_validation_and_evidence_gating(primary_data)
                 except Exception:
                     pass
 
