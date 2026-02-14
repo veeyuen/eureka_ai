@@ -27,15 +27,9 @@ _SHEETS_RATE_LIMIT_COOLDOWN_UNTIL_TS_V1 = 0.0
 
 _YUREEKA_SHEETS_SCOPES_DEBUG_V1 = {}  # REFACTOR100
 
-def _yureeka_sheets_now_ts_v1() -> float:
-    try:
-        return float(time.time())
-    except Exception:
-        return 0.0
-
 def _yureeka_sheets_in_rate_limit_cooldown_v1() -> bool:
     try:
-        return _yureeka_sheets_now_ts_v1() < float(_SHEETS_RATE_LIMIT_COOLDOWN_UNTIL_TS_V1 or 0.0)
+        return _sheets_now_ts() < float(_SHEETS_RATE_LIMIT_COOLDOWN_UNTIL_TS_V1 or 0.0)
     except Exception:
         return False
 
@@ -46,7 +40,7 @@ def _yureeka_sheets_mark_rate_limited_v1(err: Exception, cooldown_sec: int = 65)
     """
     global _SHEETS_RATE_LIMIT_COOLDOWN_UNTIL_TS_V1
     try:
-        now = _yureeka_sheets_now_ts_v1()
+        now = _sheets_now_ts()
         _SHEETS_RATE_LIMIT_COOLDOWN_UNTIL_TS_V1 = now + float(cooldown_sec or 60)
     except Exception:
         pass
@@ -55,7 +49,7 @@ def _yureeka_sheets_rate_limit_notice_once_v1(msg: str):
     """Emit a Streamlit warning at most once every ~20s (per session)."""
     try:
         k = "_yureeka_sheets_rate_limit_notice_ts_v1"
-        now = _yureeka_sheets_now_ts_v1()
+        now = _sheets_now_ts()
         last = float(st.session_state.get(k) or 0.0)
         if (now - last) > 20.0:
             st.session_state[k] = now
@@ -143,7 +137,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "REFACTOR199"
+_YUREEKA_CODE_VERSION_LOCK = "REFACTOR201"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 
 # REFACTOR129: run-level beacons (reset per evolution run)
@@ -238,12 +232,72 @@ try:
 except Exception:
     pass
 
+# REFACTOR200: patch tracker entry (downsizing)
+try:
+    if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "REFACTOR200" for e in PATCH_TRACKER_V1):
+        PATCH_TRACKER_V1.insert(0, {"patch_id": "REFACTOR200", "scope": "downsizing", "summary": "Prune redundant Sheets timestamp helper (dedupe _yureeka_sheets_now_ts_v1 vs _sheets_now_ts) + remove unused key-overlap debug emitter; no pipeline behavior change.", "risk": "low"})
+except Exception:
+    pass
+
+
+
+
+
+# REFACTOR201: patch tracker overlay (fastpath validation gate + injection safety)
+try:
+    if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "REFACTOR201" for e in PATCH_TRACKER_V1):
+        PATCH_TRACKER_V1.insert(0, {"patch_id": "REFACTOR201", "scope": "endstate", "summary": "Add fastpath enable override (opt-in), force-disable fastpath in injection mode, and surface fastpath/injection flags in endstate_check_v1; default behavior unchanged.", "risk": "low"})
+except Exception:
+    pass
 
 def _yureeka_get_code_version(_lock=_YUREEKA_CODE_VERSION_LOCK):
     try:
         return str(_lock)
     except Exception:
         return "UNKNOWN"
+
+
+def _yureeka_is_injection_mode_v1(web_context: dict) -> bool:
+    """Heuristic: determine whether this run should be treated as an injection run.
+
+    Injection runs must not use fastpath reuse, because injected URLs are expected to override winners
+    even when question/source hashes would otherwise match.
+    """
+    try:
+        wc = web_context if isinstance(web_context, dict) else {}
+        # explicit markers (future-proof)
+        if str(wc.get("mode") or "").strip().lower() in ("inject", "injection", "injected"):
+            return True
+        inj = str(wc.get("injected_url") or "").strip()
+        if inj:
+            return True
+
+        extra = wc.get("extra_urls")
+        urls = []
+        if isinstance(extra, (list, tuple)):
+            for u in extra:
+                u = str(u or "").strip()
+                if u:
+                    urls.append(u)
+        elif isinstance(extra, str) and extra.strip():
+            for line in extra.splitlines():
+                line = (line or "").strip()
+                if not line:
+                    continue
+                for p in line.split(","):
+                    p = (p or "").strip()
+                    if p:
+                        urls.append(p)
+
+        for u in urls:
+            ul = u.lower()
+            if "injected-content" in ul:
+                return True
+            if "veeyuen.github.io" in ul and "injected" in ul:
+                return True
+        return False
+    except Exception:
+        return False
 
 
 
@@ -255,6 +309,12 @@ def _yureeka_endstate_check_v1(stage: str, analysis_wrapper: dict = None, evolut
     stage = str(stage or "")
     checks = {}
     failures = []
+
+    # --- Fastpath flags (global + best-effort debug extraction) ---
+    try:
+        checks["disable_fastpath_for_now"] = bool(globals().get("DISABLE_FASTPATH_FOR_NOW"))
+    except Exception:
+        pass
 
     # --- Analysis-side checks ---
     try:
@@ -285,6 +345,27 @@ def _yureeka_endstate_check_v1(stage: str, analysis_wrapper: dict = None, evolut
     try:
         ew = evolution_wrapper if isinstance(evolution_wrapper, dict) else None
         if ew is not None:
+            # Try to pick up fastpath gate + force_rebuild info from debug (if present)
+            try:
+                _dbg = None
+                if isinstance(ew.get("debug"), dict):
+                    _dbg = ew.get("debug")
+                elif isinstance((ew.get("results") or {}).get("debug"), dict):
+                    _dbg = (ew.get("results") or {}).get("debug")
+                if isinstance(_dbg, dict):
+                    fg = _dbg.get("fastpath_gate_v2")
+                    if isinstance(fg, dict):
+                        checks["fastpath_gate_eligible"] = bool(fg.get("eligible"))
+                        checks["fastpath_gate_disabled_reason"] = str(fg.get("disabled_reason") or "")
+                        checks["fastpath_enable_requested"] = bool(fg.get("enable_fastpath"))
+                        checks["fastpath_injection_mode"] = bool(fg.get("injection_mode"))
+                    fx = _dbg.get("fix41")
+                    if isinstance(fx, dict):
+                        checks["force_rebuild_seen"] = bool(fx.get("force_rebuild_seen"))
+                        checks["force_rebuild_honored"] = bool(fx.get("force_rebuild_honored"))
+                        checks["injection_force_rebuild"] = bool(fx.get("injection_force_rebuild"))
+            except Exception:
+                pass
             prev_ts = str(ew.get("previous_timestamp") or "")
             cur_ts = str(ew.get("timestamp") or "")
             checks["previous_timestamp_present"] = bool(prev_ts)
@@ -649,30 +730,6 @@ def _fix2d6_get_diff_join_mode_v1():
 #   Emit explicit canonical key overlap diagnostics between previous and
 #   current canonical metrics to make diff feasibility observable.
 #   (Additive, no behavior change)
-
-def _emit_key_overlap_debug_v1(prev_metrics, cur_metrics, target_key=None):
-    try:
-        prev_keys = set(prev_metrics.keys()) if isinstance(prev_metrics, dict) else set()
-        cur_keys = set(cur_metrics.keys()) if isinstance(cur_metrics, dict) else set()
-        overlap = prev_keys.intersection(cur_keys)
-        return {
-            "prev_count": len(prev_keys),
-            "cur_count": len(cur_keys),
-            "overlap_count": len(overlap),
-            "overlap_sample": list(sorted(overlap))[:10],
-            "target_key": target_key,
-            "target_present_prev": (target_key in prev_keys) if target_key else None,
-            "target_present_cur": (target_key in cur_keys) if target_key else None,
-        }
-    except Exception as _e:
-        return {
-            "error": "key_overlap_exception",
-            "exception": str(type(_e).__name__),
-        }
-# - URL shape normalizer (boundary before scraping)
-# - Scrape ledger keyed by url_norm w/ stage+reason
-# - Scraped text accessor to avoid meta-key drift
-# - Fetch-failure visibility (status/textlen/classification)
 
 def _fix2af_norm_url(u: str) -> str:
     try:
@@ -15718,8 +15775,21 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                 _rf115_disabled_reason = "all_schema_values_null"
             # Emit beacon
             # REFACTOR117: honor global DISABLE_FASTPATH_FOR_NOW as a hard gate during refactor triad validation.
+            # REFACTOR201: allow explicit opt-in enable_fastpath override for production runs, but always disable fastpath in injection mode.
+            _rf201_injection_mode = False
+            _rf201_enable_fastpath = False
             try:
-                if (not _rf115_disabled_reason) and bool(globals().get("DISABLE_FASTPATH_FOR_NOW")):
+                _rf201_injection_mode = bool(_yureeka_is_injection_mode_v1(web_context))
+            except Exception:
+                _rf201_injection_mode = False
+            try:
+                _rf201_enable_fastpath = bool((web_context or {}).get("enable_fastpath"))
+            except Exception:
+                _rf201_enable_fastpath = False
+            try:
+                if (not _rf115_disabled_reason) and _rf201_injection_mode:
+                    _rf115_disabled_reason = "injection_mode_force_rebuild"
+                elif (not _rf115_disabled_reason) and bool(globals().get("DISABLE_FASTPATH_FOR_NOW")) and (not _rf201_enable_fastpath):
                     _rf115_disabled_reason = "disable_fastpath_for_now"
             except Exception:
                 pass
@@ -15732,6 +15802,8 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                         "disabled_reason": _rf115_disabled_reason,
                         "cur_hash": _cur_hash if isinstance(locals().get("_cur_hash"), str) else None,
                         "prev_hash": _prev_hash_pref if isinstance(locals().get("_prev_hash_pref"), str) else None,
+                        "enable_fastpath": bool(locals().get("_rf201_enable_fastpath", False)),
+                        "injection_mode": bool(locals().get("_rf201_injection_mode", False)),
                     }
             except Exception:
                 pass
@@ -16247,15 +16319,6 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
 
             cur_canon = current_metrics_for_display if isinstance(current_metrics_for_display, dict) else {}
 
-            try:
-                if isinstance(output.get("debug"), dict):
-                    output["debug"]["key_overlap_v1"] = _emit_key_overlap_debug_v1(
-                        prev_metrics=prev_canon,
-                        cur_metrics=cur_canon,
-                        target_key="global_ev_sales_ytd_2025__unit_sales"
-                    )
-            except Exception:
-                pass
 
             # Infer projected-share keys if the exact ones are not present
             if isinstance(prev_canon, dict) and isinstance(cur_canon, dict):
@@ -21100,6 +21163,13 @@ def main():
                 help="Debug only: forces evolution to rebuild even if sources+data are unchanged."
             )
 
+            enable_fastpath = st.checkbox(
+                "⚡ Enable fastpath reuse (prod only)",
+                value=False,
+                key="ui_enable_fastpath_toggle",
+                help="Advanced: allows reuse of unchanged evolution results to reduce fetch/load. Automatically bypassed in injection mode."
+            )
+
         # ✅ REFACTOR99: Evolution baseline MUST be an Analysis payload (exclude evolution reports) and default to latest.
         history_all = get_history() or []
 
@@ -21455,6 +21525,8 @@ def main():
                             web_context={
 
                                 "force_rebuild": bool(force_rebuild),
+
+                                "enable_fastpath": bool(locals().get("enable_fastpath", False)),
 
                                 "extra_urls": _extra_urls_evo,
 
@@ -26278,11 +26350,20 @@ def _refactor134_run_source_anchored_evolution_core_v1(previous_data: dict, web_
     # If the UI (or caller) requests force_rebuild, we intentionally bypass
     # the unchanged fastpath even if hashes match, to exercise rebuild logic.
     _force_rebuild = False
+    _fix41_injection_force_rebuild = False
     try:
         _force_rebuild = bool((web_context or {}).get("force_rebuild"))
     except Exception:
         pass
         _force_rebuild = False
+
+    # REFACTOR201: injection mode always forces a rebuild (bypass unchanged fastpath reuse).
+    try:
+        if bool(_yureeka_is_injection_mode_v1(web_context)):
+            _force_rebuild = True
+            _fix41_injection_force_rebuild = True
+    except Exception:
+        pass
     if _force_rebuild:
         unchanged = False
         _fix41_force_rebuild_honored = True
@@ -26304,6 +26385,7 @@ def _refactor134_run_source_anchored_evolution_core_v1(previous_data: dict, web_
                 out_replay["debug"]["fix41"].update({
                     "force_rebuild_seen": bool(_fix41_force_rebuild_seen),
                     "force_rebuild_honored": bool(locals().get("_fix41_force_rebuild_honored", False)),
+                    "injection_force_rebuild": bool(locals().get("_fix41_injection_force_rebuild", False)),
                     "path": "replay_unchanged",
                 })
         except Exception:
@@ -26398,6 +26480,7 @@ def _refactor134_run_source_anchored_evolution_core_v1(previous_data: dict, web_
                     out_changed["debug"]["fix41"].update({
                         "force_rebuild_seen": bool(_fix41_force_rebuild_seen),
                         "force_rebuild_honored": bool(locals().get("_fix41_force_rebuild_honored", False)) or bool(_fix41_force_rebuild_seen),
+                        "injection_force_rebuild": bool(locals().get("_fix41_injection_force_rebuild", False)),
                         "path": "changed_compute_source_anchored_diff",
                     })
             except Exception:
