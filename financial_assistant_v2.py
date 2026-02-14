@@ -136,8 +136,22 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "REFACTOR205"
+_YUREEKA_CODE_VERSION_LOCK = "REFACTOR206"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
+
+# REFACTOR206: Release Candidate freeze (no pipeline behavior change).
+YUREEKA_RELEASE_CANDIDATE_V1 = True
+YUREEKA_RELEASE_TAG_V1 = "REFACTOR206_RC1"
+YUREEKA_FREEZE_MODE_V1 = True
+# Small default regression set (optional; used for manual triad smoke tests).
+YUREEKA_REGRESSION_QUESTIONS_V1 = [
+    "what is the size of the global ev market?",
+    "what are global EV sales YTD 2025?",
+    "how many global EV chargers will there be in 2040?",
+    "what is global EV charging investment in 2040?",
+    "what is the CAGR of global EV chargers from 2026 to 2040?",
+]
+
 
 # REFACTOR129: run-level beacons (reset per evolution run)
 _REFACTOR129_DECIMAL_OVERLAP_SUPPRESSION_V1 = {"total_numbers": 0, "overlaps_detected": 0, "overlaps_dropped": 0, "sample_drops": []}
@@ -280,6 +294,13 @@ try:
 except Exception:
     pass
 
+
+# REFACTOR206: Release Candidate label + freeze (no pipeline behavior change).
+try:
+    if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "REFACTOR206" for e in PATCH_TRACKER_V1):
+        PATCH_TRACKER_V1.insert(0, {"patch_id": "REFACTOR206", "scope": "release", "summary": "Release Candidate freeze: add build_meta (release_tag/freeze_mode) + small optional regression question set; also harden injected_url hint passed into endstate_check_v1 (diagnostic-only). No changes to selection/diff engines.", "risk": "low"})
+except Exception:
+    pass
 
 def _yureeka_get_code_version(_lock=_YUREEKA_CODE_VERSION_LOCK):
     try:
@@ -602,6 +623,28 @@ def _yureeka_endstate_check_v1(stage: str, analysis_wrapper: dict = None, evolut
         "failures": failures,
         "checks": checks,
     }
+
+
+def _yureeka_attach_build_meta_v1(wrapper: dict, stage: str = "", injected_url: str = ""):
+    """Additive: attach a small build_meta block for auditability (RC/freeze), without affecting selection/diff."""
+    if not isinstance(wrapper, dict):
+        return
+    try:
+        meta = {
+            "code_version": _yureeka_get_code_version(),
+            "release_candidate": bool(globals().get("YUREEKA_RELEASE_CANDIDATE_V1")),
+            "release_tag": str(globals().get("YUREEKA_RELEASE_TAG_V1") or ""),
+            "freeze_mode": bool(globals().get("YUREEKA_FREEZE_MODE_V1")),
+            "stage": str(stage or ""),
+        }
+        inj = str(injected_url or "").strip()
+        if inj:
+            meta["injected_url"] = inj
+        wrapper.setdefault("build_meta", {})
+        if isinstance(wrapper.get("build_meta"), dict):
+            wrapper["build_meta"].update(meta)
+    except Exception:
+        return
 
 
 def _yureeka_attach_endstate_check_v1(wrapper: dict, stage: str, analysis_wrapper: dict = None, injected_url: str = ""):
@@ -21259,6 +21302,7 @@ def main():
                     inj_url = str(INJECTED_URL or "")
                 except Exception:
                     inj_url = ""
+                _yureeka_attach_build_meta_v1(output, stage="analysis", injected_url=inj_url)
                 _yureeka_attach_endstate_check_v1(output, stage="analysis", analysis_wrapper=output, injected_url=inj_url)
             except Exception:
                 pass
@@ -22055,9 +22099,19 @@ def main():
                     inj_url = ""
                     try:
                         if isinstance(web_context, dict):
-                            inj_url = str(web_context.get("injected_url") or "")
+                            inj_url = str(
+                                web_context.get("injected_url")
+                                or web_context.get("injected_url_effective")
+                                or web_context.get("injected_url_input")
+                                or ""
+                            )
                     except Exception:
                         inj_url = ""
+                    if not str(inj_url or "").strip():
+                        try:
+                            inj_url = str(INJECTED_URL or "")
+                        except Exception:
+                            pass
                     # Surface fastpath gate into results.debug for audit (best-effort)
                     try:
                         fp_gate = None
@@ -22072,6 +22126,7 @@ def main():
                     except Exception:
                         pass
 
+                    _yureeka_attach_build_meta_v1(evolution_output, stage="evolution", injected_url=inj_url)
                     _yureeka_attach_endstate_check_v1(evolution_output, stage="evolution", analysis_wrapper=baseline_data, injected_url=inj_url)
                 except Exception:
                     pass
@@ -22159,6 +22214,7 @@ def main():
                                 inj_url = str(INJECTED_URL or "")
                             except Exception:
                                 inj_url = ""
+                            _yureeka_attach_build_meta_v1(compare_data, stage="analysis_compare", injected_url=inj_url)
                             _yureeka_attach_endstate_check_v1(compare_data, stage="analysis_compare", analysis_wrapper=compare_data, injected_url=inj_url)
                         except Exception:
                             pass
