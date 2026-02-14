@@ -136,7 +136,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "REFACTOR202"
+_YUREEKA_CODE_VERSION_LOCK = "REFACTOR203"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 
 # REFACTOR129: run-level beacons (reset per evolution run)
@@ -257,6 +257,15 @@ try:
         PATCH_TRACKER_V1.insert(0, {"patch_id": "REFACTOR202", "scope": "downsizing", "summary": "Prune redundant local imports (datetime/_dt, requests, gspread, BeautifulSoup, Counter, traceback) by using module-scope imports; no behavior changes.", "risk": "low"})
 except Exception:
     pass
+
+
+# REFACTOR203: endstate_check_v1 correctness + wrapper-shape awareness (diagnostic-only)
+try:
+    if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "REFACTOR203" for e in PATCH_TRACKER_V1):
+        PATCH_TRACKER_V1.insert(0, {"patch_id": "REFACTOR203", "scope": "diagnostics", "summary": "Make debug.endstate_check_v1 wrapper-shape aware and stage-aware; attach only at final wrapper points (analysis/evolution) to avoid misleading pmc_count=0 reports; no changes to diff/selection logic.", "risk": "low"})
+except Exception:
+    pass
+
 def _yureeka_get_code_version(_lock=_YUREEKA_CODE_VERSION_LOCK):
     try:
         return str(_lock)
@@ -308,14 +317,105 @@ def _yureeka_is_injection_mode_v1(web_context: dict) -> bool:
 
 
 
+def _yureeka_get_pmc_v1(wrapper) -> dict:
+    """Wrapper-shape aware getter for primary_metrics_canonical.
+    Tries multiple known wrapper shapes (analysis/evolution) and returns {} if missing.
+    """
+    if not isinstance(wrapper, dict):
+        return {}
+    try:
+        candidates = []
+        # Direct
+        candidates.append(wrapper.get("primary_metrics_canonical"))
+        # Common nested shapes
+        rr = wrapper.get("results")
+        if isinstance(rr, dict):
+            candidates.append(rr.get("primary_metrics_canonical"))
+            rr2 = rr.get("results")
+            if isinstance(rr2, dict):
+                candidates.append(rr2.get("primary_metrics_canonical"))
+        # Analysis wrapper often keeps PMC under primary_response
+        pr = wrapper.get("primary_response")
+        if isinstance(pr, dict):
+            candidates.append(pr.get("primary_metrics_canonical"))
+        # (Optional) some wrappers use primary_response nested under results
+        if isinstance(rr, dict) and isinstance(rr.get("primary_response"), dict):
+            candidates.append((rr.get("primary_response") or {}).get("primary_metrics_canonical"))
+        for c in candidates:
+            if isinstance(c, dict) and c:
+                return c
+        # If we found an empty dict at least, return it (preserves count==0 correctly).
+        for c in candidates:
+            if isinstance(c, dict):
+                return c
+    except Exception:
+        return {}
+    return {}
+
+
+def _yureeka_get_metric_changes_v1(wrapper) -> list:
+    """Wrapper-shape aware getter for metric_changes rows list."""
+    if not isinstance(wrapper, dict):
+        return []
+    try:
+        candidates = []
+        candidates.append(wrapper.get("metric_changes"))
+        rr = wrapper.get("results")
+        if isinstance(rr, dict):
+            candidates.append(rr.get("metric_changes"))
+            rr2 = rr.get("results")
+            if isinstance(rr2, dict):
+                candidates.append(rr2.get("metric_changes"))
+        for c in candidates:
+            if isinstance(c, list):
+                return c
+        # tolerate tuple
+        for c in candidates:
+            if isinstance(c, tuple):
+                return list(c)
+    except Exception:
+        return []
+    return []
+
+
+def _yureeka_get_debug_bucket_v1(wrapper: dict, default_path: str = "analysis") -> dict:
+    """Ensure and return a durable debug dict for the given wrapper.
+
+    default_path:
+      - "analysis": attach to wrapper["debug"]
+      - "evolution": attach to wrapper["results"]["debug"] (or wrapper["results"]["results"]["debug"])
+    """
+    if not isinstance(wrapper, dict):
+        return {}
+    mode = str(default_path or "").strip().lower()
+    try:
+        if mode.startswith("evol"):
+            rr = wrapper.get("results")
+            if isinstance(rr, dict) and isinstance(rr.get("results"), dict):
+                rr = rr.get("results")
+            if isinstance(rr, dict):
+                rr.setdefault("debug", {})
+                if isinstance(rr.get("debug"), dict):
+                    return rr["debug"]
+        # Fallback / analysis default
+        wrapper.setdefault("debug", {})
+        if isinstance(wrapper.get("debug"), dict):
+            return wrapper["debug"]
+    except Exception:
+        return {}
+    return {}
+
+
 def _yureeka_endstate_check_v1(stage: str, analysis_wrapper: dict = None, evolution_wrapper: dict = None, injected_url: str = "") -> dict:
     """Build a compact, machine-readable end-state invariants check block.
 
-    REFACTOR199: additive-only diagnostics. Never raises; callers should guard anyway.
+    REFACTOR199+: additive-only diagnostics. Never raises; callers should guard anyway.
+    REFACTOR203: wrapper-shape aware + stage-aware (avoid misleading pmc_count=0 from early/inner wrappers).
     """
-    stage = str(stage or "")
-    checks = {}
-    failures = []
+    stage_raw = str(stage or "")
+    stage_l = stage_raw.strip().lower()
+    checks: dict = {}
+    failures: list = []
 
     # --- Fastpath flags (global + best-effort debug extraction) ---
     try:
@@ -323,116 +423,145 @@ def _yureeka_endstate_check_v1(stage: str, analysis_wrapper: dict = None, evolut
     except Exception:
         pass
 
+    # Determine stage kind (analysis vs evolution) in a tolerant way
+    stage_kind = ""
+    if "evolution" in stage_l:
+        stage_kind = "evolution"
+    elif "analysis" in stage_l:
+        stage_kind = "analysis"
+    else:
+        # Heuristic: if we can see metric_changes rows, it's evolution
+        try:
+            if _yureeka_get_metric_changes_v1(evolution_wrapper if isinstance(evolution_wrapper, dict) else (analysis_wrapper if isinstance(analysis_wrapper, dict) else {})):
+                stage_kind = "evolution"
+            else:
+                stage_kind = "analysis"
+        except Exception:
+            stage_kind = "analysis"
+    checks["stage_kind"] = stage_kind
+
     # --- Analysis-side checks ---
-    try:
-        aw = analysis_wrapper if isinstance(analysis_wrapper, dict) else None
-        if aw is None and isinstance(evolution_wrapper, dict):
-            # Evolution wrappers often carry a copy of baseline PMC under results.primary_metrics_canonical
+    if stage_kind == "analysis":
+        try:
+            aw = analysis_wrapper if isinstance(analysis_wrapper, dict) else (evolution_wrapper if isinstance(evolution_wrapper, dict) else {})
+            pmc = _yureeka_get_pmc_v1(aw)
+            pmc_count = len(pmc) if isinstance(pmc, dict) else 0
+            checks["pmc_count"] = pmc_count
+            checks["pmc_top_n"] = min(pmc_count, 10)
             try:
-                rr = evolution_wrapper.get("results")
-                if isinstance(rr, dict) and isinstance(rr.get("primary_metrics_canonical"), dict):
-                    aw = {"primary_metrics_canonical": rr.get("primary_metrics_canonical")}
+                checks["pmc_sample_keys"] = list(pmc.keys())[:4] if isinstance(pmc, dict) else []
             except Exception:
-                aw = None
-
-        pmc = (aw or {}).get("primary_metrics_canonical")
-        pmc_count = len(pmc) if isinstance(pmc, dict) else 0
-        checks["pmc_count"] = pmc_count
-        # "pmc_top_n" acceptance target in this project is 4 when schema-frozen keys are present.
-        checks["pmc_top_n"] = min(pmc_count, 10)
-
-        if stage.startswith("analysis"):
+                pass
             checks["pmc_expected_4"] = bool(pmc_count == 4)
             if pmc_count != 4:
                 failures.append("analysis:pmc_count!=4")
-    except Exception:
-        pass
+        except Exception:
+            pass
 
     # --- Evolution-side checks ---
-    try:
-        ew = evolution_wrapper if isinstance(evolution_wrapper, dict) else None
-        if ew is not None:
-            # Try to pick up fastpath gate + force_rebuild info from debug (if present)
-            try:
-                _dbg = None
-                if isinstance(ew.get("debug"), dict):
-                    _dbg = ew.get("debug")
-                elif isinstance((ew.get("results") or {}).get("debug"), dict):
-                    _dbg = (ew.get("results") or {}).get("debug")
-                if isinstance(_dbg, dict):
-                    fg = _dbg.get("fastpath_gate_v2")
-                    if isinstance(fg, dict):
-                        checks["fastpath_gate_eligible"] = bool(fg.get("eligible"))
-                        checks["fastpath_gate_disabled_reason"] = str(fg.get("disabled_reason") or "")
-                        checks["fastpath_enable_requested"] = bool(fg.get("enable_fastpath"))
-                        checks["fastpath_injection_mode"] = bool(fg.get("injection_mode"))
-                    fx = _dbg.get("fix41")
-                    if isinstance(fx, dict):
-                        checks["force_rebuild_seen"] = bool(fx.get("force_rebuild_seen"))
-                        checks["force_rebuild_honored"] = bool(fx.get("force_rebuild_honored"))
-                        checks["injection_force_rebuild"] = bool(fx.get("injection_force_rebuild"))
-            except Exception:
-                pass
-            prev_ts = str(ew.get("previous_timestamp") or "")
-            cur_ts = str(ew.get("timestamp") or "")
+    if stage_kind == "evolution":
+        try:
+            ew = evolution_wrapper if isinstance(evolution_wrapper, dict) else (analysis_wrapper if isinstance(analysis_wrapper, dict) else {})
+            rows = _yureeka_get_metric_changes_v1(ew)
+            if not isinstance(rows, list):
+                rows = []
+            row_count = len(rows)
+            checks["row_count"] = row_count
+            checks["metric_rows"] = row_count
+            if row_count != 4:
+                failures.append("evolution:row_count!=4")
+
+            # Timestamps
+            prev_ts = str((ew or {}).get("previous_timestamp") or "")
+            cur_ts = str((ew or {}).get("timestamp") or "")
             checks["previous_timestamp_present"] = bool(prev_ts)
             checks["timestamp_present"] = bool(cur_ts)
 
-            # Baseline wiring: previous_timestamp should match baseline analysis timestamp.
+            # Baseline wiring: previous_timestamp should match baseline analysis timestamp (if available).
             base_ts = ""
-            if isinstance(analysis_wrapper, dict):
-                base_ts = str(analysis_wrapper.get("timestamp") or "")
-            if base_ts:
-                checks["prev_equals_analysis_ts"] = bool(prev_ts == base_ts)
-                if prev_ts != base_ts:
-                    failures.append("evolution:prev_ts!=analysis_ts")
+            try:
+                if isinstance(analysis_wrapper, dict):
+                    base_ts = str(analysis_wrapper.get("timestamp") or "")
+                    if not base_ts:
+                        base_ts = str(analysis_wrapper.get("analysis_timestamp_effective") or "")
+            except Exception:
+                base_ts = ""
+            checks["analysis_timestamp_available"] = bool(base_ts)
+            checks["prev_equals_analysis_ts"] = (prev_ts == base_ts) if base_ts else None
+            if base_ts and prev_ts and prev_ts != base_ts:
+                failures.append("evolution:prev_ts!=analysis_ts")
 
-            rr = ew.get("results")
-            if isinstance(rr, dict):
-                rows = rr.get("metric_changes") or []
-                if not isinstance(rows, list):
-                    rows = []
-                checks["metric_rows"] = len(rows)
+            # Δt gating diagnostics (prod populated, injected blank/None)
+            delta_vals = []
+            urls = []
+            for r in rows:
+                if isinstance(r, dict):
+                    delta_vals.append(r.get("analysis_evolution_delta_seconds"))
+                    urls.append(str(r.get("source_url") or "").strip())
 
-                # Δt gating heuristics: prod populated, injected blank/None
-                delta_vals = []
-                urls = []
-                for r in rows:
-                    if isinstance(r, dict):
-                        delta_vals.append(r.get("analysis_evolution_delta_seconds"))
-                        urls.append(str(r.get("source_url") or "").strip())
-
-                present = 0
-                for v in delta_vals:
-                    try:
-                        if isinstance(v, (int, float)) and float(v) >= 0:
-                            present += 1
-                    except Exception:
-                        pass
-                ratio = (present / len(delta_vals)) if delta_vals else 0.0
-                checks["delta_present_ratio"] = ratio
-                checks["assumed_injected_mode"] = bool(ratio < 0.5)
-
-                # If we have an injected_url hint, verify winners are from it (only meaningful in injected mode)
-                inj = str(injected_url or "").strip()
-                if inj:
-                    inj_hits = sum(1 for u in urls if u == inj)
-                    checks["injected_url"] = inj
-                    checks["injected_url_hit_count"] = inj_hits
-                    checks["injected_url_hit_ratio"] = (inj_hits / len(urls)) if urls else 0.0
-
-                # Stability (if present)
+            present = 0
+            blank = 0
+            for v in delta_vals:
                 try:
-                    ss = rr.get("stability_score")
-                    if isinstance(ss, (int, float)):
-                        checks["stability_score"] = float(ss)
+                    if v is None or v == "" or v == "None":
+                        blank += 1
+                    elif isinstance(v, (int, float)) and float(v) >= 0:
+                        present += 1
+                    else:
+                        # non-numeric -> treat as blank-ish
+                        blank += 1
                 except Exception:
-                    pass
-    except Exception:
-        pass
+                    blank += 1
+
+            denom = len(delta_vals) if delta_vals else 0
+            checks["delta_present_count"] = present
+            checks["delta_blank_count"] = blank
+            checks["delta_present_ratio"] = (present / denom) if denom else 0.0
+
+            inj = str(injected_url or "").strip()
+            checks["injected_url_hint_present"] = bool(inj)
+            assumed_injected = bool(inj) or (checks.get("delta_present_ratio", 0.0) < 0.5)
+            checks["assumed_injected_mode"] = assumed_injected
+
+            # Expected gating by mode (soft-check; never fails if denom==0)
+            if denom:
+                if assumed_injected:
+                    checks["delta_gating_expected"] = "blank"
+                    checks["delta_gating_ok"] = bool(present == 0)
+                else:
+                    checks["delta_gating_expected"] = "present"
+                    checks["delta_gating_ok"] = bool(present == denom)
+            else:
+                checks["delta_gating_expected"] = "unknown"
+                checks["delta_gating_ok"] = None
+
+            # If we have an injected_url hint, verify winners are from it (informational)
+            if inj:
+                inj_hits = sum(1 for u in urls if u == inj)
+                checks["injected_url"] = inj
+                checks["injected_url_hit_count"] = inj_hits
+                checks["injected_url_hit_ratio"] = (inj_hits / len(urls)) if urls else 0.0
+
+            # Stability (if present)
+            try:
+                rr = (ew or {}).get("results")
+                if isinstance(rr, dict) and isinstance(rr.get("stability_score"), (int, float)):
+                    checks["stability_score"] = float(rr.get("stability_score"))
+            except Exception:
+                pass
+
+            # Optional: baseline PMC visibility in evolution (informational only)
+            try:
+                pmc = _yureeka_get_pmc_v1(analysis_wrapper if isinstance(analysis_wrapper, dict) else ew)
+                if isinstance(pmc, dict):
+                    checks["pmc_count"] = len(pmc)
+            except Exception:
+                pass
+        except Exception:
+            pass
 
     return {
-        "stage": stage,
+        "stage": stage_raw,
         "pass": (len(failures) == 0),
         "failures": failures,
         "checks": checks,
@@ -440,31 +569,31 @@ def _yureeka_endstate_check_v1(stage: str, analysis_wrapper: dict = None, evolut
 
 
 def _yureeka_attach_endstate_check_v1(wrapper: dict, stage: str, analysis_wrapper: dict = None, injected_url: str = ""):
-    """Attach endstate_check_v1 into the most durable debug location for the given wrapper."""
+    """Attach endstate_check_v1 into a durable debug location for the given wrapper.
+
+    REFACTOR203: stage-aware placement:
+      - Analysis: wrapper["debug"]
+      - Evolution: wrapper["results"]["debug"] (or wrapper["results"]["results"]["debug"])
+    """
     if not isinstance(wrapper, dict):
         return
+
+    stage_l = str(stage or "").strip().lower()
+    mode = "evolution" if "evolution" in stage_l else ("analysis" if "analysis" in stage_l else "analysis")
     try:
-        block = _yureeka_endstate_check_v1(stage=stage, analysis_wrapper=analysis_wrapper, evolution_wrapper=wrapper, injected_url=injected_url)
+        if mode == "analysis":
+            block = _yureeka_endstate_check_v1(stage=stage, analysis_wrapper=wrapper, evolution_wrapper=None, injected_url=injected_url)
+        else:
+            block = _yureeka_endstate_check_v1(stage=stage, analysis_wrapper=analysis_wrapper, evolution_wrapper=wrapper, injected_url=injected_url)
     except Exception:
         return
 
-    # Prefer results.debug (evolution outputs persist this) else top-level debug (analysis persists this).
-    try:
-        rr = wrapper.get("results")
-        if isinstance(rr, dict):
-            rr.setdefault("debug", {})
-            if isinstance(rr.get("debug"), dict):
-                rr["debug"]["endstate_check_v1"] = block
-                return
-    except Exception:
-        pass
-
-    try:
-        wrapper.setdefault("debug", {})
-        if isinstance(wrapper.get("debug"), dict):
-            wrapper["debug"]["endstate_check_v1"] = block
-    except Exception:
-        pass
+    dbg = _yureeka_get_debug_bucket_v1(wrapper, default_path=("evolution" if mode == "evolution" else "analysis"))
+    if isinstance(dbg, dict):
+        try:
+            dbg["endstate_check_v1"] = block
+        except Exception:
+            pass
 
 def _yureeka_authority_manifest_v1() -> dict:
     """Additive debug helper: capture which 'last-wins' definitions are actually active at runtime.
@@ -21080,6 +21209,14 @@ def main():
             except Exception:
                 pass
 
+
+            with st.spinner("💾 Saving to history..."):
+                if add_to_history(output):
+                    st.success("✅ Analysis saved to Google Sheets")
+                else:
+                    st.warning("⚠️ Saved to session only (Google Sheets unavailable)")
+
+
             try:
                 inj_url = ""
                 try:
@@ -21089,12 +21226,6 @@ def main():
                 _yureeka_attach_endstate_check_v1(output, stage="analysis", analysis_wrapper=output, injected_url=inj_url)
             except Exception:
                 pass
-
-            with st.spinner("💾 Saving to history..."):
-                if add_to_history(output):
-                    st.success("✅ Analysis saved to Google Sheets")
-                else:
-                    st.warning("⚠️ Saved to session only (Google Sheets unavailable)")
 
             json_bytes = json.dumps(output, indent=2, ensure_ascii=False).encode("utf-8")
             filename = f"yureeka_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
@@ -21956,6 +22087,9 @@ def main():
                             "web_sources": web_context.get("sources", [])
                         }
 
+
+                        add_to_history(compare_data)
+
                         try:
                             inj_url = ""
                             try:
@@ -21965,8 +22099,6 @@ def main():
                             _yureeka_attach_endstate_check_v1(compare_data, stage="analysis_compare", analysis_wrapper=compare_data, injected_url=inj_url)
                         except Exception:
                             pass
-
-                        add_to_history(compare_data)
                         st.success("✅ Saved to history")
 
                         render_native_comparison(baseline_data, compare_data)
