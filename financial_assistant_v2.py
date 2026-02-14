@@ -136,7 +136,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "REFACTOR203"
+_YUREEKA_CODE_VERSION_LOCK = "REFACTOR204"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 
 # REFACTOR129: run-level beacons (reset per evolution run)
@@ -266,6 +266,13 @@ try:
 except Exception:
     pass
 
+# REFACTOR204: endstate_check_v1 evolution final-wrapper attach + debug-bucket preference (diagnostic-only)
+try:
+    if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "REFACTOR204" for e in PATCH_TRACKER_V1):
+        PATCH_TRACKER_V1.insert(0, {"patch_id": "REFACTOR204", "scope": "diagnostics", "summary": "Attach debug.endstate_check_v1 only on the FINAL evolution output wrapper (after Δt stamping + timestamps), prefer results.debug over results.results.debug, and remove inner endstate_check emission from run_source_anchored_evolution; also surface fastpath_gate_v2 into results.debug for audit. Diagnostic-only; diff/selection unchanged.", "risk": "low"})
+except Exception:
+    pass
+
 def _yureeka_get_code_version(_lock=_YUREEKA_CODE_VERSION_LOCK):
     try:
         return str(_lock)
@@ -390,13 +397,18 @@ def _yureeka_get_debug_bucket_v1(wrapper: dict, default_path: str = "analysis") 
     mode = str(default_path or "").strip().lower()
     try:
         if mode.startswith("evol"):
+            # Prefer the durable / user-visible bucket: wrapper["results"]["debug"].
+            # Only fall back to wrapper["results"]["results"]["debug"] if the outer bucket is missing/non-dict.
             rr = wrapper.get("results")
-            if isinstance(rr, dict) and isinstance(rr.get("results"), dict):
-                rr = rr.get("results")
             if isinstance(rr, dict):
                 rr.setdefault("debug", {})
                 if isinstance(rr.get("debug"), dict):
                     return rr["debug"]
+                rr2 = rr.get("results")
+                if isinstance(rr2, dict):
+                    rr2.setdefault("debug", {})
+                    if isinstance(rr2.get("debug"), dict):
+                        return rr2["debug"]
         # Fallback / analysis default
         wrapper.setdefault("debug", {})
         if isinstance(wrapper.get("debug"), dict):
@@ -22011,7 +22023,34 @@ def main():
                         "authoritative": False,
                         "source": "llm_optional"
                     }
+
                 }
+
+                # REFACTOR204: attach endstate_check_v1 on FINAL evolution output wrapper (post Δt stamping + timestamps)
+                try:
+                    inj_url = ""
+                    try:
+                        if isinstance(web_context, dict):
+                            inj_url = str(web_context.get("injected_url") or "")
+                    except Exception:
+                        inj_url = ""
+                    # Surface fastpath gate into results.debug for audit (best-effort)
+                    try:
+                        fp_gate = None
+                        try:
+                            fp_gate = ((web_context or {}).get("debug") or {}).get("fastpath_gate_v2")
+                        except Exception:
+                            fp_gate = None
+                        if isinstance(fp_gate, dict) and isinstance(results, dict):
+                            results.setdefault("debug", {})
+                            if isinstance(results.get("debug"), dict):
+                                results["debug"]["fastpath_gate_v2"] = dict(fp_gate)
+                    except Exception:
+                        pass
+
+                    _yureeka_attach_endstate_check_v1(evolution_output, stage="evolution", analysis_wrapper=baseline_data, injected_url=inj_url)
+                except Exception:
+                    pass
 
                 st.download_button(
                     label="💾 Download Evolution Report",
@@ -26838,16 +26877,6 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
         except Exception:
             pass
 
-        try:
-            inj_url = ""
-            try:
-                if isinstance(web_context, dict):
-                    inj_url = str(web_context.get("injected_url") or "")
-            except Exception:
-                inj_url = ""
-            _yureeka_attach_endstate_check_v1(_res, stage="evolution", analysis_wrapper=previous_data, injected_url=inj_url)
-        except Exception:
-            pass
 
         return _res
     except TypeError:
@@ -26869,16 +26898,6 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
             except Exception:
                 pass
 
-            try:
-                inj_url = ""
-                try:
-                    if isinstance(web_context, dict):
-                        inj_url = str(web_context.get("injected_url") or "")
-                except Exception:
-                    inj_url = ""
-                _yureeka_attach_endstate_check_v1(_res, stage="evolution", analysis_wrapper=previous_data, injected_url=inj_url)
-            except Exception:
-                pass
 
             return _res
         except Exception as e:
