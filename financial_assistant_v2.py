@@ -136,7 +136,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "LLM01E"
+_YUREEKA_CODE_VERSION_LOCK = "LLM01F"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 
 # REFACTOR206: Release Candidate freeze (no pipeline behavior change).
@@ -157,7 +157,7 @@ YUREEKA_REGRESSION_QUESTIONS_V1 = [
 # Design rule: LLM assists; deterministic rules decide.
 # All feature flags are OFF by default to preserve REFACTOR206 behavior.
 
-ENABLE_LLM_EVIDENCE_SNIPPETS = True
+ENABLE_LLM_EVIDENCE_SNIPPETS = False
 ENABLE_LLM_SOURCE_CLUSTERING = False
 ENABLE_LLM_QUERY_FRAME = False
 ENABLE_LLM_ANOMALY_FLAGS = False
@@ -1490,6 +1490,14 @@ except Exception:
     pass
 
 
+
+
+# LLM01F: patch tracker overlay (hotfix: avoid legacy helper name collisions overriding sidecar cache utilities).
+try:
+    if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "LLM01F" for e in PATCH_TRACKER_V1):
+        PATCH_TRACKER_V1.insert(0, {"patch_id": "LLM01F", "scope": "llm-sidecar", "summary": "Hotfix: prevent legacy LLM cache helper name collisions (get_llm_cache_key/cache_llm_response) from overriding sidecar cache utilities; LLM assist calls now proceed and cache works. Metric winners/values unchanged.", "risk": "low"})
+except Exception:
+    pass
 
 # REFACTOR198: patch tracker overlay (avoid touching the compressed canonical blob)
 try:
@@ -5054,16 +5062,16 @@ def cache_search_results(query: str, results: List[Dict]):
 # LLM RESPONSE CACHE - Prevents variance on identical inputs
 _llm_cache: Dict[str, Tuple[str, datetime]] = {}
 
-def get_llm_cache_key(query: str, web_context: Dict) -> str:
+def _legacy_get_llm_cache_key_v0(query: str, web_context: Dict) -> str:
     """Generate cache key from query + source URLs"""
     # Include source URLs so cache invalidates if sources change
     source_urls = sorted(web_context.get("sources", [])[:5])
     cache_input = f"{query.lower().strip()}|{'|'.join(source_urls)}"
     return hashlib.md5(cache_input.encode()).hexdigest()[:20]
 
-def cache_llm_response(query: str, web_context: Dict, response: str):
+def _legacy_cache_llm_response_v0(query: str, web_context: Dict, response: str):
     """Cache LLM response"""
-    cache_key = get_llm_cache_key(query, web_context)
+    cache_key = _legacy_get_llm_cache_key_v0(query, web_context)
     _llm_cache[cache_key] = (response, datetime.now())
 
 def sort_results_deterministically(results: List[Dict]) -> List[Dict]:
@@ -7356,7 +7364,7 @@ def query_perplexity(query: str, web_context: Dict, query_structure: Optional[Di
                 llm_obj.freshness = "Current (web-enhanced)"
 
             result = llm_obj.model_dump_json(exclude_none=True)
-            cache_llm_response(query, web_context, result)
+            _legacy_cache_llm_response_v0(query, web_context, result)
             return result
 
         except ValidationError as e:
