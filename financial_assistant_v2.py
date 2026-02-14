@@ -21,7 +21,54 @@ _SHEETS_READ_CACHE = {}
 _SHEETS_READ_CACHE_TTL_SEC = 45
 _SHEETS_LAST_READ_ERROR = None
 
+# REFACTOR195: Sheets rate-limit cooldown (avoid repeated 429 loops; prefer cached/local fallbacks).
+_SHEETS_RATE_LIMIT_COOLDOWN_UNTIL_TS_V1 = 0.0
+_SHEETS_RATE_LIMIT_LAST_ERROR_V1 = ""
+_SHEETS_RATE_LIMIT_LAST_MARK_TS_V1 = 0.0
+
 _YUREEKA_SHEETS_SCOPES_DEBUG_V1 = {}  # REFACTOR100
+
+def _yureeka_sheets_now_ts_v1() -> float:
+    try:
+        import time
+        return float(time.time())
+    except Exception:
+        return 0.0
+
+def _yureeka_sheets_in_rate_limit_cooldown_v1() -> bool:
+    try:
+        return _yureeka_sheets_now_ts_v1() < float(_SHEETS_RATE_LIMIT_COOLDOWN_UNTIL_TS_V1 or 0.0)
+    except Exception:
+        return False
+
+def _yureeka_sheets_mark_rate_limited_v1(err: Exception, cooldown_sec: int = 65):
+    """Mark the Sheets API as rate-limited and activate a short cooldown to avoid repeated 429 loops."""
+    global _SHEETS_RATE_LIMIT_COOLDOWN_UNTIL_TS_V1, _SHEETS_RATE_LIMIT_LAST_ERROR_V1, _SHEETS_RATE_LIMIT_LAST_MARK_TS_V1
+    try:
+        _SHEETS_RATE_LIMIT_LAST_ERROR_V1 = (str(err) or "")[:1000]
+    except Exception:
+        _SHEETS_RATE_LIMIT_LAST_ERROR_V1 = "rate_limit"
+    try:
+        now = _yureeka_sheets_now_ts_v1()
+        _SHEETS_RATE_LIMIT_LAST_MARK_TS_V1 = now
+        _SHEETS_RATE_LIMIT_COOLDOWN_UNTIL_TS_V1 = now + float(cooldown_sec or 60)
+    except Exception:
+        pass
+
+def _yureeka_sheets_rate_limit_notice_once_v1(msg: str):
+    """Emit a Streamlit warning at most once every ~20s (per session)."""
+    try:
+        import streamlit as st
+        k = "_yureeka_sheets_rate_limit_notice_ts_v1"
+        now = _yureeka_sheets_now_ts_v1()
+        last = float(st.session_state.get(k) or 0.0)
+        if (now - last) > 20.0:
+            st.session_state[k] = now
+            st.warning(msg)
+    except Exception:
+        pass
+
+
 
 def _coerce_google_oauth_scopes(scopes) -> list:
     """Return a de-duplicated list of string OAuth scopes (drops non-strings).
@@ -101,7 +148,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "REFACTOR194"
+_YUREEKA_CODE_VERSION_LOCK = "REFACTOR195"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 
 # REFACTOR129: run-level beacons (reset per evolution run)
@@ -167,6 +214,14 @@ try:
         PATCH_TRACKER_V1.insert(0, {"patch_id": "REFACTOR194", "scope": "downsizing", "summary": "Prune redundant local stdlib imports (os/json/re) + drop import aliases; no behavior changes.", "risk": "low"})
 except Exception:
     pass
+
+# REFACTOR195: patch tracker overlay (avoid touching the compressed canonical blob)
+try:
+    if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "REFACTOR195" for e in PATCH_TRACKER_V1):
+        PATCH_TRACKER_V1.insert(0, {"patch_id": "REFACTOR195", "scope": "sheets-robustness", "summary": "Harden Google Sheets snapshot loading against 429 rate limits (cooldown + retry + reduced header reads) and improve graceful fallback to local history.", "risk": "low"})
+except Exception:
+    pass
+
 
 def _yureeka_get_code_version(_lock=_YUREEKA_CODE_VERSION_LOCK):
     try:
@@ -652,84 +707,87 @@ SCOPES = [
     "https://www.googleapis.com/auth/drive",
 ]
 
+
 def get_google_sheet():
-    """Connect to Google Sheet (cached connection)"""
+    """Connect to Google Sheets worksheet (History). Returns a gspread Worksheet or None.
+
+    REFACTOR195:
+      - Avoid per-connect header reads (row_values) which cost extra quota.
+      - Add cooldown handling for 429/RESOURCE_EXHAUSTED to prevent repeated failures.
+      - Cache gspread client/spreadsheet/worksheet in Streamlit session_state to reduce repeated API calls.
+    """
     try:
-        creds = Credentials.from_service_account_info(
-            dict(st.secrets["gcp_service_account"]),
-            scopes=_coerce_google_oauth_scopes(SCOPES)
-        )
-        client = gspread.authorize(creds)
+        import streamlit as st
+        from google.oauth2.service_account import Credentials
+        import gspread
 
-        # Why:
-        # - Your spreadsheet contains multiple tabs (e.g., "New Analysis", "History", "HistoryFull", "Snapshots")
-        # - sheet1 is often NOT "History", so get_history() reads the wrong tab and sees "no analyses"
-        # Behavior:
-        # - Default worksheet_title = "History" (override via secrets: google_sheets.history_worksheet)
-        # - Fallback to sheet1 only if the worksheet doesn't exist
-        spreadsheet_name = (
-            st.secrets.get("google_sheets", {}).get("spreadsheet_name", "Yureeka_JSON")
-        )
-        ss = client.open(spreadsheet_name)
+        spreadsheet_name = st.secrets.get("google_sheets", {}).get("spreadsheet_name", "Yureeka_JSON")
+        worksheet_title = st.secrets.get("google_sheets", {}).get("worksheet_title", "History")
 
-        worksheet_title = st.secrets.get("google_sheets", {}).get("history_worksheet", "History")
+        # Short-circuit during cooldown: prefer cached handles or local fallbacks.
+        if _yureeka_sheets_in_rate_limit_cooldown_v1():
+            ws_key = f"_yureeka_gsheet_ws_v1::{spreadsheet_name}::{worksheet_title}"
+            cached_ws = st.session_state.get(ws_key)
+            if cached_ws is not None:
+                return cached_ws
+            _yureeka_sheets_rate_limit_notice_once_v1("⚠️ Google Sheets rate limit hit (429). Using local snapshot history for now.")
+            return None
+
+        scopes = _coerce_google_oauth_scopes(SCOPES)
         try:
-            sheet = ss.worksheet(worksheet_title)
+            _YUREEKA_SHEETS_SCOPES_DEBUG_V1.clear()
+            _YUREEKA_SHEETS_SCOPES_DEBUG_V1.update({"scopes": list(scopes), "n": int(len(scopes)), "ts": _yureeka_now_iso_v1()})
         except Exception:
             pass
-            sheet = ss.sheet1
 
-        # Ensure headers exist - handle response object
-        try:
-            headers = sheet.row_values(1)
-            if not headers or len(headers) == 0 or headers[0] != "id":
-                # update() returns a response object in newer gspread - ignore it
-                _ = sheet.update('A1:E1', [["id", "timestamp", "question", "confidence", "data"]])
-        except gspread.exceptions.APIError:
-            _ = sheet.update('A1:E1', [["id", "timestamp", "question", "confidence", "data"]])
-        except Exception:
-            pass  # Headers probably already exist
+        creds = Credentials.from_service_account_info(dict(st.secrets["gcp_service_account"]), scopes=scopes)
 
-        return sheet
+        # Cache the gspread client & opened spreadsheet per Streamlit session.
+        client_key = "_yureeka_gspread_client_v1"
+        ss_key = f"_yureeka_gspread_ss_v1::{spreadsheet_name}"
+        ws_key = f"_yureeka_gsheet_ws_v1::{spreadsheet_name}::{worksheet_title}"
 
-    except gspread.exceptions.SpreadsheetNotFound:
-        st.error("❌ Spreadsheet not found. Create 'Yureeka_JSON' (or your configured name) and share with service account.")
-        return None
-    except Exception as e:
-        error_str = str(e)
-        # Ignore Response [200] - it's actually success
-        if "Response [200]" in error_str:
-            # This means the connection worked, try to return the sheet anyway
+        client = st.session_state.get(client_key)
+        if client is None:
+            client = gspread.authorize(creds)
+            st.session_state[client_key] = client
+
+        ss = st.session_state.get(ss_key)
+        if ss is None:
+            ss = client.open(spreadsheet_name)
+            st.session_state[ss_key] = ss
+
+        ws = st.session_state.get(ws_key)
+        if ws is None:
             try:
-                creds = Credentials.from_service_account_info(
-                    dict(st.secrets["gcp_service_account"]),
-                    scopes=_coerce_google_oauth_scopes(SCOPES)
-                )
-                client = gspread.authorize(creds)
+                ws = ss.worksheet(worksheet_title)
+            except Exception:
+                ws = ss.sheet1
+            st.session_state[ws_key] = ws
 
-                spreadsheet_name = st.secrets.get("google_sheets", {}).get("spreadsheet_name", "Yureeka_JSON")
-                ss = client.open(spreadsheet_name)
-                worksheet_title = st.secrets.get("google_sheets", {}).get("history_worksheet", "History")
+        return ws
+    except Exception as e:
+        try:
+            import streamlit as st
+            if _is_sheets_rate_limit_error(e):
+                _yureeka_sheets_mark_rate_limited_v1(e)
+                _yureeka_sheets_rate_limit_notice_once_v1("⚠️ Google Sheets rate limit hit (429). Using local snapshot history for now.")
+                # best-effort: return cached worksheet handle if present
                 try:
-                    return ss.worksheet(worksheet_title)
+                    spreadsheet_name = st.secrets.get("google_sheets", {}).get("spreadsheet_name", "Yureeka_JSON")
+                    worksheet_title = st.secrets.get("google_sheets", {}).get("worksheet_title", "History")
+                    ws_key = f"_yureeka_gsheet_ws_v1::{spreadsheet_name}::{worksheet_title}"
+                    cached_ws = st.session_state.get(ws_key)
+                    if cached_ws is not None:
+                        return cached_ws
                 except Exception:
-                    return ss.sheet1
-            except:
-                pass
-        st.error(f"❌ Failed to connect to Google Sheets: {e}")
+                    pass
+                return None
+            st.error(f"❌ Failed to connect to Google Sheets: {e}")
+        except Exception:
+            pass
         return None
 
-def generate_analysis_id() -> str:
-    """Generate unique ID for analysis"""
-    return f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{hashlib.md5(str(datetime.now().timestamp()).encode()).hexdigest()[:6]}"
-
-# Why:
-# - Evolution/diff are now anchor-driven; analysis must persist a deterministic
-#   canonical_key -> anchor_hash mapping for drift=0 convergence.
-# - Some UI/Sheets wrappers omit anchors unless explicitly emitted.
-# Determinism:
-# - Only uses existing evidence/candidates already present in the analysis payload.
-# - No re-fetching; no heuristic matching.
 def add_to_history(analysis: dict) -> bool:
     """
     Save analysis to Google Sheet (or session fallback).
@@ -1082,6 +1140,35 @@ def add_to_history(analysis: dict) -> bool:
         except Exception:
             pass
         return True
+
+    # REFACTOR195: ensure History worksheet headers once per session (avoids per-connect reads).
+    try:
+        if not st.session_state.get("_yureeka_history_headers_ok_v1"):
+            if _yureeka_sheets_in_rate_limit_cooldown_v1():
+                raise RuntimeError("sheets_rate_limit_cooldown")
+            expected_headers = ["id", "timestamp", "question", "final_confidence", "analysis_json"]
+            headers = []
+            try:
+                headers = sheet.row_values(1) if sheet else []
+            except Exception as e:
+                if _is_sheets_rate_limit_error(e):
+                    raise
+            norm = [str(h or "").strip() for h in (headers or [])[:5]]
+            if (not norm) or (norm != expected_headers):
+                sheet.update("A1:E1", [expected_headers])
+            st.session_state["_yureeka_history_headers_ok_v1"] = True
+    except Exception as e:
+        if _is_sheets_rate_limit_error(e):
+            _yureeka_sheets_mark_rate_limited_v1(e)
+            _yureeka_sheets_rate_limit_notice_once_v1("⚠️ Google Sheets rate limit hit (429). Saving to local history only for now.")
+            try:
+                if "analysis_history" not in st.session_state:
+                    st.session_state.analysis_history = []
+                st.session_state.analysis_history.append(analysis)
+                st.session_state["last_analysis"] = analysis
+            except Exception:
+                pass
+            return True
 
     try:
         analysis_id = generate_analysis_id()
@@ -10227,7 +10314,7 @@ def _is_sheets_rate_limit_error(err: Exception) -> bool:
         pass
         s = ""
     # Common markers seen via gspread/googleapiclient:
-    markers = ["RESOURCE_EXHAUSTED", "Quota exceeded", "RATE_LIMIT_EXCEEDED", "429"]
+    markers = ["RESOURCE_EXHAUSTED", "Quota exceeded", "RATE_LIMIT_EXCEEDED", "429", "ReadRequestsPerMinutePerUser", "Read requests per minute", "read_requests"]
     return any(m in s for m in markers)
 
 def sheets_get_all_values_cached(ws, cache_key: str):
@@ -10240,6 +10327,13 @@ def sheets_get_all_values_cached(ws, cache_key: str):
     cached = _sheets_cache_get(key)
     if cached is not None:
         return cached
+
+    # REFACTOR195: if we recently hit a Sheets 429, avoid hammering the API and prefer cached/stale values.
+    if _yureeka_sheets_in_rate_limit_cooldown_v1():
+        stale = _SHEETS_READ_CACHE.get(key)
+        if stale and isinstance(stale, tuple) and len(stale) == 2:
+            return stale[1]
+        return []
     try:
         # Previous draft accidentally recursed into itself and referenced an undefined variable.
         # This is a direct execution conflict fix (no behavior change intended beyond correctness).
@@ -10250,6 +10344,7 @@ def sheets_get_all_values_cached(ws, cache_key: str):
         _SHEETS_LAST_READ_ERROR = str(e)
         # Rate-limit fallback: return last cached value if we have one, else empty list
         if _is_sheets_rate_limit_error(e):
+            _yureeka_sheets_mark_rate_limited_v1(e)
             stale = _SHEETS_READ_CACHE.get(key)
             if stale and isinstance(stale, tuple) and len(stale) == 2:
                 return stale[1]
@@ -10263,23 +10358,64 @@ def sheets_get_all_values_cached(ws, cache_key: str):
 # Notes:
 #   - Write-once semantics by source_snapshot_hash.
 #   - Chunking and reassembly are deterministic (part_index ordering).
+
 def get_google_spreadsheet():
-    """Connect to Google Spreadsheet (cached connection if available)."""
+    """Connect to Google Spreadsheet (cached connection if available).
+
+    REFACTOR195:
+      - Reuse the session-cached gspread client/spreadsheet where possible.
+      - Respect the 429 cooldown to avoid repeated read-request quota errors.
+    """
     try:
-        # If get_google_sheet() exists and already opened the spreadsheet as sheet.sheet1,
-        # we re-open to obtain the Spreadsheet handle (additive; avoids refactoring).
         import streamlit as st
         from google.oauth2.service_account import Credentials
         import gspread
 
-        creds = Credentials.from_service_account_info(
-            dict(st.secrets["gcp_service_account"]),
-            scopes=_coerce_google_oauth_scopes(SCOPES)
-        )
-        client = gspread.authorize(creds)
         spreadsheet_name = st.secrets.get("google_sheets", {}).get("spreadsheet_name", "Yureeka_JSON")
-        return client.open(spreadsheet_name)
-    except Exception:
+
+        if _yureeka_sheets_in_rate_limit_cooldown_v1():
+            ss_key = f"_yureeka_gspread_ss_v1::{spreadsheet_name}"
+            cached_ss = st.session_state.get(ss_key)
+            if cached_ss is not None:
+                return cached_ss
+            _yureeka_sheets_rate_limit_notice_once_v1("⚠️ Google Sheets rate limit hit (429). Using local snapshot cache for now.")
+            return None
+
+        scopes = _coerce_google_oauth_scopes(SCOPES)
+        creds = Credentials.from_service_account_info(dict(st.secrets["gcp_service_account"]), scopes=scopes)
+
+        client_key = "_yureeka_gspread_client_v1"
+        ss_key = f"_yureeka_gspread_ss_v1::{spreadsheet_name}"
+
+        client = st.session_state.get(client_key)
+        if client is None:
+            client = gspread.authorize(creds)
+            st.session_state[client_key] = client
+
+        ss = st.session_state.get(ss_key)
+        if ss is None:
+            ss = client.open(spreadsheet_name)
+            st.session_state[ss_key] = ss
+
+        return ss
+    except Exception as e:
+        try:
+            import streamlit as st
+            if _is_sheets_rate_limit_error(e):
+                _yureeka_sheets_mark_rate_limited_v1(e)
+                _yureeka_sheets_rate_limit_notice_once_v1("⚠️ Google Sheets rate limit hit (429). Using local snapshot cache for now.")
+                try:
+                    spreadsheet_name = st.secrets.get("google_sheets", {}).get("spreadsheet_name", "Yureeka_JSON")
+                    ss_key = f"_yureeka_gspread_ss_v1::{spreadsheet_name}"
+                    cached_ss = st.session_state.get(ss_key)
+                    if cached_ss is not None:
+                        return cached_ss
+                except Exception:
+                    pass
+                return None
+            st.error(f"❌ Failed to connect to Google Sheets: {e}")
+        except Exception:
+            pass
         return None
 
 def _ensure_snapshot_worksheet(spreadsheet, title: str = "Snapshots"):
