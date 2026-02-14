@@ -136,7 +136,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "LLM01H"
+_YUREEKA_CODE_VERSION_LOCK = "LLM01D"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 
 # REFACTOR206: Release Candidate freeze (no pipeline behavior change).
@@ -612,18 +612,26 @@ def _yureeka_call_openai_chat_json_v1(
     max_tokens: int = 220,
 ) -> Tuple[Optional[dict], dict]:
     """Call OpenAI Chat Completions for a strict JSON object response (best-effort)."""
-    diag = {"ok": False, "status": None, "reason": "", "model": str(model or "")}
+    diag = {"ok": False, "status": None, "reason": "", "model": str(model or ""), "requests_present": bool(requests is not None), "api_key_present": False, "base_url": "", "strict_mode": bool(globals().get("LLM_STRICT_MODE")), "response_format": False, "timeout_sec": int(timeout_sec or 30)}
     try:
         if requests is None:
             diag["reason"] = "requests_missing"
             return (None, diag)
 
         api_key = os.environ.get("OPENAI_API_KEY") or os.environ.get("YUREEKA_OPENAI_API_KEY") or ""
+        try:
+            diag["api_key_present"] = bool(api_key)
+        except Exception:
+            pass
         if not api_key:
             diag["reason"] = "missing_api_key"
             return (None, diag)
 
         base = os.environ.get("OPENAI_BASE_URL") or "https://api.openai.com/v1"
+        try:
+            diag["base_url"] = str(base or "")[:200]
+        except Exception:
+            pass
         url = base.rstrip("/") + "/chat/completions"
 
         headers = {
@@ -646,6 +654,10 @@ def _yureeka_call_openai_chat_json_v1(
         try:
             if bool(globals().get("LLM_STRICT_MODE")):
                 payload["response_format"] = {"type": "json_object"}
+                try:
+                    diag["response_format"] = True
+                except Exception:
+                    pass
         except Exception:
             pass
 
@@ -653,6 +665,10 @@ def _yureeka_call_openai_chat_json_v1(
         diag["status"] = int(resp.status_code)
         if int(resp.status_code) != 200:
             diag["reason"] = "http_" + str(resp.status_code)
+            try:
+                diag["body_snip"] = str(getattr(resp, "text", "") or "")[:180]
+            except Exception:
+                pass
             return (None, diag)
 
         j = resp.json()
@@ -671,7 +687,124 @@ def _yureeka_call_openai_chat_json_v1(
         return (None, diag)
     except Exception as e:
         diag["reason"] = "exception:" + str(type(e).__name__)
+        try:
+            diag["exception_snip"] = str(e)[:180]
+        except Exception:
+            pass
         return (None, diag)
+
+
+def _llm01_provider_status_v1() -> dict:
+    """Non-sensitive provider readiness snapshot (no secrets)."""
+    try:
+        model = os.environ.get("YUREEKA_LLM_MODEL") or os.environ.get("OPENAI_MODEL") or "gpt-4o-mini"
+    except Exception:
+        model = "gpt-4o-mini"
+    try:
+        base = os.environ.get("OPENAI_BASE_URL") or "https://api.openai.com/v1"
+    except Exception:
+        base = "https://api.openai.com/v1"
+    try:
+        api_key_present = bool(os.environ.get("OPENAI_API_KEY") or os.environ.get("YUREEKA_OPENAI_API_KEY"))
+    except Exception:
+        api_key_present = False
+    try:
+        cache_dir = str(globals().get("LLM_CACHE_DIR_V1") or ".yureeka_llm_cache")
+    except Exception:
+        cache_dir = ".yureeka_llm_cache"
+    return {
+        "requests_present": bool(requests is not None),
+        "api_key_present": bool(api_key_present),
+        "base_url": str(base or "")[:200],
+        "model": str(model or "")[:80],
+        "strict_mode": bool(globals().get("LLM_STRICT_MODE")),
+        "cache_dir": str(cache_dir or "")[:180],
+    }
+
+
+def _llm01_update_llm_diag_agg_v1(out_debug: dict, call_diag: dict, *, cache_hit: bool = False) -> None:
+    """Aggregate call outcomes without storing prompts or raw model outputs."""
+    if not isinstance(out_debug, dict) or not isinstance(call_diag, dict):
+        return
+
+    agg = out_debug.get("llm01_llm_diag_agg_v1")
+    if not isinstance(agg, dict):
+        agg = {"attempts": 0, "ok": 0, "cache_hits": 0, "reasons": {}, "status": {}, "last": {}}
+        out_debug["llm01_llm_diag_agg_v1"] = agg
+
+    try:
+        agg["attempts"] = int(agg.get("attempts") or 0) + 1
+    except Exception:
+        pass
+
+    if bool(cache_hit):
+        try:
+            agg["cache_hits"] = int(agg.get("cache_hits") or 0) + 1
+        except Exception:
+            pass
+
+    if bool(call_diag.get("ok")):
+        try:
+            agg["ok"] = int(agg.get("ok") or 0) + 1
+        except Exception:
+            pass
+
+    reason = str(call_diag.get("reason") or "")[:120]
+    status = call_diag.get("status")
+    status_s = ""
+    try:
+        status_s = str(int(status))
+    except Exception:
+        status_s = str(status) if status is not None else ""
+
+    # Counts
+    try:
+        rs = agg.get("reasons")
+        if not isinstance(rs, dict):
+            rs = {}
+            agg["reasons"] = rs
+        rs[reason] = int(rs.get(reason) or 0) + 1
+    except Exception:
+        pass
+
+    try:
+        ss = agg.get("status")
+        if not isinstance(ss, dict):
+            ss = {}
+            agg["status"] = ss
+        if status_s:
+            ss[status_s] = int(ss.get(status_s) or 0) + 1
+    except Exception:
+        pass
+
+    # Last
+    try:
+        last = agg.get("last")
+        if not isinstance(last, dict):
+            last = {}
+            agg["last"] = last
+        last.update({
+            "reason": reason,
+            "status": status if status is None else int(status),
+            "model": str(call_diag.get("model") or "")[:80],
+            "requests_present": bool(call_diag.get("requests_present")) if "requests_present" in call_diag else bool(requests is not None),
+            "api_key_present": bool(call_diag.get("api_key_present")) if "api_key_present" in call_diag else bool(os.environ.get("OPENAI_API_KEY") or os.environ.get("YUREEKA_OPENAI_API_KEY")),
+            "base_url": str(call_diag.get("base_url") or "")[:200],
+            "response_format": bool(call_diag.get("response_format")) if "response_format" in call_diag else None,
+        })
+        # Optional tiny error hints
+        if isinstance(call_diag.get("exception_snip"), str):
+            last["exception_snip"] = str(call_diag.get("exception_snip") or "")[:180]
+        if isinstance(call_diag.get("body_snip"), str):
+            last["body_snip"] = str(call_diag.get("body_snip") or "")[:180]
+    except Exception:
+        pass
+
+    # Provider status snapshot (non-sensitive)
+    try:
+        out_debug["llm01_llm_provider_status_v1"] = _llm01_provider_status_v1()
+    except Exception:
+        pass
 
 def _llm01_llm_rank_windows_v1(
     *,
@@ -743,6 +876,11 @@ def _llm01_llm_rank_windows_v1(
         diag["used"] = True
         diag["cache_hit"] = True
         obj = cached
+        try:
+            if isinstance(out_debug, dict):
+                _llm01_update_llm_diag_agg_v1(out_debug, {"ok": True, "status": None, "reason": "cache_hit", "model": str(model)}, cache_hit=True)
+        except Exception:
+            pass
     else:
         # Call model (best-effort)
         system_prompt = (
@@ -756,6 +894,11 @@ def _llm01_llm_rank_windows_v1(
             user_payload=input_payload,
         )
         diag.update({"used": bool(call_diag.get("ok")), "cache_hit": False, "reason": call_diag.get("reason")})
+        try:
+            if isinstance(call_diag, dict) and isinstance(out_debug, dict):
+                _llm01_update_llm_diag_agg_v1(out_debug, call_diag, cache_hit=False)
+        except Exception:
+            pass
         if isinstance(call_diag, dict) and out_debug is not None and isinstance(out_debug, dict):
             # Do not leak prompts; include minimal diagnostics only.
             out_debug.setdefault("llm01_evidence_snippet_call_v1", [])
@@ -853,33 +996,44 @@ def _llm01_attach_evidence_snippets_to_pmc_v1(
         end_idx = _llm01__coerce_int_v1(best.get("end_idx"), default=None)
         raw = str(best.get("raw") or "")
 
-        if not url or start_idx is None or end_idx is None:
+        if not url:
             skipped += 1
             continue
 
+        # Retrieve a stable text basis if possible; otherwise fall back to candidate context snippet.
         text, basis_key = _llm01_safe_get_source_text_v1(pool_llm01, url)
         if not text:
-            # Fallback: use candidate context_snippet if provided
             ctx = best.get("context_snippet")
             if isinstance(ctx, str) and ctx.strip():
-                metric["evidence_best_snippet"] = ctx.strip()[:720]
-                metric["evidence_offsets"] = {
-                    "start_idx": int(start_idx),
-                    "end_idx": int(end_idx),
-                    "window_start": None,
-                    "window_end": None,
-                    "text_basis": "context_snippet",
-                    "source_url": url,
-                    "anchor_hash": str(best.get("anchor_hash") or ""),
-                }
-                metric["evidence_snippet_method"] = "context_fallback"
-                applied += 1
-            else:
-                skipped += 1
+                text = ctx.strip()
+                basis_key = "context_snippet"
+
+        if not text:
+            skipped += 1
             continue
 
-        # Build snippet windows
-        windows = _llm01_make_snippet_windows_v1(text, start_idx, end_idx)
+        # If indices are missing (e.g., evolution wrappers), derive within the chosen text basis.
+        idx_method = "candidate_indices"
+        if start_idx is None or end_idx is None:
+            idx_method = "derived_within_" + str(basis_key or "text")
+            try:
+                if raw and isinstance(raw, str) and raw and (raw in text):
+                    start_idx = int(text.find(raw))
+                    end_idx = int(start_idx + len(raw))
+                else:
+                    mnum = re.search(r"\d[\d,\.]*", text)
+                    if mnum:
+                        start_idx = int(mnum.start())
+                        end_idx = int(mnum.end())
+                    else:
+                        start_idx = 0
+                        end_idx = min(len(text), 1)
+            except Exception:
+                start_idx = 0
+                end_idx = min(len(text), 1)
+
+        # Build snippet windows (deterministic)
+        windows = _llm01_make_snippet_windows_v1(text, int(start_idx or 0), int(end_idx or 0))
         if not windows:
             skipped += 1
             continue
@@ -956,6 +1110,7 @@ def _llm01_attach_evidence_snippets_to_pmc_v1(
             "window_start": int(chosen.get("window_start") or 0) if chosen.get("window_start") is not None else None,
             "window_end": int(chosen.get("window_end") or 0) if chosen.get("window_end") is not None else None,
             "text_basis": str(basis_key or ""),
+                    "idx_method": str(idx_method or ""),
             "text_len": int(len(text) if isinstance(text, str) else 0),
             "source_url": url,
             "anchor_hash": str(best.get("anchor_hash") or ""),
@@ -1141,6 +1296,13 @@ def _llm01_hotfix_apply_evidence_snippets_final_v1(wrapper: dict, *, stage: str 
         except Exception:
             pass
 
+        # Provider readiness snapshot (non-sensitive; helps diagnose why llm_used==0)
+        try:
+            if isinstance(dbg, dict):
+                dbg["llm01_llm_provider_status_v1"] = _llm01_provider_status_v1()
+        except Exception:
+            pass
+
         return agg
     except Exception:
         return {}
@@ -1313,6 +1475,14 @@ except Exception:
 try:
     if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "LLM00" for e in PATCH_TRACKER_V1):
         PATCH_TRACKER_V1.insert(0, {"patch_id": "LLM00", "scope": "llm-sidecar", "summary": "Add LLM sidecar scaffolding (feature flags default OFF), deterministic cache key + optional disk cache helpers, and a debug-only dataset logger. No selection/diff behavior changes.", "risk": "low"})
+except Exception:
+    pass
+
+
+# LLM01D: diagnostics overlay (explain why LLM calls are not used; additive only).
+try:
+    if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "LLM01D" for e in PATCH_TRACKER_V1):
+        PATCH_TRACKER_V1.insert(0, {"patch_id": "LLM01D", "scope": "llm-sidecar", "summary": "Diagnostics: add provider readiness + aggregated call failure reasons for LLM01 evidence-snippet ranking; also support evolution wrapper metrics lacking provenance by deriving indices from context_snippet. Additive only.", "risk": "low"})
 except Exception:
     pass
 
