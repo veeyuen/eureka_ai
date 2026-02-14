@@ -148,7 +148,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "REFACTOR195"
+_YUREEKA_CODE_VERSION_LOCK = "REFACTOR196"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 
 # REFACTOR129: run-level beacons (reset per evolution run)
@@ -219,6 +219,8 @@ except Exception:
 try:
     if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "REFACTOR195" for e in PATCH_TRACKER_V1):
         PATCH_TRACKER_V1.insert(0, {"patch_id": "REFACTOR195", "scope": "sheets-robustness", "summary": "Harden Google Sheets snapshot loading against 429 rate limits (cooldown + retry + reduced header reads) and improve graceful fallback to local history.", "risk": "low"})
+    if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "REFACTOR196" for e in PATCH_TRACKER_V1):
+        PATCH_TRACKER_V1.insert(0, {"patch_id": "REFACTOR196", "scope": "sheets-robustness", "summary": "Restore missing generate_analysis_id() used by add_to_history/HistoryFull writes; fix NameError during Google Sheets save.", "risk": "low"})
 except Exception:
     pass
 
@@ -787,6 +789,27 @@ def get_google_sheet():
         except Exception:
             pass
         return None
+
+
+
+def generate_analysis_id() -> str:
+    """Generate an analysis_id like YYYYMMDD_HHMMSS_xxxxxx (UTC).
+
+    This format is relied upon by _refactor112_parse_ts_from_analysis_id_v1 for
+    timestamp inference when created_at fields are missing or non-ISO.
+    """
+    try:
+        import datetime as _dt
+        import os as _os
+        ts = _dt.datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+        suf = _os.urandom(3).hex()  # 6 hex chars
+        return f"{ts}_{suf}"
+    except Exception:
+        try:
+            import time as _time
+            return str(int(_time.time()))
+        except Exception:
+            return "0"
 
 def add_to_history(analysis: dict) -> bool:
     """
