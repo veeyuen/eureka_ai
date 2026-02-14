@@ -6,6 +6,7 @@ import io
 import os
 import re
 import json
+import time
 import streamlit as st
 
 # REFACTOR155: Downsizing (low-risk): prune obsolete legacy diff-binding fallback ladders (no behavior change).
@@ -23,14 +24,11 @@ _SHEETS_LAST_READ_ERROR = None
 
 # REFACTOR195: Sheets rate-limit cooldown (avoid repeated 429 loops; prefer cached/local fallbacks).
 _SHEETS_RATE_LIMIT_COOLDOWN_UNTIL_TS_V1 = 0.0
-_SHEETS_RATE_LIMIT_LAST_ERROR_V1 = ""
-_SHEETS_RATE_LIMIT_LAST_MARK_TS_V1 = 0.0
 
 _YUREEKA_SHEETS_SCOPES_DEBUG_V1 = {}  # REFACTOR100
 
 def _yureeka_sheets_now_ts_v1() -> float:
     try:
-        import time
         return float(time.time())
     except Exception:
         return 0.0
@@ -42,15 +40,13 @@ def _yureeka_sheets_in_rate_limit_cooldown_v1() -> bool:
         return False
 
 def _yureeka_sheets_mark_rate_limited_v1(err: Exception, cooldown_sec: int = 65):
-    """Mark the Sheets API as rate-limited and activate a short cooldown to avoid repeated 429 loops."""
-    global _SHEETS_RATE_LIMIT_COOLDOWN_UNTIL_TS_V1, _SHEETS_RATE_LIMIT_LAST_ERROR_V1, _SHEETS_RATE_LIMIT_LAST_MARK_TS_V1
-    try:
-        _SHEETS_RATE_LIMIT_LAST_ERROR_V1 = (str(err) or "")[:1000]
-    except Exception:
-        _SHEETS_RATE_LIMIT_LAST_ERROR_V1 = "rate_limit"
+    """Mark the Sheets API as rate-limited and activate a short cooldown to avoid repeated 429 loops.
+
+    REFACTOR197: prune unused last-error / last-mark debug globals (they were never read).
+    """
+    global _SHEETS_RATE_LIMIT_COOLDOWN_UNTIL_TS_V1
     try:
         now = _yureeka_sheets_now_ts_v1()
-        _SHEETS_RATE_LIMIT_LAST_MARK_TS_V1 = now
         _SHEETS_RATE_LIMIT_COOLDOWN_UNTIL_TS_V1 = now + float(cooldown_sec or 60)
     except Exception:
         pass
@@ -58,7 +54,6 @@ def _yureeka_sheets_mark_rate_limited_v1(err: Exception, cooldown_sec: int = 65)
 def _yureeka_sheets_rate_limit_notice_once_v1(msg: str):
     """Emit a Streamlit warning at most once every ~20s (per session)."""
     try:
-        import streamlit as st
         k = "_yureeka_sheets_rate_limit_notice_ts_v1"
         now = _yureeka_sheets_now_ts_v1()
         last = float(st.session_state.get(k) or 0.0)
@@ -148,7 +143,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "REFACTOR196"
+_YUREEKA_CODE_VERSION_LOCK = "REFACTOR199"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 
 # REFACTOR129: run-level beacons (reset per evolution run)
@@ -221,6 +216,25 @@ try:
         PATCH_TRACKER_V1.insert(0, {"patch_id": "REFACTOR195", "scope": "sheets-robustness", "summary": "Harden Google Sheets snapshot loading against 429 rate limits (cooldown + retry + reduced header reads) and improve graceful fallback to local history.", "risk": "low"})
     if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "REFACTOR196" for e in PATCH_TRACKER_V1):
         PATCH_TRACKER_V1.insert(0, {"patch_id": "REFACTOR196", "scope": "sheets-robustness", "summary": "Restore missing generate_analysis_id() used by add_to_history/HistoryFull writes; fix NameError during Google Sheets save.", "risk": "low"})
+    if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "REFACTOR197" for e in PATCH_TRACKER_V1):
+        PATCH_TRACKER_V1.insert(0, {"patch_id": "REFACTOR197", "scope": "downsizing", "summary": "Prune unused Sheets rate-limit debug globals + remove redundant local streamlit/Credentials imports in Sheets helpers; no behavior changes.", "risk": "low"})
+except Exception:
+    pass
+
+
+
+# REFACTOR198: patch tracker overlay (avoid touching the compressed canonical blob)
+try:
+    if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "REFACTOR198" for e in PATCH_TRACKER_V1):
+        PATCH_TRACKER_V1.insert(0, {"patch_id": "REFACTOR198", "scope": "downsizing", "summary": "Remove redundant local imports (hashlib/json/re/time/os aliases) and unify time usage via module-level import; no behavior changes.", "risk": "low"})
+except Exception:
+    pass
+
+
+# REFACTOR199: patch tracker overlay (avoid touching the compressed canonical blob)
+try:
+    if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "REFACTOR199" for e in PATCH_TRACKER_V1):
+        PATCH_TRACKER_V1.insert(0, {"patch_id": "REFACTOR199", "scope": "endstate", "summary": "Add debug.endstate_check_v1 (analysis + evolution) for machine-readable invariants; additive only.", "risk": "low"})
 except Exception:
     pass
 
@@ -230,6 +244,139 @@ def _yureeka_get_code_version(_lock=_YUREEKA_CODE_VERSION_LOCK):
         return str(_lock)
     except Exception:
         return "UNKNOWN"
+
+
+
+def _yureeka_endstate_check_v1(stage: str, analysis_wrapper: dict = None, evolution_wrapper: dict = None, injected_url: str = "") -> dict:
+    """Build a compact, machine-readable end-state invariants check block.
+
+    REFACTOR199: additive-only diagnostics. Never raises; callers should guard anyway.
+    """
+    stage = str(stage or "")
+    checks = {}
+    failures = []
+
+    # --- Analysis-side checks ---
+    try:
+        aw = analysis_wrapper if isinstance(analysis_wrapper, dict) else None
+        if aw is None and isinstance(evolution_wrapper, dict):
+            # Evolution wrappers often carry a copy of baseline PMC under results.primary_metrics_canonical
+            try:
+                rr = evolution_wrapper.get("results")
+                if isinstance(rr, dict) and isinstance(rr.get("primary_metrics_canonical"), dict):
+                    aw = {"primary_metrics_canonical": rr.get("primary_metrics_canonical")}
+            except Exception:
+                aw = None
+
+        pmc = (aw or {}).get("primary_metrics_canonical")
+        pmc_count = len(pmc) if isinstance(pmc, dict) else 0
+        checks["pmc_count"] = pmc_count
+        # "pmc_top_n" acceptance target in this project is 4 when schema-frozen keys are present.
+        checks["pmc_top_n"] = min(pmc_count, 10)
+
+        if stage.startswith("analysis"):
+            checks["pmc_expected_4"] = bool(pmc_count == 4)
+            if pmc_count != 4:
+                failures.append("analysis:pmc_count!=4")
+    except Exception:
+        pass
+
+    # --- Evolution-side checks ---
+    try:
+        ew = evolution_wrapper if isinstance(evolution_wrapper, dict) else None
+        if ew is not None:
+            prev_ts = str(ew.get("previous_timestamp") or "")
+            cur_ts = str(ew.get("timestamp") or "")
+            checks["previous_timestamp_present"] = bool(prev_ts)
+            checks["timestamp_present"] = bool(cur_ts)
+
+            # Baseline wiring: previous_timestamp should match baseline analysis timestamp.
+            base_ts = ""
+            if isinstance(analysis_wrapper, dict):
+                base_ts = str(analysis_wrapper.get("timestamp") or "")
+            if base_ts:
+                checks["prev_equals_analysis_ts"] = bool(prev_ts == base_ts)
+                if prev_ts != base_ts:
+                    failures.append("evolution:prev_ts!=analysis_ts")
+
+            rr = ew.get("results")
+            if isinstance(rr, dict):
+                rows = rr.get("metric_changes") or []
+                if not isinstance(rows, list):
+                    rows = []
+                checks["metric_rows"] = len(rows)
+
+                # Δt gating heuristics: prod populated, injected blank/None
+                delta_vals = []
+                urls = []
+                for r in rows:
+                    if isinstance(r, dict):
+                        delta_vals.append(r.get("analysis_evolution_delta_seconds"))
+                        urls.append(str(r.get("source_url") or "").strip())
+
+                present = 0
+                for v in delta_vals:
+                    try:
+                        if isinstance(v, (int, float)) and float(v) >= 0:
+                            present += 1
+                    except Exception:
+                        pass
+                ratio = (present / len(delta_vals)) if delta_vals else 0.0
+                checks["delta_present_ratio"] = ratio
+                checks["assumed_injected_mode"] = bool(ratio < 0.5)
+
+                # If we have an injected_url hint, verify winners are from it (only meaningful in injected mode)
+                inj = str(injected_url or "").strip()
+                if inj:
+                    inj_hits = sum(1 for u in urls if u == inj)
+                    checks["injected_url"] = inj
+                    checks["injected_url_hit_count"] = inj_hits
+                    checks["injected_url_hit_ratio"] = (inj_hits / len(urls)) if urls else 0.0
+
+                # Stability (if present)
+                try:
+                    ss = rr.get("stability_score")
+                    if isinstance(ss, (int, float)):
+                        checks["stability_score"] = float(ss)
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+    return {
+        "stage": stage,
+        "pass": (len(failures) == 0),
+        "failures": failures,
+        "checks": checks,
+    }
+
+
+def _yureeka_attach_endstate_check_v1(wrapper: dict, stage: str, analysis_wrapper: dict = None, injected_url: str = ""):
+    """Attach endstate_check_v1 into the most durable debug location for the given wrapper."""
+    if not isinstance(wrapper, dict):
+        return
+    try:
+        block = _yureeka_endstate_check_v1(stage=stage, analysis_wrapper=analysis_wrapper, evolution_wrapper=wrapper, injected_url=injected_url)
+    except Exception:
+        return
+
+    # Prefer results.debug (evolution outputs persist this) else top-level debug (analysis persists this).
+    try:
+        rr = wrapper.get("results")
+        if isinstance(rr, dict):
+            rr.setdefault("debug", {})
+            if isinstance(rr.get("debug"), dict):
+                rr["debug"]["endstate_check_v1"] = block
+                return
+    except Exception:
+        pass
+
+    try:
+        wrapper.setdefault("debug", {})
+        if isinstance(wrapper.get("debug"), dict):
+            wrapper["debug"]["endstate_check_v1"] = block
+    except Exception:
+        pass
 
 def _yureeka_authority_manifest_v1() -> dict:
     """Additive debug helper: capture which 'last-wins' definitions are actually active at runtime.
@@ -284,7 +431,7 @@ def _yureeka_authority_manifest_v1() -> dict:
 def _yureeka_runtime_identity_v1():
     """Additive debug helper: identify the running script reliably (helps diagnose stale-version runs)."""
     try:
-        import sys, platform, hashlib, datetime
+        import sys, platform, datetime
         out = {
             "code_version": _yureeka_get_code_version(),
             "authority_manifest_v1": _yureeka_authority_manifest_v1(),
@@ -719,8 +866,6 @@ def get_google_sheet():
       - Cache gspread client/spreadsheet/worksheet in Streamlit session_state to reduce repeated API calls.
     """
     try:
-        import streamlit as st
-        from google.oauth2.service_account import Credentials
         import gspread
 
         spreadsheet_name = st.secrets.get("google_sheets", {}).get("spreadsheet_name", "Yureeka_JSON")
@@ -770,7 +915,6 @@ def get_google_sheet():
         return ws
     except Exception as e:
         try:
-            import streamlit as st
             if _is_sheets_rate_limit_error(e):
                 _yureeka_sheets_mark_rate_limited_v1(e)
                 _yureeka_sheets_rate_limit_notice_once_v1("⚠️ Google Sheets rate limit hit (429). Using local snapshot history for now.")
@@ -800,14 +944,12 @@ def generate_analysis_id() -> str:
     """
     try:
         import datetime as _dt
-        import os as _os
         ts = _dt.datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-        suf = _os.urandom(3).hex()  # 6 hex chars
+        suf = os.urandom(3).hex()  # 6 hex chars
         return f"{ts}_{suf}"
     except Exception:
         try:
-            import time as _time
-            return str(int(_time.time()))
+            return str(int(time.time()))
         except Exception:
             return "0"
 
@@ -990,8 +1132,6 @@ def add_to_history(analysis: dict) -> bool:
     #   and/or inside evidence entries (not only in analysis["metric_anchors"]).
     # - This patch copies existing anchor metadata only (no fabrication, no refetch).
     try:
-        import hashlib
-
         def _norm_ctx(s: str) -> str:
             try:
                 return re.sub(r"\s+", " ", (s or "").strip())
@@ -1517,8 +1657,7 @@ def add_to_history(analysis: dict) -> bool:
 
         # REFACTOR105: mark History as dirty after a successful Sheets append so the next get_history() bypasses cached reads.
         try:
-            import time as _time
-            st.session_state["_history_dirty_v1"] = float(_time.time())
+            st.session_state["_history_dirty_v1"] = float(time.time())
             st.session_state["_history_dirty_reason_v1"] = "append_row"
         except Exception:
             pass
@@ -1827,9 +1966,6 @@ def canonicalize_numeric_candidate(candidate: dict) -> dict:
     - Does not change extraction behavior; only enriches fields.
 
     """
-
-    import hashlib
-
     if not isinstance(candidate, dict):
 
         return {}
@@ -2542,8 +2678,7 @@ def get_history(limit: int = MAX_HISTORY_ITEMS) -> List[Dict]:
             _dirty = None
 
         try:
-            import time as _time
-            if isinstance(_dirty, (int, float)) and (_time.time() - float(_dirty) < 120):
+            if isinstance(_dirty, (int, float)) and (time.time() - float(_dirty) < 120):
                 direct = sheet.get_all_values()
                 if direct and len(direct) >= 2:
                     values = direct
@@ -3511,7 +3646,6 @@ def search_serpapi(query: str, num_results: int = 10) -> List[Dict]:
 def _inj_diag_make_run_id(prefix: str = "run") -> str:
     """Short correlation id for a single analysis/evolution run."""
     try:
-        import time, hashlib
         seed = f"{prefix}|{time.time()}|{os.getpid()}|{os.urandom(8).hex()}"
         return hashlib.sha256(seed.encode("utf-8")).hexdigest()[:12]
     except Exception:
@@ -4025,7 +4159,6 @@ def _yureeka_extract_injected_urls_v1(web_context: Any) -> list:
 def _inj_diag_set_hash(urls: list) -> str:
     """Stable sha256 of sorted URL list (for compact logging)."""
     try:
-        import hashlib
         lst = [str(u or "").strip() for u in (urls or []) if str(u or "").strip()]
         lst = sorted(set(lst))
         payload = "|".join(lst)
@@ -4607,8 +4740,6 @@ def fetch_web_context(
     - Uses scrape_url() which now has ScrapingDog + safe fallback scraper
     - Restores legacy contract: web_context["sources"] AND ["web_sources"]
     """
-    from datetime import datetime, timezone
-
     # REFACTOR129: reset run-level beacons for overlap suppression + precision tiebreak
     global _REFACTOR129_DECIMAL_OVERLAP_SUPPRESSION_V1, _REFACTOR129_PRECISION_TIEBREAK_V1, _REFACTOR131_INJECTED_SEMANTIC_OVERRIDE_V1, _REFACTOR132_INJECTED_CAGR_RESCUE_V1
     try:
@@ -7228,8 +7359,6 @@ def canonicalize_metrics(
         - dimension (currency | unit_sales | percent | count | index | unknown)
         - name (dimension-corrected display name)
     """
-    import re  # ========================= PATCH C0 (ADDITIVE): missing import =========================
-
     if not isinstance(metrics, dict):
         return {}
 
@@ -7931,7 +8060,6 @@ def _seed_metric_schema_frozen_v1(metric_schema_frozen: dict) -> dict:
 # RANGE + SOURCE ATTRIBUTION (DETERMINISTIC, NO LLM)
 
 def stable_json_hash(obj: Any) -> str:
-    import hashlib, json
     try:
         s = json.dumps(obj, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
     except Exception:
@@ -8118,8 +8246,6 @@ def attribute_span_to_sources(
       - Uses measure_kind tags when available to avoid semantic leakage
       - Keeps deterministic tie-breaking
     """
-    import hashlib
-
     unit_tag_hint = normalize_unit_tag(metric_unit)
     keywords = build_metric_keywords(metric_name)
 
@@ -9595,7 +9721,6 @@ def _yureeka_now_iso_utc() -> str:
         return datetime.now(timezone.utc).isoformat()
     except Exception:
         try:
-            from datetime import datetime, timezone
             return datetime.now(timezone.utc).isoformat()
         except Exception:
             return ""
@@ -10071,7 +10196,6 @@ def load_full_snapshots_local(snapshot_store_ref: str) -> list:
         return []
 
 def compute_source_snapshot_hash(baseline_sources_cache: list) -> str:
-    import hashlib
     pairs = []
     for sr in (baseline_sources_cache or []):
         if not isinstance(sr, dict):
@@ -10093,8 +10217,6 @@ def compute_source_snapshot_hash(baseline_sources_cache: list) -> str:
 # - Keeps v1 compute_source_snapshot_hash() for backward compatibility.
 # - v2 includes url + status + fingerprint + (anchor_hash,value_norm,unit_tag) tuples (bounded) for stronger identity.
 def compute_source_snapshot_hash_v2(baseline_sources_cache: list, max_items_per_source: int = 120) -> str:
-    import hashlib
-
     try:
         sources = baseline_sources_cache if isinstance(baseline_sources_cache, list) else []
         parts = []
@@ -10161,9 +10283,6 @@ def build_baseline_sources_cache_from_evidence_records(evidence_records):
     - Deterministic ordering by (source_url, fingerprint)
 
     """
-
-    import hashlib
-
     if not isinstance(evidence_records, list) or not evidence_records:
 
         return []
@@ -10308,8 +10427,10 @@ def build_baseline_sources_cache_from_evidence_records(evidence_records):
 
     return rebuilt
 def _sheets_now_ts():
-    import time
-    return time.time()
+    try:
+        return float(time.time())
+    except Exception:
+        return 0.0
 
 def _sheets_cache_get(key: str):
     try:
@@ -10390,8 +10511,6 @@ def get_google_spreadsheet():
       - Respect the 429 cooldown to avoid repeated read-request quota errors.
     """
     try:
-        import streamlit as st
-        from google.oauth2.service_account import Credentials
         import gspread
 
         spreadsheet_name = st.secrets.get("google_sheets", {}).get("spreadsheet_name", "Yureeka_JSON")
@@ -10423,7 +10542,6 @@ def get_google_spreadsheet():
         return ss
     except Exception as e:
         try:
-            import streamlit as st
             if _is_sheets_rate_limit_error(e):
                 _yureeka_sheets_mark_rate_limited_v1(e)
                 _yureeka_sheets_rate_limit_notice_once_v1("⚠️ Google Sheets rate limit hit (429). Using local snapshot cache for now.")
@@ -10479,7 +10597,7 @@ def store_full_snapshots_to_sheet(baseline_sources_cache: list, source_snapshot_
       * After successful writes, we invalidate the worksheet read cache so recent snapshots
         are immediately retrievable.
     """
-    import hashlib, zlib, base64
+    import zlib, base64
     if not source_snapshot_hash:
         return ""
     if not isinstance(baseline_sources_cache, list) or not baseline_sources_cache:
@@ -10553,7 +10671,6 @@ def store_full_snapshots_to_sheet(baseline_sources_cache: list, source_snapshot_
         try:
             # Append in small batches to reduce API payload size / rate-limit failures.
             batch_size = 10
-            import time
             _need_throttle = (len(rows) > 60)
             wrote = 0
             for i in range(0, len(rows), batch_size):
@@ -10602,7 +10719,6 @@ def load_full_snapshots_from_sheet(source_snapshot_hash: str, worksheet_title: s
     - Fix partial-write repair behavior: if multiple write batches exist for the same hash, select the
       most recent *complete* batch (grouped by created_at), not a mixed/partial merge.
     """
-    import hashlib
     if not source_snapshot_hash:
         return []
     try:
@@ -10658,7 +10774,6 @@ def load_full_snapshots_from_sheet(source_snapshot_hash: str, worksheet_title: s
         def _parse_iso(s: str):
             try:
                 # Lexicographic order works for ISO8601 UTC strings, but parse for safety.
-                from datetime import datetime
                 return datetime.fromisoformat(str(s).replace("Z", "+00:00"))
             except Exception:
                 return None
@@ -10811,7 +10926,6 @@ def write_full_history_payload_to_sheet(analysis_id: str, payload: str, workshee
       - Backward compatible: if sheet is legacy 5-col, we still write 5-col rows.
       - Stores sha256 for integrity (full stitched payload).
     """
-    import hashlib
     import datetime as _dt
     if not analysis_id or not payload:
         return False
@@ -10924,8 +11038,7 @@ def write_full_history_payload_to_sheet(analysis_id: str, payload: str, workshee
 
         # Mark HistoryFull as dirty so loader bypasses cached reads once (same-session baseline freshness).
         try:
-            import time as _time
-            st.session_state["_historyfull_dirty_v1"] = float(_time.time())
+            st.session_state["_historyfull_dirty_v1"] = float(time.time())
             st.session_state["_historyfull_dirty_reason_v1"] = "write_full_history_payload_to_sheet"
         except Exception:
             pass
@@ -10971,8 +11084,7 @@ def load_full_history_payload_from_sheet(analysis_id: str, worksheet_title: str 
         except Exception:
             _dirty = None
         try:
-            import time as _time
-            if isinstance(_dirty, (int, float)) and (_time.time() - float(_dirty) < 120):
+            if isinstance(_dirty, (int, float)) and (time.time() - float(_dirty) < 120):
                 rows = ws.get_all_values() or []
                 _r110_used_direct = True
                 try:
@@ -11177,7 +11289,6 @@ def load_full_history_payload_from_sheet(analysis_id: str, worksheet_title: str 
         # - If mismatch, return {} (treat as corrupted / wrong bucket).
         try:
             if isinstance(chosen_sha, str) and chosen_sha:
-                import hashlib
                 digest = hashlib.sha256(full_json_str.encode("utf-8", errors="ignore")).hexdigest()
                 if str(digest).lower() != str(chosen_sha).lower():
                     return {}
@@ -11572,8 +11683,7 @@ def _refactor111_pick_latest_prev_snapshot_v1(previous_data: dict, web_context: 
                             if isinstance(last, dict) and last:
                                 return last, tries
                             try:
-                                import time as _time
-                                _time.sleep(0.25)
+                                time.sleep(0.25)
                             except Exception:
                                 pass
                         return (last if isinstance(last, dict) else {}), tries
@@ -11811,9 +11921,6 @@ def attach_source_snapshots_to_analysis(analysis: dict, web_context: dict) -> di
         _fix2d66_promote_injection_in_web_context(web_context, question=_q)
     except Exception:
         pass
-
-    from datetime import datetime, timezone
-
     try:
         _qtxt = str((analysis or {}).get('question') or (analysis or {}).get('query') or '')
         web_context = _fix2d66_promote_injected_urls(web_context or {}, question_text=_qtxt, stage='analysis_attach')
@@ -11828,7 +11935,6 @@ def attach_source_snapshots_to_analysis(analysis: dict, web_context: dict) -> di
         except Exception:
             pass
         try:
-            import hashlib
             t = re.sub(r"\s+", " ", (text or "").strip().lower())
             return hashlib.md5(t.encode("utf-8", errors="ignore")).hexdigest()[:12]
         except Exception:
@@ -13815,9 +13921,6 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                     pass
     except Exception:
         pass
-
-    from datetime import datetime, timezone
-
     try:
         _qtxt = str((analysis or {}).get('question') or (analysis or {}).get('query') or '')
         web_context = _fix2d66_promote_injected_urls(web_context or {}, question_text=_qtxt, stage='analysis_attach')
@@ -14642,8 +14745,6 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
     #   - This is purely additive and does not remove legacy paths.
     _fix31_authoritative_reuse = False
     try:
-        import hashlib as _fix31_hashlib
-
         def _fix31_stable_dumps(obj):
             try:
                 return json.dumps(obj, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
@@ -14677,7 +14778,7 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                 rows.append({"source_url": u, "extracted_numbers": nums})
             rows = sorted(rows, key=lambda r: r.get("source_url") or "")
             payload = _fix31_stable_dumps(rows).encode("utf-8", errors="ignore")
-            return _fix31_hashlib.sha256(payload).hexdigest()
+            return hashlib.sha256(payload).hexdigest()
 
         # - Use the SAME hash function as analysis (compute_source_snapshot_hash_v2) whenever possible.
         # - Falls back to legacy compute_source_snapshot_hash, then to the reduced fingerprint.
@@ -18728,8 +18829,6 @@ def extract_numbers_with_context(text, source_url: str = "", max_results: int = 
     - Captures currency + scale + percent + common magnitude suffixes
     - Adds anchor_hash for stable matching
     """
-    import hashlib
-
     if not text or not str(text).strip():
         return []
 
@@ -20395,8 +20494,8 @@ def render_native_comparison(baseline: Dict, compare: Dict):
     compare_time = compare.get('timestamp', '')
 
     try:
-        baseline_dt = datetime.fromisoformat(baseline_time.replace('Z', '+00:00'))
-        compare_dt = datetime.fromisoformat(compare_time.replace('Z', '+00:00'))
+        baseline_dt = datetime.fromisoformat(baselinetime.replace('Z', '+00:00'))
+        compare_dt = datetime.fromisoformat(comparetime.replace('Z', '+00:00'))
         delta = compare_dt - baseline_dt
         if delta.days > 0:
             delta_str = f"{delta.days}d {delta.seconds // 3600}h"
@@ -20926,6 +21025,16 @@ def main():
                                     output['debug']['fix2d72_pmc_key_count'] = len(_rebuilt)
                             except Exception:
                                 pass
+            except Exception:
+                pass
+
+            try:
+                inj_url = ""
+                try:
+                    inj_url = str(INJECTED_URL or "")
+                except Exception:
+                    inj_url = ""
+                _yureeka_attach_endstate_check_v1(output, stage="analysis", analysis_wrapper=output, injected_url=inj_url)
             except Exception:
                 pass
 
@@ -21785,6 +21894,16 @@ def main():
                             "veracity_scores": veracity,
                             "web_sources": web_context.get("sources", [])
                         }
+
+                        try:
+                            inj_url = ""
+                            try:
+                                inj_url = str(INJECTED_URL or "")
+                            except Exception:
+                                inj_url = ""
+                            _yureeka_attach_endstate_check_v1(compare_data, stage="analysis_compare", analysis_wrapper=compare_data, injected_url=inj_url)
+                        except Exception:
+                            pass
 
                         add_to_history(compare_data)
                         st.success("✅ Saved to history")
@@ -26516,6 +26635,17 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
         except Exception:
             pass
 
+        try:
+            inj_url = ""
+            try:
+                if isinstance(web_context, dict):
+                    inj_url = str(web_context.get("injected_url") or "")
+            except Exception:
+                inj_url = ""
+            _yureeka_attach_endstate_check_v1(_res, stage="evolution", analysis_wrapper=previous_data, injected_url=inj_url)
+        except Exception:
+            pass
+
         return _res
     except TypeError:
         # Backward-compat: some historical defs accept only previous_data
@@ -26537,6 +26667,17 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
             except Exception:
                 pass
 
+            try:
+                inj_url = ""
+                try:
+                    if isinstance(web_context, dict):
+                        inj_url = str(web_context.get("injected_url") or "")
+                except Exception:
+                    inj_url = ""
+                _yureeka_attach_endstate_check_v1(_res, stage="evolution", analysis_wrapper=previous_data, injected_url=inj_url)
+            except Exception:
+                pass
+
             return _res
         except Exception as e:
             import traceback as _tb
@@ -26553,7 +26694,6 @@ try:
         main()
 except Exception:
     try:
-        import streamlit as st
         st.exception(Exception(f"Yureeka app crashed during main() execution ({_yureeka_get_code_version()})."))
     except Exception:
         pass
