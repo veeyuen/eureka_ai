@@ -136,7 +136,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "LLM01"
+_YUREEKA_CODE_VERSION_LOCK = "LLM01H"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 
 # REFACTOR206: Release Candidate freeze (no pipeline behavior change).
@@ -824,12 +824,12 @@ def _llm01_attach_evidence_snippets_to_pmc_v1(
     """Mutate pmc entries to add evidence_best_snippet + evidence_offsets (additive only)."""
     if not isinstance(pmc, dict) or not pmc:
         return
-    if not isinstance(baseline_sources_cache, list) or not baseline_sources_cache:
-        return
+    pool_llm01 = baseline_sources_cache if isinstance(baseline_sources_cache, list) else []
 
     applied = 0
     llm_used = 0
     skipped = 0
+    cache_hits = 0
 
     try:
         schema_keys = list(metric_schema.keys()) if isinstance(metric_schema, dict) else list(pmc.keys())
@@ -857,7 +857,7 @@ def _llm01_attach_evidence_snippets_to_pmc_v1(
             skipped += 1
             continue
 
-        text, basis_key = _llm01_safe_get_source_text_v1(baseline_sources_cache, url)
+        text, basis_key = _llm01_safe_get_source_text_v1(pool_llm01, url)
         if not text:
             # Fallback: use candidate context_snippet if provided
             ctx = best.get("context_snippet")
@@ -912,6 +912,12 @@ def _llm01_attach_evidence_snippets_to_pmc_v1(
             )
         except Exception:
             llm_i, llm_conf, llm_diag = (None, None, {})
+
+        try:
+            if isinstance(llm_diag, dict) and bool(llm_diag.get("cache_hit")):
+                cache_hits += 1
+        except Exception:
+            pass
 
         chosen_i = best_i
         method = "deterministic"
@@ -1005,12 +1011,139 @@ def _llm01_attach_evidence_snippets_to_pmc_v1(
                     "applied": int(applied),
                     "llm_used": int(llm_used),
                     "skipped": int(skipped),
+                    "cache_hits": int(cache_hits),
                     "flag_enable_llm": bool(globals().get("ENABLE_LLM_EVIDENCE_SNIPPETS")),
                 })
     except Exception:
         pass
 
+    return {
+        "applied": int(applied),
+        "llm_used": int(llm_used),
+        "skipped": int(skipped),
+        "cache_hits": int(cache_hits),
+    }
+
+
 # --- End LLM01 evidence snippet helpers ---
+
+def _llm01_hotfix_apply_evidence_snippets_final_v1(wrapper: dict, *, stage: str = "", question: str = "") -> dict:
+    """LLM01H hotfix: apply evidence snippet fields on FINAL wrapper(s).
+
+    The LLM01 attach hook may run before PMC materialisation in some wrapper paths (e.g., FIX2D75 add_to_history
+    rebuild). This helper re-attaches deterministically right before JSON export so keys appear in triad JSONs.
+
+    Returns a compact stats dict; never raises.
+    """
+    try:
+        if not isinstance(wrapper, dict):
+            return {}
+        stage_s = str(stage or "")
+        stage_l = stage_s.strip().lower()
+
+        # Choose debug bucket location (analysis vs evolution)
+        dbg = _yureeka_get_debug_bucket_v1(wrapper, default_path=("evolution" if "evol" in stage_l else "analysis"))
+
+        # Collect schema keys (optional)
+        schema = None
+        try:
+            pr = wrapper.get("primary_response")
+            if isinstance(pr, dict) and isinstance(pr.get("metric_schema_frozen"), dict):
+                schema = pr.get("metric_schema_frozen")
+        except Exception:
+            schema = None
+        try:
+            rr = wrapper.get("results")
+            if schema is None and isinstance(rr, dict):
+                pr2 = rr.get("primary_response")
+                if isinstance(pr2, dict) and isinstance(pr2.get("metric_schema_frozen"), dict):
+                    schema = pr2.get("metric_schema_frozen")
+        except Exception:
+            pass
+
+        # Collect baseline sources cache (optional)
+        bsc = None
+        try:
+            bsc = wrapper.get("baseline_sources_cache") or wrapper.get("baseline_sources_cache_current")
+        except Exception:
+            bsc = None
+        try:
+            rr = wrapper.get("results")
+            if bsc is None and isinstance(rr, dict):
+                bsc = rr.get("baseline_sources_cache") or rr.get("baseline_sources_cache_current")
+        except Exception:
+            pass
+
+        # Collect PMC dict references (wrapper shapes vary across stages)
+        pmcs = []
+        try:
+            pr = wrapper.get("primary_response")
+            if isinstance(pr, dict) and isinstance(pr.get("primary_metrics_canonical"), dict) and pr.get("primary_metrics_canonical"):
+                pmcs.append(pr.get("primary_metrics_canonical"))
+        except Exception:
+            pass
+        try:
+            if isinstance(wrapper.get("primary_metrics_canonical"), dict) and wrapper.get("primary_metrics_canonical"):
+                pmcs.append(wrapper.get("primary_metrics_canonical"))
+        except Exception:
+            pass
+        try:
+            rr = wrapper.get("results")
+            if isinstance(rr, dict) and isinstance(rr.get("primary_metrics_canonical"), dict) and rr.get("primary_metrics_canonical"):
+                pmcs.append(rr.get("primary_metrics_canonical"))
+            pr2 = rr.get("primary_response") if isinstance(rr, dict) else None
+            if isinstance(pr2, dict) and isinstance(pr2.get("primary_metrics_canonical"), dict) and pr2.get("primary_metrics_canonical"):
+                pmcs.append(pr2.get("primary_metrics_canonical"))
+        except Exception:
+            pass
+
+        # De-dup pmc objects by identity
+        seen = set()
+        agg = {"applied": 0, "llm_used": 0, "skipped": 0, "cache_hits": 0, "pmc_targets": 0}
+        for pmc in pmcs:
+            if not isinstance(pmc, dict) or not pmc:
+                continue
+            pid = id(pmc)
+            if pid in seen:
+                continue
+            seen.add(pid)
+            agg["pmc_targets"] += 1
+            stt = _llm01_attach_evidence_snippets_to_pmc_v1(
+                pmc=pmc,
+                baseline_sources_cache=bsc,
+                metric_schema=schema,
+                question=str(question or wrapper.get("question") or ""),
+                stage=stage_s or "final",
+                out_debug=dbg,
+            ) or {}
+            try:
+                agg["applied"] += int(stt.get("applied") or 0)
+                agg["llm_used"] += int(stt.get("llm_used") or 0)
+                agg["skipped"] += int(stt.get("skipped") or 0)
+                agg["cache_hits"] += int(stt.get("cache_hits") or 0)
+            except Exception:
+                pass
+
+        # Durable summary marker (grep-friendly)
+        try:
+            if isinstance(dbg, dict):
+                dbg.setdefault("llm01_evidence_snippets_summary", {})
+                if isinstance(dbg.get("llm01_evidence_snippets_summary"), dict):
+                    dbg["llm01_evidence_snippets_summary"].update({
+                        "stage": stage_s,
+                        "pmc_targets": int(agg.get("pmc_targets") or 0),
+                        "applied": int(agg.get("applied") or 0),
+                        "llm_used": int(agg.get("llm_used") or 0),
+                        "skipped": int(agg.get("skipped") or 0),
+                        "cache_hits": int(agg.get("cache_hits") or 0),
+                        "flag_enable_llm": bool(globals().get("ENABLE_LLM_EVIDENCE_SNIPPETS")),
+                    })
+        except Exception:
+            pass
+
+        return agg
+    except Exception:
+        return {}
 
 
 # === END LLM SIDECAR (LLM01) ==================================================
@@ -1182,6 +1315,14 @@ try:
         PATCH_TRACKER_V1.insert(0, {"patch_id": "LLM00", "scope": "llm-sidecar", "summary": "Add LLM sidecar scaffolding (feature flags default OFF), deterministic cache key + optional disk cache helpers, and a debug-only dataset logger. No selection/diff behavior changes.", "risk": "low"})
 except Exception:
     pass
+
+# LLM01H: hotfix patch tracker overlay (ensure evidence snippet fields land in final JSON wrappers; additive only).
+try:
+    if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "LLM01H" for e in PATCH_TRACKER_V1):
+        PATCH_TRACKER_V1.insert(0, {"patch_id": "LLM01H", "scope": "llm-sidecar", "summary": "Hotfix: ensure LLM01 evidence snippet fields + debug summary are attached on final analysis/evolution wrappers (post materialisation) so they appear in exported JSON; add cache-hit counters. Winners/values unchanged.", "risk": "low"})
+except Exception:
+    pass
+
 
 
 def _yureeka_get_code_version(_lock=_YUREEKA_CODE_VERSION_LOCK):
@@ -22247,6 +22388,12 @@ def main():
             except Exception:
                 pass
 
+            # LLM01H hotfix: ensure evidence snippet fields land in the final exported wrapper.
+            try:
+                _llm01_hotfix_apply_evidence_snippets_final_v1(output, stage="analysis_final", question=str(output.get("question") or query or ""))
+            except Exception:
+                pass
+
             json_bytes = json.dumps(output, indent=2, ensure_ascii=False).encode("utf-8")
             filename = f"yureeka_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
 
@@ -23068,6 +23215,12 @@ def main():
 
                     _yureeka_attach_build_meta_v1(evolution_output, stage="evolution", injected_url=inj_url)
                     _yureeka_attach_endstate_check_v1(evolution_output, stage="evolution", analysis_wrapper=baseline_data, injected_url=inj_url)
+                except Exception:
+                    pass
+
+                # LLM01H hotfix: ensure evidence snippet fields land in the final exported wrapper.
+                try:
+                    _llm01_hotfix_apply_evidence_snippets_final_v1(evolution_output, stage="evolution_final", question=str(evolution_output.get("question") or ""))
                 except Exception:
                     pass
 
