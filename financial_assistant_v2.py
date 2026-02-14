@@ -136,7 +136,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "LLM00"
+_YUREEKA_CODE_VERSION_LOCK = "LLM01"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 
 # REFACTOR206: Release Candidate freeze (no pipeline behavior change).
@@ -152,7 +152,7 @@ YUREEKA_REGRESSION_QUESTIONS_V1 = [
     "what is the CAGR of global EV chargers from 2026 to 2040?",
 ]
 
-# === LLM SIDECAR (LLM00) ======================================================
+# === LLM SIDECAR (LLM01) ======================================================
 # Hybrid NLP/LLM "sidecar assist" layer scaffolding.
 # Design rule: LLM assists; deterministic rules decide.
 # All feature flags are OFF by default to preserve REFACTOR206 behavior.
@@ -359,7 +359,661 @@ def debug_llm_dataset_v1(
     except Exception:
         return
 
-# === END LLM SIDECAR (LLM00) ==================================================
+
+# --- LLM01: Evidence snippet selection + offsets (auditability; no numeric changes) ---
+
+def _yureeka_question_hash_v1(question: str) -> str:
+    try:
+        q = (question or "").strip().lower()
+        h = hashlib.sha256(q.encode("utf-8", errors="ignore")).hexdigest()
+        return h[:16]
+    except Exception:
+        return ""
+
+def _llm01__coerce_int_v1(x, default=None):
+    try:
+        if isinstance(x, bool):
+            return default
+        if isinstance(x, (int, float)) and not isinstance(x, bool):
+            return int(x)
+        if isinstance(x, str) and x.strip():
+            return int(float(x.strip()))
+    except Exception:
+        pass
+    return default
+
+def _llm01_safe_get_source_text_v1(baseline_sources_cache: Any, url: str) -> Tuple[str, str]:
+    """Return (text, basis_key) for url from baseline_sources_cache. basis_key indicates the field used."""
+    if not url or not isinstance(baseline_sources_cache, list):
+        return ("", "")
+    try:
+        for s in baseline_sources_cache:
+            if not isinstance(s, dict):
+                continue
+            u = s.get("url") or s.get("source_url") or ""
+            if str(u) == str(url):
+                # Prefer full snapshot_text if present, else excerpt.
+                for k in ("snapshot_text", "text", "content", "snapshot_text_excerpt"):
+                    v = s.get(k)
+                    if isinstance(v, str) and v.strip():
+                        return (v, k)
+                return ("", "")
+    except Exception:
+        pass
+    return ("", "")
+
+def _llm01_find_line_bounds_v1(text: str, start_idx: int, end_idx: int) -> Tuple[int, int]:
+    try:
+        start_idx = max(0, int(start_idx))
+        end_idx = max(start_idx, int(end_idx))
+        ls = text.rfind("\n", 0, start_idx)
+        if ls < 0:
+            ls = 0
+        else:
+            ls = ls + 1
+        le = text.find("\n", end_idx)
+        if le < 0:
+            le = len(text)
+        return (ls, le)
+    except Exception:
+        return (0, min(len(text or ""), 0))
+
+def _llm01_find_sentence_bounds_v1(text: str, start_idx: int, end_idx: int, max_span: int = 420) -> Tuple[int, int]:
+    """Heuristic sentence bounds around [start_idx,end_idx] within max_span chars each direction."""
+    try:
+        n = len(text)
+        start_idx = max(0, int(start_idx))
+        end_idx = max(start_idx, int(end_idx))
+        # Backward to boundary
+        ws = max(0, start_idx - int(max_span))
+        i = start_idx
+        while i > ws:
+            ch = text[i-1]
+            if ch in ".!?\n":
+                break
+            i -= 1
+        ss = i
+        # Forward to boundary
+        we = min(n, end_idx + int(max_span))
+        j = end_idx
+        while j < we:
+            ch = text[j]
+            if ch in ".!?\n":
+                j += 1
+                break
+            j += 1
+        se = j
+        # Clamp
+        ss = max(0, min(ss, n))
+        se = max(ss, min(se, n))
+        return (ss, se)
+    except Exception:
+        return (0, len(text or ""))
+
+def _llm01_extract_number_tokens_v1(raw: str) -> List[str]:
+    try:
+        toks = re.findall(r"\d+(?:\.\d+)?", str(raw or ""))
+        # De-dup preserving order
+        out = []
+        seen = set()
+        for t in toks:
+            if t in seen:
+                continue
+            seen.add(t)
+            out.append(t)
+        return out
+    except Exception:
+        return []
+
+def _llm01_unit_tokens_v1(metric: dict, best_candidate: dict) -> List[str]:
+    toks = []
+    try:
+        # Metric fields
+        for k in ("unit", "unit_tag", "unit_family", "currency_code", "currency", "unit_norm", "unit_raw", "base_unit"):
+            v = (metric or {}).get(k)
+            if isinstance(v, str) and v.strip():
+                toks.append(v.strip())
+        # Candidate fields
+        for k in ("unit_tag", "unit", "unit_norm", "currency", "currency_code", "base_unit"):
+            v = (best_candidate or {}).get(k)
+            if isinstance(v, str) and v.strip():
+                toks.append(v.strip())
+        # Heuristics
+        fam = str((metric or {}).get("unit_family") or (best_candidate or {}).get("unit_family") or "").lower()
+        if fam in ("pct", "percent", "%"):
+            toks.extend(["%", "percent"])
+        # Common magnitude words that often anchor evidence snippets
+        toks.extend(["million", "billion", "trillion", "usd", "sgd", "eur"])
+    except Exception:
+        pass
+    # Normalize + de-dup
+    out = []
+    seen = set()
+    for t in toks:
+        t2 = str(t or "").strip()
+        if not t2:
+            continue
+        t2l = t2.lower()
+        if t2l in seen:
+            continue
+        seen.add(t2l)
+        out.append(t2)
+    return out
+
+def _llm01_make_snippet_windows_v1(
+    text: str,
+    start_idx: int,
+    end_idx: int,
+    *,
+    char_windows: Tuple[int, ...] = (140, 240),
+) -> List[dict]:
+    """Return deterministic candidate snippet windows (line, sentence, char windows)."""
+    windows = []
+    if not isinstance(text, str) or not text:
+        return windows
+    try:
+        n = len(text)
+        s = max(0, int(start_idx))
+        e = max(s, int(end_idx))
+
+        # Line window
+        ls, le = _llm01_find_line_bounds_v1(text, s, e)
+        if le > ls:
+            windows.append({
+                "kind": "line",
+                "window_start": int(ls),
+                "window_end": int(le),
+                "text": text[ls:le],
+            })
+
+        # Sentence window
+        ss, se = _llm01_find_sentence_bounds_v1(text, s, e)
+        if se > ss:
+            windows.append({
+                "kind": "sentence",
+                "window_start": int(ss),
+                "window_end": int(se),
+                "text": text[ss:se],
+            })
+
+        # Char windows
+        for w in char_windows:
+            w = int(w)
+            ws = max(0, s - w)
+            we = min(n, e + w)
+            if we > ws:
+                windows.append({
+                    "kind": f"char_{w}",
+                    "window_start": int(ws),
+                    "window_end": int(we),
+                    "text": text[ws:we],
+                })
+
+        # De-dup by (start,end)
+        dedup = []
+        seen = set()
+        for w in windows:
+            key = (int(w.get("window_start") or 0), int(w.get("window_end") or 0))
+            if key in seen:
+                continue
+            seen.add(key)
+            dedup.append(w)
+        return dedup
+    except Exception:
+        return windows
+
+def _llm01_score_window_v1(window_text: str, num_tokens: List[str], unit_tokens: List[str]) -> float:
+    try:
+        t = str(window_text or "")
+        tl = t.lower()
+        score = 0.0
+        # Must contain at least one numeric token (soft requirement; but scoring reflects)
+        for nt in num_tokens or []:
+            if nt and nt in t:
+                score += 10.0
+        for ut in unit_tokens or []:
+            utl = str(ut or "").lower()
+            if not utl:
+                continue
+            if utl in tl:
+                score += 2.5
+        # Prefer shorter windows
+        score -= (len(t) / 600.0)
+        # Penalize if window is all whitespace
+        if not t.strip():
+            score -= 5.0
+        return float(score)
+    except Exception:
+        return 0.0
+
+def _yureeka_parse_json_object_from_text_v1(text: str) -> Optional[dict]:
+    """Best-effort JSON object parse from model text (extracts first {...})."""
+    if not isinstance(text, str) or not text.strip():
+        return None
+    try:
+        s = text.strip()
+        # Fast path: direct
+        if s.startswith("{") and s.endswith("}"):
+            return json.loads(s)
+        # Extract first object
+        m = re.search(r"\{.*\}", s, flags=re.DOTALL)
+        if m:
+            return json.loads(m.group(0))
+    except Exception:
+        return None
+    return None
+
+def _yureeka_call_openai_chat_json_v1(
+    *,
+    model: str,
+    system_prompt: str,
+    user_payload: dict,
+    timeout_sec: int = 30,
+    max_tokens: int = 220,
+) -> Tuple[Optional[dict], dict]:
+    """Call OpenAI Chat Completions for a strict JSON object response (best-effort)."""
+    diag = {"ok": False, "status": None, "reason": "", "model": str(model or "")}
+    try:
+        if requests is None:
+            diag["reason"] = "requests_missing"
+            return (None, diag)
+
+        api_key = os.environ.get("OPENAI_API_KEY") or os.environ.get("YUREEKA_OPENAI_API_KEY") or ""
+        if not api_key:
+            diag["reason"] = "missing_api_key"
+            return (None, diag)
+
+        base = os.environ.get("OPENAI_BASE_URL") or "https://api.openai.com/v1"
+        url = base.rstrip("/") + "/chat/completions"
+
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        }
+
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": _yureeka__stable_json_dumps_v1(user_payload)},
+        ]
+
+        payload = {
+            "model": str(model or ""),
+            "messages": messages,
+            "temperature": 0,
+            "max_tokens": int(max_tokens or 220),
+        }
+        # Best-effort: request JSON object output
+        try:
+            if bool(globals().get("LLM_STRICT_MODE")):
+                payload["response_format"] = {"type": "json_object"}
+        except Exception:
+            pass
+
+        resp = requests.post(url, headers=headers, json=payload, timeout=int(timeout_sec or 30))
+        diag["status"] = int(resp.status_code)
+        if int(resp.status_code) != 200:
+            diag["reason"] = "http_" + str(resp.status_code)
+            return (None, diag)
+
+        j = resp.json()
+        content = None
+        try:
+            content = (((j or {}).get("choices") or [])[0] or {}).get("message", {}).get("content")
+        except Exception:
+            content = None
+        obj = _yureeka_parse_json_object_from_text_v1(content or "")
+        if isinstance(obj, dict) and obj:
+            diag["ok"] = True
+            diag["reason"] = "ok"
+            return (obj, diag)
+
+        diag["reason"] = "parse_failed"
+        return (None, diag)
+    except Exception as e:
+        diag["reason"] = "exception:" + str(type(e).__name__)
+        return (None, diag)
+
+def _llm01_llm_rank_windows_v1(
+    *,
+    windows: List[dict],
+    metric_label: str,
+    num_tokens: List[str],
+    unit_tokens: List[str],
+    url: str,
+    question: str,
+    out_debug: Optional[dict] = None,
+) -> Tuple[Optional[int], Optional[float], dict]:
+    """Return (best_index, confidence, diag). Uses cache; calls LLM only if needed."""
+    diag = {"used": False, "cache_hit": False, "cache_key": "", "reason": "", "model": ""}
+
+    if not bool(globals().get("ENABLE_LLM_EVIDENCE_SNIPPETS")):
+        diag["reason"] = "flag_off"
+        return (None, None, diag)
+
+    try:
+        model = os.environ.get("YUREEKA_LLM_MODEL") or os.environ.get("OPENAI_MODEL") or "gpt-4o-mini"
+        diag["model"] = str(model)
+    except Exception:
+        model = "gpt-4o-mini"
+        diag["model"] = model
+
+    # Prepare minimal prompt payload
+    safe_windows = []
+    try:
+        for w in windows or []:
+            if not isinstance(w, dict):
+                continue
+            t = str(w.get("text") or "")
+            # Truncate to reduce cost + avoid accidental large leaks
+            if len(t) > 520:
+                t = t[:520] + "…"
+            safe_windows.append({"kind": str(w.get("kind") or ""), "text": t})
+    except Exception:
+        safe_windows = []
+
+    prompt_version = "llm01_evidence_rank_v1"
+    schema_version = "llm01_rank_schema_v1"
+    question_hash = _yureeka_question_hash_v1(question or "")
+    input_payload = {
+        "task": "pick_best_evidence_snippet",
+        "metric": str(metric_label or ""),
+        "num_tokens": list(num_tokens or [])[:6],
+        "unit_tokens": list(unit_tokens or [])[:10],
+        "windows": safe_windows[:8],
+        "output_schema": {"best_index": "int", "confidence": "float_0_to_1"},
+    }
+    try:
+        input_hash = hashlib.sha256(_yureeka__stable_json_dumps_v1(input_payload).encode("utf-8", errors="ignore")).hexdigest()
+    except Exception:
+        input_hash = ""
+
+    cache_key = get_llm_cache_key(
+        str(model), prompt_version, schema_version, str(input_hash), str(url or ""), str(question_hash or "")
+    )
+    diag["cache_key"] = cache_key
+
+    # Cache lookup (always)
+    cached = None
+    try:
+        cached = get_cached_llm_response(cache_key)
+    except Exception:
+        cached = None
+
+    if isinstance(cached, dict) and cached:
+        diag["used"] = True
+        diag["cache_hit"] = True
+        obj = cached
+    else:
+        # Call model (best-effort)
+        system_prompt = (
+            "You select the best evidence snippet window for a metric. "
+            "Choose the window that most clearly supports the metric value with number+unit context. "
+            "Return ONLY a JSON object with keys: best_index (0-based int), confidence (0..1)."
+        )
+        obj, call_diag = _yureeka_call_openai_chat_json_v1(
+            model=str(model),
+            system_prompt=system_prompt,
+            user_payload=input_payload,
+        )
+        diag.update({"used": bool(call_diag.get("ok")), "cache_hit": False, "reason": call_diag.get("reason")})
+        if isinstance(call_diag, dict) and out_debug is not None and isinstance(out_debug, dict):
+            # Do not leak prompts; include minimal diagnostics only.
+            out_debug.setdefault("llm01_evidence_snippet_call_v1", [])
+            if isinstance(out_debug.get("llm01_evidence_snippet_call_v1"), list):
+                out_debug["llm01_evidence_snippet_call_v1"].append({
+                    "url": str(url or "")[:160],
+                    "ok": bool(call_diag.get("ok")),
+                    "status": call_diag.get("status"),
+                    "reason": str(call_diag.get("reason") or "")[:80],
+                    "model": str(model),
+                })
+
+        if isinstance(obj, dict) and obj:
+            try:
+                cache_llm_response(cache_key, obj)
+            except Exception:
+                pass
+
+    if not isinstance(obj, dict) or not obj:
+        diag["reason"] = diag.get("reason") or "no_response"
+        return (None, None, diag)
+
+    # Validate
+    best_index = _llm01__coerce_int_v1(obj.get("best_index"), default=None)
+    try:
+        conf = obj.get("confidence")
+        conf = float(conf) if conf is not None else None
+    except Exception:
+        conf = None
+
+    if best_index is None or not isinstance(best_index, int):
+        diag["reason"] = "invalid_best_index"
+        return (None, None, diag)
+    if best_index < 0 or best_index >= len(windows or []):
+        diag["reason"] = "best_index_oob"
+        return (None, None, diag)
+    if conf is None or (conf < 0.0) or (conf > 1.0):
+        # clamp to [0,1]
+        try:
+            conf = max(0.0, min(1.0, float(conf or 0.0)))
+        except Exception:
+            conf = 0.0
+
+    # Hard validator: chosen window must contain at least one numeric token
+    try:
+        chosen_text = str((windows[best_index] or {}).get("text") or "")
+        if num_tokens:
+            if not any((nt in chosen_text) for nt in num_tokens):
+                diag["reason"] = "validator_no_number_token"
+                return (None, None, diag)
+    except Exception:
+        pass
+
+    diag["reason"] = diag.get("reason") or ("cache_hit" if diag.get("cache_hit") else "ok")
+    return (best_index, conf, diag)
+
+def _llm01_attach_evidence_snippets_to_pmc_v1(
+    *,
+    pmc: Any,
+    baseline_sources_cache: Any,
+    metric_schema: Any = None,
+    question: str = "",
+    stage: str = "",
+    out_debug: Optional[dict] = None,
+) -> None:
+    """Mutate pmc entries to add evidence_best_snippet + evidence_offsets (additive only)."""
+    if not isinstance(pmc, dict) or not pmc:
+        return
+    if not isinstance(baseline_sources_cache, list) or not baseline_sources_cache:
+        return
+
+    applied = 0
+    llm_used = 0
+    skipped = 0
+
+    try:
+        schema_keys = list(metric_schema.keys()) if isinstance(metric_schema, dict) else list(pmc.keys())
+    except Exception:
+        schema_keys = list(pmc.keys())
+
+    for ckey, metric in list(pmc.items()):
+        if not isinstance(metric, dict):
+            continue
+
+        prov = metric.get("provenance") if isinstance(metric.get("provenance"), dict) else {}
+        best = prov.get("best_candidate") if isinstance(prov.get("best_candidate"), dict) else None
+        if best is None and isinstance(metric.get("best_candidate"), dict):
+            best = metric.get("best_candidate")
+        if best is None:
+            skipped += 1
+            continue
+
+        url = str(best.get("source_url") or best.get("url") or "")
+        start_idx = _llm01__coerce_int_v1(best.get("start_idx"), default=None)
+        end_idx = _llm01__coerce_int_v1(best.get("end_idx"), default=None)
+        raw = str(best.get("raw") or "")
+
+        if not url or start_idx is None or end_idx is None:
+            skipped += 1
+            continue
+
+        text, basis_key = _llm01_safe_get_source_text_v1(baseline_sources_cache, url)
+        if not text:
+            # Fallback: use candidate context_snippet if provided
+            ctx = best.get("context_snippet")
+            if isinstance(ctx, str) and ctx.strip():
+                metric["evidence_best_snippet"] = ctx.strip()[:720]
+                metric["evidence_offsets"] = {
+                    "start_idx": int(start_idx),
+                    "end_idx": int(end_idx),
+                    "window_start": None,
+                    "window_end": None,
+                    "text_basis": "context_snippet",
+                    "source_url": url,
+                    "anchor_hash": str(best.get("anchor_hash") or ""),
+                }
+                metric["evidence_snippet_method"] = "context_fallback"
+                applied += 1
+            else:
+                skipped += 1
+            continue
+
+        # Build snippet windows
+        windows = _llm01_make_snippet_windows_v1(text, start_idx, end_idx)
+        if not windows:
+            skipped += 1
+            continue
+
+        num_tokens = _llm01_extract_number_tokens_v1(raw)
+        unit_tokens = _llm01_unit_tokens_v1(metric, best)
+
+        # Score deterministically
+        scored = []
+        for i, w in enumerate(windows):
+            wt = str(w.get("text") or "")
+            sc = _llm01_score_window_v1(wt, num_tokens, unit_tokens)
+            scored.append((float(sc), i))
+        scored.sort(key=lambda x: x[0], reverse=True)
+        best_i = scored[0][1] if scored else 0
+
+        # Optional LLM rank (proposal only)
+        llm_i = None
+        llm_conf = None
+        llm_diag = {}
+        try:
+            llm_i, llm_conf, llm_diag = _llm01_llm_rank_windows_v1(
+                windows=windows,
+                metric_label=str(metric.get("metric_name") or metric.get("label") or ckey),
+                num_tokens=num_tokens,
+                unit_tokens=unit_tokens,
+                url=url,
+                question=question or "",
+                out_debug=out_debug,
+            )
+        except Exception:
+            llm_i, llm_conf, llm_diag = (None, None, {})
+
+        chosen_i = best_i
+        method = "deterministic"
+        if llm_i is not None and isinstance(llm_i, int):
+            chosen_i = llm_i
+            method = "llm_ranked"
+            llm_used += 1
+
+        chosen = windows[chosen_i] if 0 <= chosen_i < len(windows) else windows[best_i]
+        snippet = str(chosen.get("text") or "").strip()
+        if len(snippet) > 720:
+            snippet = snippet[:720] + "…"
+
+        # Top windows (up to 3)
+        top3 = []
+        try:
+            for sc, i in scored[:3]:
+                w = windows[i]
+                wt = str(w.get("text") or "").strip()
+                if len(wt) > 320:
+                    wt = wt[:320] + "…"
+                top3.append({
+                    "kind": str(w.get("kind") or ""),
+                    "window_start": int(w.get("window_start") or 0),
+                    "window_end": int(w.get("window_end") or 0),
+                    "score": float(sc),
+                    "text": wt,
+                })
+        except Exception:
+            top3 = []
+
+        metric["evidence_best_snippet"] = snippet
+        metric["evidence_offsets"] = {
+            "start_idx": int(start_idx),
+            "end_idx": int(end_idx),
+            "window_start": int(chosen.get("window_start") or 0) if chosen.get("window_start") is not None else None,
+            "window_end": int(chosen.get("window_end") or 0) if chosen.get("window_end") is not None else None,
+            "text_basis": str(basis_key or ""),
+            "text_len": int(len(text) if isinstance(text, str) else 0),
+            "source_url": url,
+            "anchor_hash": str(best.get("anchor_hash") or ""),
+        }
+        if top3:
+            metric["evidence_snippets_top"] = top3
+
+        metric["evidence_snippet_method"] = method
+        if method == "llm_ranked":
+            # Minimal non-leaky markers (no raw prompts/outputs)
+            metric["evidence_snippet_llm_used"] = True
+            if llm_conf is not None:
+                metric["evidence_snippet_llm_confidence"] = float(llm_conf)
+
+        # Add minimal provenance marker (safe)
+        try:
+            if isinstance(prov, dict):
+                prov.setdefault("evidence_snippet_v1", {})
+                if isinstance(prov.get("evidence_snippet_v1"), dict):
+                    prov["evidence_snippet_v1"].update({
+                        "method": method,
+                        "basis": str(basis_key or ""),
+                        "llm_used": bool(method == "llm_ranked"),
+                        "llm_cache_key": str((llm_diag or {}).get("cache_key") or "") if (method == "llm_ranked") else "",
+                        "llm_cache_hit": bool((llm_diag or {}).get("cache_hit")) if (method == "llm_ranked") else False,
+                    })
+                metric["provenance"] = prov
+        except Exception:
+            pass
+
+        # Debug-only dataset record (hash only)
+        try:
+            debug_llm_dataset_v1(
+                url=url,
+                scraped_text=text,
+                snippet_windows=[{"kind": w.get("kind"), "window_start": w.get("window_start"), "window_end": w.get("window_end")} for w in windows[:8]],
+                rule_candidates=[{"score": sc, "i": i} for sc, i in scored[:8]],
+                chosen_winners={str(ckey): {"method": method, "chosen_i": int(chosen_i)}},
+                schema_keys=schema_keys,
+                stage=str(stage or ""),
+            )
+        except Exception:
+            pass
+
+        applied += 1
+
+    # Debug summary
+    try:
+        if out_debug is not None and isinstance(out_debug, dict):
+            out_debug.setdefault("llm01_evidence_snippets_v1", {})
+            if isinstance(out_debug.get("llm01_evidence_snippets_v1"), dict):
+                out_debug["llm01_evidence_snippets_v1"].update({
+                    "applied": int(applied),
+                    "llm_used": int(llm_used),
+                    "skipped": int(skipped),
+                    "flag_enable_llm": bool(globals().get("ENABLE_LLM_EVIDENCE_SNIPPETS")),
+                })
+    except Exception:
+        pass
+
+# --- End LLM01 evidence snippet helpers ---
+
+
+# === END LLM SIDECAR (LLM01) ==================================================
 
 
 
@@ -513,6 +1167,14 @@ try:
 except Exception:
     pass
 
+
+
+# LLM01: patch tracker overlay (evidence snippet selection + optional LLM ranking; additive only).
+try:
+    if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "LLM01" for e in PATCH_TRACKER_V1):
+        PATCH_TRACKER_V1.insert(0, {"patch_id": "LLM01", "scope": "llm-sidecar", "summary": "Add evidence snippet selection + offsets for each chosen metric (auditability only), plus optional LLM-assisted ranking of snippet windows behind feature flag + deterministic cache. Winners/values unchanged.", "risk": "low"})
+except Exception:
+    pass
 
 # LLM00: patch tracker overlay (LLM sidecar scaffolding; flags default OFF).
 try:
@@ -16723,6 +17385,37 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                     }
         except Exception:
             pass
+        # LLM01: attach evidence snippets + offsets to current metrics (additive only; winners/values unchanged).
+        try:
+            _pmc_llm01 = None
+            try:
+                _pmc_llm01 = (output.get("results") or {}).get("primary_metrics_canonical")
+            except Exception:
+                _pmc_llm01 = None
+            _pool_llm01 = None
+            try:
+                _res = output.get("results") if isinstance(output.get("results"), dict) else {}
+                _pool_llm01 = _res.get("baseline_sources_cache") or _res.get("baseline_sources_cache_current") or locals().get("baseline_sources_cache") or locals().get("baseline_sources_cache_current")
+            except Exception:
+                _pool_llm01 = None
+            _schema_llm01 = None
+            try:
+                _schema_llm01 = (analysis.get("metric_schema_frozen") if isinstance(analysis, dict) else None)
+            except Exception:
+                _schema_llm01 = None
+            _dbg_llm01 = _yureeka_get_debug_bucket_v1(output, default_path="evolution")
+            _llm01_attach_evidence_snippets_to_pmc_v1(
+                pmc=_pmc_llm01,
+                baseline_sources_cache=_pool_llm01,
+                metric_schema=_schema_llm01,
+                question=str(output.get("question") or (analysis.get("question") if isinstance(analysis, dict) else "") or ""),
+                stage="evolution",
+                out_debug=_dbg_llm01,
+            )
+        except Exception:
+            pass
+
+
 
         try:
             _fix41afc19_keys_sample_v19 = _fix41afc19_keys_sample_v19 or (list(current_metrics_for_display.keys())[:10] if isinstance(current_metrics_for_display, dict) else [])
@@ -21508,6 +22201,33 @@ def main():
             except Exception:
                 pass
 
+
+
+            # LLM01: attach evidence snippets + offsets (additive only; winners/values unchanged).
+            try:
+                _pmc_llm01 = None
+                _schema_llm01 = None
+                if isinstance(output.get("primary_response"), dict):
+                    _pmc_llm01 = output["primary_response"].get("primary_metrics_canonical")
+                    _schema_llm01 = output["primary_response"].get("metric_schema_frozen")
+                _bsc_llm01 = output.get("baseline_sources_cache") or (output.get("results") or {}).get("baseline_sources_cache")
+                _dbg_llm01 = _yureeka_get_debug_bucket_v1(output, default_path="analysis")
+                _llm01_attach_evidence_snippets_to_pmc_v1(
+                    pmc=_pmc_llm01,
+                    baseline_sources_cache=_bsc_llm01,
+                    metric_schema=_schema_llm01,
+                    question=str(output.get("question") or ""),
+                    stage="analysis",
+                    out_debug=_dbg_llm01,
+                )
+                # Mirror onto top-level PMC if present (for compatibility)
+                try:
+                    if isinstance(output.get("primary_metrics_canonical"), dict) and isinstance(_pmc_llm01, dict) and _pmc_llm01:
+                        output["primary_metrics_canonical"] = _pmc_llm01
+                except Exception:
+                    pass
+            except Exception:
+                pass
 
             with st.spinner("💾 Saving to history..."):
                 if add_to_history(output):
