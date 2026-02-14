@@ -136,7 +136,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "LLM01D"
+_YUREEKA_CODE_VERSION_LOCK = "LLM01E"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 
 # REFACTOR206: Release Candidate freeze (no pipeline behavior change).
@@ -819,16 +819,32 @@ def _llm01_llm_rank_windows_v1(
     """Return (best_index, confidence, diag). Uses cache; calls LLM only if needed."""
     diag = {"used": False, "cache_hit": False, "cache_key": "", "reason": "", "model": ""}
 
-    if not bool(globals().get("ENABLE_LLM_EVIDENCE_SNIPPETS")):
-        diag["reason"] = "flag_off"
-        return (None, None, diag)
-
+    # Resolve model early (for diagnostics)
     try:
         model = os.environ.get("YUREEKA_LLM_MODEL") or os.environ.get("OPENAI_MODEL") or "gpt-4o-mini"
         diag["model"] = str(model)
     except Exception:
         model = "gpt-4o-mini"
         diag["model"] = model
+
+    if not bool(globals().get("ENABLE_LLM_EVIDENCE_SNIPPETS")):
+        diag["reason"] = "flag_off"
+        try:
+            if isinstance(out_debug, dict):
+                _llm01_update_llm_diag_agg_v1(out_debug, {"ok": False, "status": None, "reason": "flag_off", "model": str(model)}, cache_hit=False)
+                # Always emit a minimal attempt record for grep-based debugging (bounded list).
+                out_debug.setdefault("llm01_evidence_snippet_call_v1", [])
+                if isinstance(out_debug.get("llm01_evidence_snippet_call_v1"), list) and len(out_debug["llm01_evidence_snippet_call_v1"]) < 12:
+                    out_debug["llm01_evidence_snippet_call_v1"].append({
+                        "url": str(url or "")[:160],
+                        "ok": False,
+                        "status": None,
+                        "reason": "flag_off",
+                        "model": str(model)[:80],
+                    })
+        except Exception:
+            pass
+        return (None, None, diag)
 
     # Prepare minimal prompt payload
     safe_windows = []
@@ -860,9 +876,35 @@ def _llm01_llm_rank_windows_v1(
     except Exception:
         input_hash = ""
 
-    cache_key = get_llm_cache_key(
-        str(model), prompt_version, schema_version, str(input_hash), str(url or ""), str(question_hash or "")
-    )
+    try:
+        cache_key = get_llm_cache_key(
+            str(model), prompt_version, schema_version, str(input_hash), str(url or ""), str(question_hash or "")
+        )
+    except Exception as e:
+        diag["reason"] = "cache_key_exception:" + str(type(e).__name__)
+        try:
+            if isinstance(out_debug, dict):
+                _llm01_update_llm_diag_agg_v1(out_debug, {"ok": False, "status": None, "reason": diag["reason"], "model": str(model)}, cache_hit=False)
+                out_debug.setdefault("llm01_evidence_snippet_call_v1", [])
+                if isinstance(out_debug.get("llm01_evidence_snippet_call_v1"), list) and len(out_debug["llm01_evidence_snippet_call_v1"]) < 12:
+                    out_debug["llm01_evidence_snippet_call_v1"].append({
+                        "url": str(url or "")[:160],
+                        "ok": False,
+                        "status": None,
+                        "reason": diag["reason"],
+                        "model": str(model)[:80],
+                    })
+                out_debug.setdefault("llm01_rank_exceptions_v1", [])
+                if isinstance(out_debug.get("llm01_rank_exceptions_v1"), list) and len(out_debug["llm01_rank_exceptions_v1"]) < 12:
+                    out_debug["llm01_rank_exceptions_v1"].append({
+                        "where": "cache_key",
+                        "exc": str(type(e).__name__),
+                        "msg": str(e)[:180],
+                    })
+        except Exception:
+            pass
+        return (None, None, diag)
+
     diag["cache_key"] = cache_key
 
     # Cache lookup (always)
@@ -931,9 +973,37 @@ def _llm01_llm_rank_windows_v1(
 
     if best_index is None or not isinstance(best_index, int):
         diag["reason"] = "invalid_best_index"
+        try:
+            if isinstance(out_debug, dict):
+                _llm01_update_llm_diag_agg_v1(out_debug, {"ok": False, "status": None, "reason": "invalid_best_index", "model": str(model)}, cache_hit=False)
+                out_debug.setdefault("llm01_evidence_snippet_call_v1", [])
+                if isinstance(out_debug.get("llm01_evidence_snippet_call_v1"), list) and len(out_debug["llm01_evidence_snippet_call_v1"]) < 12:
+                    out_debug["llm01_evidence_snippet_call_v1"].append({
+                        "url": str(url or "")[:160],
+                        "ok": False,
+                        "status": None,
+                        "reason": "invalid_best_index",
+                        "model": str(model)[:80],
+                    })
+        except Exception:
+            pass
         return (None, None, diag)
     if best_index < 0 or best_index >= len(windows or []):
         diag["reason"] = "best_index_oob"
+        try:
+            if isinstance(out_debug, dict):
+                _llm01_update_llm_diag_agg_v1(out_debug, {"ok": False, "status": None, "reason": "best_index_oob", "model": str(model)}, cache_hit=False)
+                out_debug.setdefault("llm01_evidence_snippet_call_v1", [])
+                if isinstance(out_debug.get("llm01_evidence_snippet_call_v1"), list) and len(out_debug["llm01_evidence_snippet_call_v1"]) < 12:
+                    out_debug["llm01_evidence_snippet_call_v1"].append({
+                        "url": str(url or "")[:160],
+                        "ok": False,
+                        "status": None,
+                        "reason": "best_index_oob",
+                        "model": str(model)[:80],
+                    })
+        except Exception:
+            pass
         return (None, None, diag)
     if conf is None or (conf < 0.0) or (conf > 1.0):
         # clamp to [0,1]
@@ -948,7 +1018,21 @@ def _llm01_llm_rank_windows_v1(
         if num_tokens:
             if not any((nt in chosen_text) for nt in num_tokens):
                 diag["reason"] = "validator_no_number_token"
-                return (None, None, diag)
+        try:
+            if isinstance(out_debug, dict):
+                _llm01_update_llm_diag_agg_v1(out_debug, {"ok": False, "status": None, "reason": "validator_no_number_token", "model": str(model)}, cache_hit=False)
+                out_debug.setdefault("llm01_evidence_snippet_call_v1", [])
+                if isinstance(out_debug.get("llm01_evidence_snippet_call_v1"), list) and len(out_debug["llm01_evidence_snippet_call_v1"]) < 12:
+                    out_debug["llm01_evidence_snippet_call_v1"].append({
+                        "url": str(url or "")[:160],
+                        "ok": False,
+                        "status": None,
+                        "reason": "validator_no_number_token",
+                        "model": str(model)[:80],
+                    })
+        except Exception:
+            pass
+        return (None, None, diag)
     except Exception:
         pass
 
@@ -1057,15 +1141,28 @@ def _llm01_attach_evidence_snippets_to_pmc_v1(
         try:
             llm_i, llm_conf, llm_diag = _llm01_llm_rank_windows_v1(
                 windows=windows,
-                metric_label=str(metric.get("metric_name") or metric.get("label") or ckey),
-                num_tokens=num_tokens,
-                unit_tokens=unit_tokens,
-                url=url,
-                question=question or "",
+                metric_label=str(ckey),
+                num_tokens=list(num_tokens),
+                unit_tokens=list(unit_tokens),
+                url=str(url or ""),
+                question=str(question or ""),
                 out_debug=out_debug,
             )
-        except Exception:
-            llm_i, llm_conf, llm_diag = (None, None, {})
+        except Exception as e:
+            llm_i, llm_conf, llm_diag = (None, None, {"reason": "exception:" + str(type(e).__name__)})
+            try:
+                if isinstance(out_debug, dict):
+                    out_debug.setdefault("llm01_rank_call_exceptions_v1", [])
+                    if isinstance(out_debug.get("llm01_rank_call_exceptions_v1"), list) and len(out_debug["llm01_rank_call_exceptions_v1"]) < 12:
+                        out_debug["llm01_rank_call_exceptions_v1"].append({
+                            "ckey": str(ckey)[:120],
+                            "url": str(url or "")[:160],
+                            "exc": str(type(e).__name__),
+                            "msg": str(e)[:180],
+                        })
+                    _llm01_update_llm_diag_agg_v1(out_debug, {"ok": False, "status": None, "reason": "exception:" + str(type(e).__name__), "model": str(os.environ.get("YUREEKA_LLM_MODEL") or os.environ.get("OPENAI_MODEL") or "gpt-4o-mini")}, cache_hit=False)
+            except Exception:
+                pass
 
         try:
             if isinstance(llm_diag, dict) and bool(llm_diag.get("cache_hit")):
@@ -1133,7 +1230,11 @@ def _llm01_attach_evidence_snippets_to_pmc_v1(
                     prov["evidence_snippet_v1"].update({
                         "method": method,
                         "basis": str(basis_key or ""),
+                        "llm_flag": bool(globals().get("ENABLE_LLM_EVIDENCE_SNIPPETS")),
                         "llm_used": bool(method == "llm_ranked"),
+                        # Provide a bounded reason string even when falling back to deterministic.
+                        "llm_reason": str((llm_diag or {}).get("reason") or "")[:120],
+                        "llm_model": str((llm_diag or {}).get("model") or "")[:80],
                         "llm_cache_key": str((llm_diag or {}).get("cache_key") or "") if (method == "llm_ranked") else "",
                         "llm_cache_hit": bool((llm_diag or {}).get("cache_hit")) if (method == "llm_ranked") else False,
                     })
