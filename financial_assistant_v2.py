@@ -136,7 +136,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "REFACTOR204"
+_YUREEKA_CODE_VERSION_LOCK = "REFACTOR205"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 
 # REFACTOR129: run-level beacons (reset per evolution run)
@@ -273,6 +273,14 @@ try:
 except Exception:
     pass
 
+# REFACTOR205: endstate_check_v1 evolution placement hardening + false-negative avoidance (diagnostic-only)
+try:
+    if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "REFACTOR205" for e in PATCH_TRACKER_V1):
+        PATCH_TRACKER_V1.insert(0, {"patch_id": "REFACTOR205", "scope": "diagnostics", "summary": "Harden debug-bucket selection so endstate_check_v1 lands in results.debug even when wrapper depth varies; avoid false negatives when evolution wrapper lacks timestamps/Δt rows; diagnostic-only (diff/selection unchanged).", "risk": "low"})
+except Exception:
+    pass
+
+
 def _yureeka_get_code_version(_lock=_YUREEKA_CODE_VERSION_LOCK):
     try:
         return str(_lock)
@@ -390,29 +398,39 @@ def _yureeka_get_debug_bucket_v1(wrapper: dict, default_path: str = "analysis") 
 
     default_path:
       - "analysis": attach to wrapper["debug"]
-      - "evolution": attach to wrapper["results"]["debug"] (or wrapper["results"]["results"]["debug"])
+      - "evolution": attach to wrapper["results"]["debug"] (or wrapper["debug"] if wrapper already *is* the results dict)
+
+    REFACTOR205: harden against wrapper-depth mismatches so diagnostics do not land at results.results.debug.
     """
     if not isinstance(wrapper, dict):
         return {}
     mode = str(default_path or "").strip().lower()
+
     try:
         if mode.startswith("evol"):
-            # Prefer the durable / user-visible bucket: wrapper["results"]["debug"].
-            # Only fall back to wrapper["results"]["results"]["debug"] if the outer bucket is missing/non-dict.
+            # If the caller already passed the evolution "results" dict, attach directly.
+            # This prevents accidental nesting at results.results.debug.
+            if ("metric_changes" in wrapper) or ("stability_score" in wrapper):
+                if not isinstance(wrapper.get("debug"), dict):
+                    wrapper["debug"] = {}
+                return wrapper["debug"]
+
             rr = wrapper.get("results")
             if isinstance(rr, dict):
-                rr.setdefault("debug", {})
-                if isinstance(rr.get("debug"), dict):
-                    return rr["debug"]
-                rr2 = rr.get("results")
-                if isinstance(rr2, dict):
-                    rr2.setdefault("debug", {})
-                    if isinstance(rr2.get("debug"), dict):
-                        return rr2["debug"]
-        # Fallback / analysis default
-        wrapper.setdefault("debug", {})
-        if isinstance(wrapper.get("debug"), dict):
+                # Force debug to be a dict (setdefault does not fix an existing non-dict).
+                if not isinstance(rr.get("debug"), dict):
+                    rr["debug"] = {}
+                return rr["debug"]
+
+            # Last resort: top-level debug.
+            if not isinstance(wrapper.get("debug"), dict):
+                wrapper["debug"] = {}
             return wrapper["debug"]
+
+        # Analysis default
+        if not isinstance(wrapper.get("debug"), dict):
+            wrapper["debug"] = {}
+        return wrapper["debug"]
     except Exception:
         return {}
     return {}
@@ -483,11 +501,13 @@ def _yureeka_endstate_check_v1(stage: str, analysis_wrapper: dict = None, evolut
             if row_count != 4:
                 failures.append("evolution:row_count!=4")
 
-            # Timestamps
-            prev_ts = str((ew or {}).get("previous_timestamp") or "")
-            cur_ts = str((ew or {}).get("timestamp") or "")
-            checks["previous_timestamp_present"] = bool(prev_ts)
-            checks["timestamp_present"] = bool(cur_ts)
+            # Timestamps (avoid false negatives when the caller passes an inner wrapper)
+            _has_prev_ts_key = "previous_timestamp" in (ew or {})
+            _has_ts_key = "timestamp" in (ew or {})
+            prev_ts = str((ew or {}).get("previous_timestamp") or "") if _has_prev_ts_key else ""
+            cur_ts = str((ew or {}).get("timestamp") or "") if _has_ts_key else ""
+            checks["previous_timestamp_present"] = (bool(prev_ts) if _has_prev_ts_key else None)
+            checks["timestamp_present"] = (bool(cur_ts) if _has_ts_key else None)
 
             # Baseline wiring: previous_timestamp should match baseline analysis timestamp (if available).
             base_ts = ""
@@ -499,8 +519,8 @@ def _yureeka_endstate_check_v1(stage: str, analysis_wrapper: dict = None, evolut
             except Exception:
                 base_ts = ""
             checks["analysis_timestamp_available"] = bool(base_ts)
-            checks["prev_equals_analysis_ts"] = (prev_ts == base_ts) if base_ts else None
-            if base_ts and prev_ts and prev_ts != base_ts:
+            checks["prev_equals_analysis_ts"] = ((prev_ts == base_ts) if (base_ts and _has_prev_ts_key and prev_ts) else None)
+            if base_ts and _has_prev_ts_key and prev_ts and prev_ts != base_ts:
                 failures.append("evolution:prev_ts!=analysis_ts")
 
             # Δt gating diagnostics (prod populated, injected blank/None)
@@ -528,11 +548,12 @@ def _yureeka_endstate_check_v1(stage: str, analysis_wrapper: dict = None, evolut
             denom = len(delta_vals) if delta_vals else 0
             checks["delta_present_count"] = present
             checks["delta_blank_count"] = blank
-            checks["delta_present_ratio"] = (present / denom) if denom else 0.0
+            checks["delta_present_ratio"] = ((present / denom) if denom else None)
 
             inj = str(injected_url or "").strip()
             checks["injected_url_hint_present"] = bool(inj)
-            assumed_injected = bool(inj) or (checks.get("delta_present_ratio", 0.0) < 0.5)
+            _ratio = checks.get("delta_present_ratio")
+            assumed_injected = (bool(inj) if denom == 0 else (bool(inj) or ((isinstance(_ratio, (int, float)) and _ratio < 0.5))))
             checks["assumed_injected_mode"] = assumed_injected
 
             # Expected gating by mode (soft-check; never fails if denom==0)
@@ -556,9 +577,12 @@ def _yureeka_endstate_check_v1(stage: str, analysis_wrapper: dict = None, evolut
 
             # Stability (if present)
             try:
-                rr = (ew or {}).get("results")
-                if isinstance(rr, dict) and isinstance(rr.get("stability_score"), (int, float)):
-                    checks["stability_score"] = float(rr.get("stability_score"))
+                if isinstance((ew or {}).get("stability_score"), (int, float)):
+                    checks["stability_score"] = float((ew or {}).get("stability_score"))
+                else:
+                    rr = (ew or {}).get("results")
+                    if isinstance(rr, dict) and isinstance(rr.get("stability_score"), (int, float)):
+                        checks["stability_score"] = float(rr.get("stability_score"))
             except Exception:
                 pass
 
@@ -22026,7 +22050,7 @@ def main():
 
                 }
 
-                # REFACTOR204: attach endstate_check_v1 on FINAL evolution output wrapper (post Δt stamping + timestamps)
+                # REFACTOR205: attach endstate_check_v1 on FINAL evolution output wrapper (post Δt stamping + timestamps)
                 try:
                     inj_url = ""
                     try:
