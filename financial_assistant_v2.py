@@ -101,7 +101,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "REFACTOR193"
+_YUREEKA_CODE_VERSION_LOCK = "REFACTOR194"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 
 # REFACTOR129: run-level beacons (reset per evolution run)
@@ -158,6 +158,15 @@ try:
     PATCH_TRACKER_V1 = list(_PATCH_TRACKER_CANONICAL_ENTRIES_V1 or [])
 except Exception:
     PATCH_TRACKER_V1 = []
+
+
+
+# REFACTOR194: patch tracker overlay (avoid touching the compressed canonical blob)
+try:
+    if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "REFACTOR194" for e in PATCH_TRACKER_V1):
+        PATCH_TRACKER_V1.insert(0, {"patch_id": "REFACTOR194", "scope": "downsizing", "summary": "Prune redundant local stdlib imports (os/json/re) + drop import aliases; no behavior changes.", "risk": "low"})
+except Exception:
+    pass
 
 def _yureeka_get_code_version(_lock=_YUREEKA_CODE_VERSION_LOCK):
     try:
@@ -218,7 +227,7 @@ def _yureeka_authority_manifest_v1() -> dict:
 def _yureeka_runtime_identity_v1():
     """Additive debug helper: identify the running script reliably (helps diagnose stale-version runs)."""
     try:
-        import os, sys, platform, hashlib, datetime
+        import sys, platform, hashlib, datetime
         out = {
             "code_version": _yureeka_get_code_version(),
             "authority_manifest_v1": _yureeka_authority_manifest_v1(),
@@ -3392,7 +3401,7 @@ def search_serpapi(query: str, num_results: int = 10) -> List[Dict]:
 def _inj_diag_make_run_id(prefix: str = "run") -> str:
     """Short correlation id for a single analysis/evolution run."""
     try:
-        import os, time, hashlib
+        import time, hashlib
         seed = f"{prefix}|{time.time()}|{os.getpid()}|{os.urandom(8).hex()}"
         return hashlib.sha256(seed.encode("utf-8")).hexdigest()[:12]
     except Exception:
@@ -9911,7 +9920,6 @@ def store_full_snapshots_local(baseline_sources_cache: list, source_snapshot_has
     Store full snapshots deterministically by hash. Returns a store ref string (path).
     Additive-only helper.
     """
-    import os, json
     if not source_snapshot_hash:
         return ""
     if not isinstance(baseline_sources_cache, list) or not baseline_sources_cache:
@@ -9941,7 +9949,6 @@ def load_full_snapshots_local(snapshot_store_ref: str) -> list:
     """
     Load full snapshots from a store ref string (path). Returns [] if not available.
     """
-    import json, os
     try:
         if not snapshot_store_ref or not isinstance(snapshot_store_ref, str):
             return []
@@ -10313,7 +10320,7 @@ def store_full_snapshots_to_sheet(baseline_sources_cache: list, source_snapshot_
       * After successful writes, we invalidate the worksheet read cache so recent snapshots
         are immediately retrievable.
     """
-    import json, hashlib, zlib, base64
+    import hashlib, zlib, base64
     if not source_snapshot_hash:
         return ""
     if not isinstance(baseline_sources_cache, list) or not baseline_sources_cache:
@@ -10436,7 +10443,7 @@ def load_full_snapshots_from_sheet(source_snapshot_hash: str, worksheet_title: s
     - Fix partial-write repair behavior: if multiple write batches exist for the same hash, select the
       most recent *complete* batch (grouped by created_at), not a mixed/partial merge.
     """
-    import json, hashlib
+    import hashlib
     if not source_snapshot_hash:
         return []
     try:
@@ -14476,12 +14483,11 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
     #   - This is purely additive and does not remove legacy paths.
     _fix31_authoritative_reuse = False
     try:
-        import json as _fix31_json
         import hashlib as _fix31_hashlib
 
         def _fix31_stable_dumps(obj):
             try:
-                return _fix31_json.dumps(obj, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+                return json.dumps(obj, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
             except Exception:
                 pass
                 # last resort
@@ -22540,11 +22546,10 @@ def _analysis_canonical_final_selector_v1(
                         # require word-boundary-ish for single-letter tokens
                         if "million" in _s or "millions" in _s or "billion" in _s or "billions" in _s or "trillion" in _s or "trillions" in _s or "thousand" in _s:
                             return True
-                        import re as _re2
-                        if _re2.search(r"\b(mn|bn|tn|k)\b", _s):
+                        if re.search(r"\b(mn|bn|tn|k)\b", _s):
                             return True
                         # "m" / "b" / "t" are too ambiguous; only accept when adjacent to "usd/units/sales" etc.
-                        if _re2.search(r"\b(m|b|t)\b", _s) and _re2.search(r"(units?|sales|deliveries|shipments|vehicles|usd|eur|sgd|gbp|jpy|cny|aud|cad)", _s):
+                        if re.search(r"\b(m|b|t)\b", _s) and re.search(r"(units?|sales|deliveries|shipments|vehicles|usd|eur|sgd|gbp|jpy|cny|aud|cad)", _s):
                             return True
                         return False
 
