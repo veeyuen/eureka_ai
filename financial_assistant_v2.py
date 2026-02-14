@@ -136,12 +136,12 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "REFACTOR206"
+_YUREEKA_CODE_VERSION_LOCK = "LLM00"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 
 # REFACTOR206: Release Candidate freeze (no pipeline behavior change).
-YUREEKA_RELEASE_CANDIDATE_V1 = True
-YUREEKA_RELEASE_TAG_V1 = "REFACTOR206_RC1"
+YUREEKA_RELEASE_CANDIDATE_V1 = False
+YUREEKA_RELEASE_TAG_V1 = "LLM00"
 YUREEKA_FREEZE_MODE_V1 = True
 # Small default regression set (optional; used for manual triad smoke tests).
 YUREEKA_REGRESSION_QUESTIONS_V1 = [
@@ -151,6 +151,217 @@ YUREEKA_REGRESSION_QUESTIONS_V1 = [
     "what is global EV charging investment in 2040?",
     "what is the CAGR of global EV chargers from 2026 to 2040?",
 ]
+
+# === LLM SIDECAR (LLM00) ======================================================
+# Hybrid NLP/LLM "sidecar assist" layer scaffolding.
+# Design rule: LLM assists; deterministic rules decide.
+# All feature flags are OFF by default to preserve REFACTOR206 behavior.
+
+ENABLE_LLM_EVIDENCE_SNIPPETS = False
+ENABLE_LLM_SOURCE_CLUSTERING = False
+ENABLE_LLM_QUERY_FRAME = False
+ENABLE_LLM_ANOMALY_FLAGS = False
+
+# Strict mode (future patches): enforce schema-checked JSON responses and hard validators.
+LLM_STRICT_MODE = True
+
+# Debug-only dataset logging (default OFF; never required for correctness).
+ENABLE_LLM_DATASET_LOGGING = False
+
+# Optional deterministic cache (disk + tiny in-memory LRU). Never required for correctness.
+LLM_CACHE_DIR_V1 = os.environ.get("YUREEKA_LLM_CACHE_DIR") or ".yureeka_llm_cache"
+LLM_CACHE_MAX_MEM_ENTRIES_V1 = 128
+_LLM_CACHE_MEM_V1: dict = {}
+_LLM_CACHE_MEM_ORDER_V1: list = []
+
+
+def _yureeka__stable_json_dumps_v1(obj: Any) -> str:
+    """Stable JSON string (sorted keys, compact separators)."""
+    try:
+        return json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    except Exception:
+        try:
+            return json.dumps(str(obj), sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+        except Exception:
+            return ""
+
+
+def get_llm_cache_key(
+    model: str,
+    prompt_version: str,
+    schema_version: str,
+    input_hash: str,
+    url: str,
+    question_hash: str,
+) -> str:
+    """Deterministic cache key for LLM proposals.
+
+    NOTE: This key must remain stable across reruns for replayability.
+    """
+    payload = {
+        "v": "llm_cache_key_v1",
+        "model": str(model or ""),
+        "prompt_version": str(prompt_version or ""),
+        "schema_version": str(schema_version or ""),
+        "input_hash": str(input_hash or ""),
+        "url": str(url or ""),
+        "question_hash": str(question_hash or ""),
+    }
+    s = _yureeka__stable_json_dumps_v1(payload)
+    try:
+        h = hashlib.sha256((s or "").encode("utf-8", errors="ignore")).hexdigest()
+        return f"llm_v1_{h}"
+    except Exception:
+        return "llm_v1_unknown"
+
+
+def _llm_cache_path_v1(key: str) -> str:
+    try:
+        safe = re.sub(r"[^a-zA-Z0-9_.-]+", "_", str(key or ""))
+    except Exception:
+        safe = "llm_v1_unknown"
+    try:
+        return os.path.join(str(LLM_CACHE_DIR_V1 or ".yureeka_llm_cache"), f"{safe}.json")
+    except Exception:
+        return f"{safe}.json"
+
+
+def _llm_cache__mem_touch_v1(key: str):
+    """Update tiny in-memory LRU order."""
+    try:
+        if key in _LLM_CACHE_MEM_ORDER_V1:
+            _LLM_CACHE_MEM_ORDER_V1.remove(key)
+        _LLM_CACHE_MEM_ORDER_V1.append(key)
+        # prune
+        max_n = int(LLM_CACHE_MAX_MEM_ENTRIES_V1 or 0) if str(LLM_CACHE_MAX_MEM_ENTRIES_V1 or "").isdigit() else 128
+        max_n = max(0, max_n)
+        while max_n and len(_LLM_CACHE_MEM_ORDER_V1) > max_n:
+            old = _LLM_CACHE_MEM_ORDER_V1.pop(0)
+            try:
+                _LLM_CACHE_MEM_V1.pop(old, None)
+            except Exception:
+                pass
+    except Exception:
+        return
+
+
+def get_cached_llm_response(key: str) -> Any:
+    """Return cached LLM payload for key, or None if missing/unreadable."""
+    if not key:
+        return None
+
+    try:
+        if key in _LLM_CACHE_MEM_V1:
+            _llm_cache__mem_touch_v1(key)
+            return _LLM_CACHE_MEM_V1.get(key)
+    except Exception:
+        pass
+
+    path = _llm_cache_path_v1(key)
+    try:
+        if not path or not os.path.exists(path):
+            return None
+    except Exception:
+        return None
+
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        # allow either raw payload or wrapped {"payload": ...}
+        payload = data.get("payload") if isinstance(data, dict) and "payload" in data else data
+        _LLM_CACHE_MEM_V1[key] = payload
+        _llm_cache__mem_touch_v1(key)
+        return payload
+    except Exception:
+        return None
+
+
+def cache_llm_response(key: str, payload: Any) -> bool:
+    """Persist payload to cache. Best-effort; returns True on success."""
+    if not key:
+        return False
+
+    try:
+        _LLM_CACHE_MEM_V1[key] = payload
+        _llm_cache__mem_touch_v1(key)
+    except Exception:
+        pass
+
+    path = _llm_cache_path_v1(key)
+    try:
+        d = os.path.dirname(path)
+        if d:
+            os.makedirs(d, exist_ok=True)
+    except Exception:
+        # disk cache is optional
+        return False
+
+    try:
+        tmp = f"{path}.tmp.{os.getpid()}"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump({"payload": payload}, f, ensure_ascii=False, sort_keys=True)
+        os.replace(tmp, path)
+        return True
+    except Exception:
+        try:
+            # cleanup temp file if any
+            if os.path.exists(tmp):
+                os.remove(tmp)
+        except Exception:
+            pass
+        return False
+
+
+def _yureeka_llm_text_hash_v1(text: str) -> str:
+    """Stable short hash for large text (do NOT store raw text in logs)."""
+    try:
+        h = hashlib.sha256((text or "").encode("utf-8", errors="ignore")).hexdigest()
+        return h[:16]
+    except Exception:
+        return ""
+
+
+def debug_llm_dataset_v1(
+    *,
+    url: str = "",
+    scraped_text: str = "",
+    snippet_windows: Any = None,
+    rule_candidates: Any = None,
+    chosen_winners: Any = None,
+    schema_keys: Any = None,
+    stage: str = "",
+):
+    """Debug-only dataset logger (OFF by default).
+
+    Captures only hashes + small structured windows to enable later offline replay/testing.
+    """
+    if not bool(globals().get("ENABLE_LLM_DATASET_LOGGING")):
+        return
+    try:
+        rec = {
+            "url": str(url or ""),
+            "text_hash": _yureeka_llm_text_hash_v1(scraped_text or ""),
+            "snippet_windows": snippet_windows if snippet_windows is not None else [],
+            "rule_candidates": rule_candidates if rule_candidates is not None else [],
+            "chosen_winners": chosen_winners if chosen_winners is not None else {},
+            "schema_keys": schema_keys if schema_keys is not None else [],
+            "stage": str(stage or ""),
+        }
+        st.session_state.setdefault("debug", {})
+        dbg = st.session_state.get("debug")
+        if isinstance(dbg, dict):
+            dbg.setdefault("llm_dataset_v1", [])
+            if isinstance(dbg.get("llm_dataset_v1"), list):
+                dbg["llm_dataset_v1"].append(rec)
+                # cap
+                if len(dbg["llm_dataset_v1"]) > 200:
+                    dbg["llm_dataset_v1"] = dbg["llm_dataset_v1"][-200:]
+    except Exception:
+        return
+
+# === END LLM SIDECAR (LLM00) ==================================================
+
+
 
 
 # REFACTOR129: run-level beacons (reset per evolution run)
@@ -301,6 +512,15 @@ try:
         PATCH_TRACKER_V1.insert(0, {"patch_id": "REFACTOR206", "scope": "release", "summary": "Release Candidate freeze: add build_meta (release_tag/freeze_mode) + small optional regression question set; also harden injected_url hint passed into endstate_check_v1 (diagnostic-only). No changes to selection/diff engines.", "risk": "low"})
 except Exception:
     pass
+
+
+# LLM00: patch tracker overlay (LLM sidecar scaffolding; flags default OFF).
+try:
+    if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "LLM00" for e in PATCH_TRACKER_V1):
+        PATCH_TRACKER_V1.insert(0, {"patch_id": "LLM00", "scope": "llm-sidecar", "summary": "Add LLM sidecar scaffolding (feature flags default OFF), deterministic cache key + optional disk cache helpers, and a debug-only dataset logger. No selection/diff behavior changes.", "risk": "low"})
+except Exception:
+    pass
+
 
 def _yureeka_get_code_version(_lock=_YUREEKA_CODE_VERSION_LOCK):
     try:
