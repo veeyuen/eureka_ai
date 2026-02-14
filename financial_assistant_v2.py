@@ -130,14 +130,13 @@ from google.oauth2.service_account import Credentials
 from typing import Dict, List, Optional, Any, Union, Tuple
 from datetime import datetime, timedelta, timezone
 from bs4 import BeautifulSoup
-from collections import Counter
 from pydantic import BaseModel, Field, ValidationError, ConfigDict
 
 # VERSION STAMP (LOCKED)
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "REFACTOR201"
+_YUREEKA_CODE_VERSION_LOCK = "REFACTOR202"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 
 # REFACTOR129: run-level beacons (reset per evolution run)
@@ -250,6 +249,14 @@ try:
 except Exception:
     pass
 
+
+
+# REFACTOR202: patch tracker overlay (downsizing)
+try:
+    if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "REFACTOR202" for e in PATCH_TRACKER_V1):
+        PATCH_TRACKER_V1.insert(0, {"patch_id": "REFACTOR202", "scope": "downsizing", "summary": "Prune redundant local imports (datetime/_dt, requests, gspread, BeautifulSoup, Counter, traceback) by using module-scope imports; no behavior changes.", "risk": "low"})
+except Exception:
+    pass
 def _yureeka_get_code_version(_lock=_YUREEKA_CODE_VERSION_LOCK):
     try:
         return str(_lock)
@@ -923,8 +930,6 @@ def get_google_sheet():
       - Cache gspread client/spreadsheet/worksheet in Streamlit session_state to reduce repeated API calls.
     """
     try:
-        import gspread
-
         spreadsheet_name = st.secrets.get("google_sheets", {}).get("spreadsheet_name", "Yureeka_JSON")
         worksheet_title = st.secrets.get("google_sheets", {}).get("worksheet_title", "History")
 
@@ -1000,8 +1005,7 @@ def generate_analysis_id() -> str:
     timestamp inference when created_at fields are missing or non-ISO.
     """
     try:
-        import datetime as _dt
-        ts = _dt.datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+        ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
         suf = os.urandom(3).hex()  # 6 hex chars
         return f"{ts}_{suf}"
     except Exception:
@@ -4696,7 +4700,6 @@ def scrape_url(url: str) -> Optional[str]:
 
     def _clean_html_to_text(html: str) -> str:
         try:
-            from bs4 import BeautifulSoup  # type: ignore
             soup = BeautifulSoup(html or "", "html.parser")
             for tag in soup(["script", "style", "nav", "footer", "header", "aside", "noscript", "form"]):
                 try:
@@ -9559,8 +9562,6 @@ def fetch_url_content_with_status(url: str, timeout: int = 25, force_pdf: bool =
       - Falls back to ScrapingDog when blocked/empty and SCRAPINGDOG_KEY is available
       - Avoids returning binary garbage as "text"
     """
-    import requests
-
     def _normalize_url(s: str) -> str:
         t = (s or "").strip()
         if not t:
@@ -9574,6 +9575,11 @@ def fetch_url_content_with_status(url: str, timeout: int = 25, force_pdf: bool =
     url = _normalize_url(url)
     if not url:
         return None, "empty"
+
+
+    # REFACTOR202: requests is optional; fail gracefully if missing
+    if requests is None:
+        return None, "skipped:requests_missing_dependency"
 
     headers = {
         "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36",
@@ -9688,7 +9694,6 @@ def fetch_url_content_with_status(url: str, timeout: int = 25, force_pdf: bool =
             if _rf120_looks_html:
                 _rf120_txt = ""
                 try:
-                    from bs4 import BeautifulSoup  # type: ignore
                     soup = BeautifulSoup(_rf120_raw, "html.parser")
                     for tag in soup(["script", "style", "nav", "footer", "header", "aside", "noscript", "form"]):
                         try:
@@ -9736,9 +9741,11 @@ def _fetch_via_scrapingdog(url: str, timeout: int = 25) -> str:
     Internal helper used by fetch_url_content_with_status.
     Returns raw HTML text from ScrapingDog (or "" on failure).
     """
-    import requests
-
     key = globals().get("SCRAPINGDOG_KEY")
+    # REFACTOR202: requests is optional; fail gracefully if missing
+    if requests is None:
+        return ""
+
     if not key:
         return ""
 
@@ -10568,8 +10575,6 @@ def get_google_spreadsheet():
       - Respect the 429 cooldown to avoid repeated read-request quota errors.
     """
     try:
-        import gspread
-
         spreadsheet_name = st.secrets.get("google_sheets", {}).get("spreadsheet_name", "Yureeka_JSON")
 
         if _yureeka_sheets_in_rate_limit_cooldown_v1():
@@ -10983,7 +10988,6 @@ def write_full_history_payload_to_sheet(analysis_id: str, payload: str, workshee
       - Backward compatible: if sheet is legacy 5-col, we still write 5-col rows.
       - Stores sha256 for integrity (full stitched payload).
     """
-    import datetime as _dt
     if not analysis_id or not payload:
         return False
 
@@ -11006,7 +11010,7 @@ def write_full_history_payload_to_sheet(analysis_id: str, payload: str, workshee
 
     if not created_at_iso:
         try:
-            created_at_iso = _dt.datetime.now(_dt.timezone.utc).isoformat()
+            created_at_iso = datetime.now(timezone.utc).isoformat()
         except Exception:
             created_at_iso = ""
 
@@ -11502,7 +11506,6 @@ def _refactor111_mask_sheet_id_v1(sid: str) -> str:
 def _refactor112_parse_ts_from_analysis_id_v1(aid: str):
     """REFACTOR112: fallback timestamp inference from analysis_id like YYYYMMDD_HHMMSS_xxxxxx."""
     try:
-        import datetime as _dt
         s = str(aid or "").strip()
         # Expected: 20260203_003809_7aa711
         if len(s) >= 15 and s[8] == "_" and s[15:16] == "_":
@@ -11515,7 +11518,7 @@ def _refactor112_parse_ts_from_analysis_id_v1(aid: str):
             return None
         if not (d.isdigit() and t.isdigit()):
             return None
-        dt = _dt.datetime.strptime(d + t, "%Y%m%d%H%M%S")
+        dt = datetime.strptime(d + t, "%Y%m%d%H%M%S")
         # Treat as UTC (naive)
         return dt
     except Exception:
@@ -11574,8 +11577,7 @@ def _refactor111_pick_latest_prev_snapshot_v1(previous_data: dict, web_context: 
                 _dtp = _refactor111_parse_ts_v1(str(prev.get("timestamp") or ""))
                 if _dtp:
                     try:
-                        import datetime as _dt
-                        prev_ts_val = _dtp.replace(tzinfo=_dt.timezone.utc).timestamp()
+                        prev_ts_val = _dtp.replace(tzinfo=timezone.utc).timestamp()
                     except Exception:
                         try:
                             prev_ts_val = float(_dtp.timestamp())
@@ -11679,16 +11681,14 @@ def _refactor111_pick_latest_prev_snapshot_v1(previous_data: dict, web_context: 
                                 dt = _dt2
                                 inferred = True
                                 try:
-                                    import datetime as _dt
-                                    display_created = _dt2.replace(tzinfo=_dt.timezone.utc).isoformat().replace("+00:00", "Z")
+                                    display_created = _dt2.replace(tzinfo=timezone.utc).isoformat().replace("+00:00", "Z")
                                 except Exception:
                                     pass
 
                         ts_val = 0.0
                         if dt:
                             try:
-                                import datetime as _dt
-                                ts_val = dt.replace(tzinfo=_dt.timezone.utc).timestamp()
+                                ts_val = dt.replace(tzinfo=timezone.utc).timestamp()
                             except Exception:
                                 try:
                                     ts_val = float(dt.timestamp())
@@ -15087,7 +15087,6 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                             _looks_html = ('<' in _t0 and '>' in _t0 and ('</' in _t0 or '<html' in _t0.lower() or '<body' in _t0.lower()))
                             if _looks_html:
                                 try:
-                                    from bs4 import BeautifulSoup  # type: ignore
                                     _extract_text = BeautifulSoup(_t0, 'html.parser').get_text(' ')
                                 except Exception:
                                     _extract_text = re.sub(r'<[^>]+>', ' ', _t0)
@@ -17251,11 +17250,6 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
     # - If V2 fails, DO NOT overwrite previously computed rows; otherwise
     #   synthesize strict canonical-join rows so the panel never goes empty
     #   when prev/cur canonical maps are present.
-    try:
-        import traceback as _tb
-    except Exception:
-        _tb = None
-
     _prev_can_v2 = {}
     _cur_can_v2 = {}
 
@@ -17342,7 +17336,7 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                 # REFACTOR58: suppress diff_panel_v2_error emission; fallback builder handles rows.
                 try:
                     if _tb is not None:
-                        _dbg["diff_panel_v2_traceback"] = _tb.format_exc()
+                        _dbg["diff_panel_v2_traceback"] = traceback.format_exc()
                 except Exception:
                     pass
         except Exception:
@@ -18696,8 +18690,7 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
             _row_key_set = set(_row_keys)
             _dups = []
             try:
-                from collections import Counter as _Counter
-                _c = _Counter(_row_keys)
+                _c = Counter(_row_keys)
                 _dups = [k for k, v in _c.items() if int(v) > 1]
             except Exception:
                 _dups = []
@@ -18937,7 +18930,6 @@ def extract_numbers_with_context(text, source_url: str = "", max_results: int = 
     def _html_to_text(s: str) -> str:
         # Prefer BeautifulSoup if available
         try:
-            from bs4 import BeautifulSoup  # type: ignore
             soup = BeautifulSoup(s, "html.parser")
             for tag in soup(["script", "style", "noscript", "svg", "canvas", "iframe", "header", "footer", "nav", "form"]):
                 try:
@@ -19358,8 +19350,6 @@ def calculate_context_match(keywords: List[str], context: str) -> float:
 def render_source_anchored_results(results, query: str):
     """Render source-anchored evolution results (guarded + backward compatible + tuned debug UI)."""
     import math
-    from collections import Counter
-
     st.header("📈 Source-Anchored Evolution Analysis")
     st.markdown(f"**Query:** {query}")
 
@@ -19944,7 +19934,6 @@ def _yureeka_render_sources_reliability_panel_v1(
 
     # Reliability breakdown
     try:
-        from collections import Counter
         _rels = [classify_source_reliability(s) for s in all_sources]
         _cnt = Counter(_rels)
         c1, c2, c3 = st.columns(3)
@@ -26703,8 +26692,7 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
     try:
         _res = impl(previous_data, web_context=web_context)
         if not isinstance(_res, dict):
-            import traceback as _tb
-            return _fail("run_source_anchored_evolution returned non-dict result (impl)", tb=_tb.format_stack())
+            return _fail("run_source_anchored_evolution returned non-dict result (impl)", tb=traceback.format_stack())
         try:
             _res = _refactor83_normalize_evolution_source_caches_v1(_res)
         except Exception:
@@ -26735,8 +26723,7 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
         try:
             _res = impl(previous_data)
             if not isinstance(_res, dict):
-                import traceback as _tb
-                return _fail("run_source_anchored_evolution returned non-dict result (impl fallback)", tb=_tb.format_stack())
+                return _fail("run_source_anchored_evolution returned non-dict result (impl fallback)", tb=traceback.format_stack())
             try:
                 _res = _refactor83_normalize_evolution_source_caches_v1(_res)
             except Exception:
@@ -26763,11 +26750,9 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
 
             return _res
         except Exception as e:
-            import traceback as _tb
-            return _fail(f"run_source_anchored_evolution crashed: {e}", tb=_tb.format_exc())
+            return _fail(f"run_source_anchored_evolution crashed: {e}", tb=traceback.format_exc())
     except Exception as e:
-        import traceback as _tb
-        return _fail(f"run_source_anchored_evolution crashed: {e}", tb=_tb.format_exc())
+        return _fail(f"run_source_anchored_evolution crashed: {e}", tb=traceback.format_exc())
 
 # Why:
 # - Streamlit can execute main() before later end-of-file patch-tracker "ADD" blocks run.
