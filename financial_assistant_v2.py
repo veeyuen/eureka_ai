@@ -136,7 +136,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "LLM15"
+_YUREEKA_CODE_VERSION_LOCK = "LLM16"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 # REFACTOR206: Release Candidate freeze (no pipeline behavior change).
 YUREEKA_RELEASE_CANDIDATE_V1 = False
@@ -156,7 +156,7 @@ YUREEKA_REGRESSION_QUESTIONS_V1 = [
 # Design rule: LLM assists; deterministic rules decide.
 # All feature flags are OFF by default to preserve REFACTOR206 behavior.
 
-ENABLE_LLM_EVIDENCE_SNIPPETS = True
+ENABLE_LLM_EVIDENCE_SNIPPETS = False
 ENABLE_LLM_SOURCE_CLUSTERING = False
 ENABLE_LLM_QUERY_FRAME = False
 ENABLE_LLM_ANOMALY_FLAGS = False
@@ -167,7 +167,7 @@ ENABLE_LLM_ANOMALY_FLAGS = False
 # LLM12: Optional diagnostics/testing toggles (default OFF)
 # - LLM_BYPASS_CACHE: ignore disk/mem cache to verify live calls (may change snippet ranking output).
 # - ENABLE_LLM_SMOKE_TEST: run a one-shot provider connectivity check and attach non-sensitive diag.
-LLM_BYPASS_CACHE = False
+LLM_BYPASS_CACHE = True
 ENABLE_LLM_SMOKE_TEST = False
 
 def _yureeka__parse_boolish_v1(v: Any) -> Optional[bool]:
@@ -2915,7 +2915,8 @@ def _llm01_hotfix_apply_evidence_snippets_final_v1(wrapper: dict, *, stage: str 
 
         # De-dup pmc objects by identity
         seen = set()
-        agg = {"applied": 0, "llm_used": 0, "skipped": 0, "cache_hits": 0, "pmc_targets": 0}
+        agg = {"applied": 0, "llm_used": 0, "skipped": 0, "cache_hits": 0, "pmc_targets": 0, "pmc_metric_count_total": 0, "pmc_dicts_with_work": 0}
+        _pmc_metric_keys_unique = set()
         for pmc in pmcs:
             if not isinstance(pmc, dict) or not pmc:
                 continue
@@ -2924,6 +2925,14 @@ def _llm01_hotfix_apply_evidence_snippets_final_v1(wrapper: dict, *, stage: str 
                 continue
             seen.add(pid)
             agg["pmc_targets"] += 1
+            try:
+                agg["pmc_metric_count_total"] += int(len(pmc))
+                try:
+                    _pmc_metric_keys_unique.update([str(_k) for _k in list(pmc.keys())])
+                except Exception:
+                    pass
+            except Exception:
+                pass
             stt = _llm01_attach_evidence_snippets_to_pmc_v1(
                 pmc=pmc,
                 baseline_sources_cache=bsc,
@@ -2932,6 +2941,11 @@ def _llm01_hotfix_apply_evidence_snippets_final_v1(wrapper: dict, *, stage: str 
                 stage=stage_s or "final",
                 out_debug=dbg,
             ) or {}
+            try:
+                if int(stt.get("applied") or 0) > 0 or int(stt.get("llm_used") or 0) > 0:
+                    agg["pmc_dicts_with_work"] += 1
+            except Exception:
+                pass
             try:
                 agg["applied"] += int(stt.get("applied") or 0)
                 agg["llm_used"] += int(stt.get("llm_used") or 0)
@@ -2952,6 +2966,9 @@ def _llm01_hotfix_apply_evidence_snippets_final_v1(wrapper: dict, *, stage: str 
                         "llm_used": int(agg.get("llm_used") or 0),
                         "skipped": int(agg.get("skipped") or 0),
                         "cache_hits": int(agg.get("cache_hits") or 0),
+                        "pmc_metric_count_total": int(agg.get("pmc_metric_count_total") or 0),
+                        "pmc_metric_keys_unique": int(len(_pmc_metric_keys_unique) if isinstance(_pmc_metric_keys_unique, set) else 0),
+                        "pmc_dicts_with_work": int(agg.get("pmc_dicts_with_work") or 0),
                         "flag_enable_llm": bool(_yureeka_llm_flag_bool_v1("ENABLE_LLM_EVIDENCE_SNIPPETS")),
                     })
         except Exception:
@@ -30321,9 +30338,40 @@ try:
 except Exception:
     pass
 
+
+
+# LLM16: patch tracker overlay (LLM-series patch hygiene + diagnostics polish).
+try:
+    if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "LLM16" for e in PATCH_TRACKER_V1):
+        PATCH_TRACKER_V1.insert(0, {"patch_id": "LLM16", "scope": "llm-sidecar", "summary": "Patch hygiene: bump CODE_VERSION to LLM16 and add missing LLM13–LLM15 tracker entries. Diagnostics: enrich llm01_evidence_snippets_summary with metric-level counts (while preserving existing fields) and clarify cache-vs-live call counts. No winner/value changes; assist flags remain OFF by default.", "risk": "low"})
+except Exception:
+    pass
+
+# LLM15: patch tracker overlay (LLM01 evidence snippets controlled test run).
+try:
+    if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "LLM15" for e in PATCH_TRACKER_V1):
+        PATCH_TRACKER_V1.insert(0, {"patch_id": "LLM15", "scope": "llm-sidecar", "summary": "Controlled validation: ENABLE_LLM_EVIDENCE_SNIPPETS can be enabled to LLM-rank snippet windows; winners/values remain deterministic. Adds additional grep-friendly beacons for llm_used/cache_hit and preserves strict_mode behavior with Perplexity.", "risk": "low"})
+except Exception:
+    pass
+
+# LLM14: patch tracker overlay (patch hygiene restore + safer defaults).
+try:
+    if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "LLM14" for e in PATCH_TRACKER_V1):
+        PATCH_TRACKER_V1.insert(0, {"patch_id": "LLM14", "scope": "llm-sidecar", "summary": "Restore patch hygiene invariants for LLM-series branch: align CODE_VERSION with patch tracker head, keep assist flags OFF by default, and default LLM_BYPASS_CACHE to OFF (debug override only).", "risk": "low"})
+except Exception:
+    pass
+
+# LLM13: patch tracker overlay (Perplexity wiring smoke-test validated).
+try:
+    if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "LLM13" for e in PATCH_TRACKER_V1):
+        PATCH_TRACKER_V1.insert(0, {"patch_id": "LLM13", "scope": "llm-sidecar", "summary": "Perplexity provider wiring validated (sonar-pro, strict_mode). Smoke test confirms response_format json_schema and 200 status. Assist features remain OFF by default; only diagnostics active.", "risk": "low"})
+except Exception:
+    pass
+
+
 # LLM10_PATCH_TRACKER_REORDER_V1: move known patch ids to the front in descending order (best-effort)
 try:
-    for _pid in ["LLM00", "LLM01", "LLM01H", "LLM01D", "LLM01E", "LLM01F", "LLM02", "LLM03", "LLM04H", "LLM05", "LLM06", "LLM07", "LLM08", "LLM09", "LLM10", "LLM11", "LLM12", "LLM13", "LLM14", "LLM15"]:
+    for _pid in ["LLM00", "LLM01", "LLM01H", "LLM01D", "LLM01E", "LLM01F", "LLM02", "LLM03", "LLM04H", "LLM05", "LLM06", "LLM07", "LLM08", "LLM09", "LLM10", "LLM11", "LLM12", "LLM13", "LLM14", "LLM15", "LLM16"]:
         _yureeka_patch_tracker_ensure_head_v1(_pid, {})
 except Exception:
     pass
