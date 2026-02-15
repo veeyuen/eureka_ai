@@ -136,12 +136,12 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "LLM03"
+_YUREEKA_CODE_VERSION_LOCK = "LLM04"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 
 # REFACTOR206: Release Candidate freeze (no pipeline behavior change).
 YUREEKA_RELEASE_CANDIDATE_V1 = False
-YUREEKA_RELEASE_TAG_V1 = "LLM03"
+YUREEKA_RELEASE_TAG_V1 = "LLM04"
 YUREEKA_FREEZE_MODE_V1 = True
 # Small default regression set (optional; used for manual triad smoke tests).
 YUREEKA_REGRESSION_QUESTIONS_V1 = [
@@ -157,10 +157,10 @@ YUREEKA_REGRESSION_QUESTIONS_V1 = [
 # Design rule: LLM assists; deterministic rules decide.
 # All feature flags are OFF by default to preserve REFACTOR206 behavior.
 
-ENABLE_LLM_EVIDENCE_SNIPPETS = True
+ENABLE_LLM_EVIDENCE_SNIPPETS = False
 ENABLE_LLM_SOURCE_CLUSTERING = False
 ENABLE_LLM_QUERY_FRAME = False
-ENABLE_LLM_ANOMALY_FLAGS = False
+ENABLE_LLM_ANOMALY_FLAGS = True
 
 
 
@@ -980,6 +980,281 @@ def _yureeka_question_hash_v1(question: str) -> str:
         return h[:16]
     except Exception:
         return ""
+
+
+# ================================
+# LLM04 — Anomaly flags + confidence penalties (proposal-only; rules decide)
+# ================================
+
+_LLM04_IRRELEVANCE_TOKENS_V1 = [
+    "page ", "pages ", "table ", "figure ", "fig ", "appendix", "copyright",
+    "all rights reserved", "isbn", "doi", "cookie", "privacy policy",
+    "terms of service", "subscribe", "newsletter", "advertisement", "sponsored",
+]
+
+def _llm04__coerce_float_v1(x, default=None):
+    try:
+        if isinstance(x, bool):
+            return default
+        if isinstance(x, (int, float)) and not isinstance(x, bool):
+            return float(x)
+        if isinstance(x, str) and x.strip():
+            # tolerate commas
+            s = x.strip().replace(",", "")
+            return float(s)
+    except Exception:
+        pass
+    return default
+
+def _llm04__extract_years_v1(text: str) -> List[int]:
+    try:
+        ys = re.findall(r"(19\d{2}|20\d{2})", str(text or ""))
+        out = []
+        for y in ys:
+            try:
+                yi = int(y)
+                if 1900 <= yi <= 2100:
+                    out.append(yi)
+            except Exception:
+                continue
+        # deterministic unique
+        return sorted(set(out))
+    except Exception:
+        return []
+
+def _llm04_rule_anomaly_flags_v1(
+    *,
+    candidate: dict,
+    spec: dict,
+    canonical_key: str,
+    pool_stats: Optional[dict] = None,
+    question_text: str = "",
+) -> dict:
+    """Return rule-based anomaly flags + a small integer penalty for tie-breaking.
+    This never forces acceptance; it only discourages suspicious candidates when enabled.
+    """
+    out = {"penalty_points": 0, "flags": [], "detail": {}}
+    if not isinstance(candidate, dict):
+        return out
+
+    try:
+        raw = str(candidate.get("raw") or "")
+        ctx = str(candidate.get("context_snippet") or candidate.get("context") or candidate.get("context_window") or "")
+        blob = (raw + " " + ctx).lower()
+        vn = _llm04__coerce_float_v1(candidate.get("value_norm"), default=None)
+        unit_family = str(candidate.get("unit_family") or "").strip().lower()
+        unit_tag = str(candidate.get("unit_tag") or candidate.get("unit") or "").strip().lower()
+
+        # Required years (from canonical_key)
+        req_years = _llm04__extract_years_v1(canonical_key)
+        ctx_years = _llm04__extract_years_v1(blob)
+
+        # Year mismatch (mild)
+        if req_years:
+            if not any(y in ctx_years for y in req_years):
+                out["flags"].append("year_anchor_missing")
+                out["penalty_points"] += 1
+            # If it mentions other years but none of the required ones
+            if ctx_years and (set(ctx_years) - set(req_years)) and not (set(ctx_years) & set(req_years)):
+                out["flags"].append("year_mismatch")
+                out["penalty_points"] += 1
+
+        # Percent out-of-range (strong)
+        expects_percent = False
+        try:
+            ut_spec = str(spec.get("unit_tag") or spec.get("unit") or "").strip().lower()
+            expects_percent = (unit_family == "percent") or (ut_spec in ("%", "percent", "percentage")) or ("cagr" in str(canonical_key or "").lower())
+        except Exception:
+            expects_percent = (unit_family == "percent")
+
+        if expects_percent and vn is not None:
+            if vn > 250.0 or vn < -1.0:
+                out["flags"].append("percent_out_of_range")
+                out["penalty_points"] += 3
+            elif vn > 120.0:
+                out["flags"].append("percent_high")
+                out["penalty_points"] += 1
+
+        # Negative or zero where unlikely (mild)
+        if vn is not None and vn < 0:
+            out["flags"].append("negative_value")
+            out["penalty_points"] += 1
+
+        # Irrelevance tokens (mild)
+        if any(t in blob for t in _LLM04_IRRELEVANCE_TOKENS_V1):
+            out["flags"].append("context_irrelevant_token")
+            out["penalty_points"] += 1
+
+        # Outlier vs pool median (mild)
+        try:
+            if isinstance(pool_stats, dict) and vn is not None:
+                med = _llm04__coerce_float_v1(pool_stats.get("median"), default=None)
+                if med is not None and abs(med) > 1e-12 and vn > 0 and med > 0:
+                    ratio = vn / med
+                    if ratio > 60.0 or ratio < (1.0 / 60.0):
+                        out["flags"].append("outlier_vs_pool")
+                        out["penalty_points"] += 1
+                        out["detail"]["pool_ratio"] = float(ratio)
+        except Exception:
+            pass
+
+        # Store light details (no prompts)
+        out["detail"]["required_years"] = req_years
+        out["detail"]["ctx_years"] = ctx_years
+        out["detail"]["unit_family"] = unit_family
+        out["detail"]["unit_tag"] = unit_tag
+        try:
+            out["detail"]["value_norm"] = float(vn) if vn is not None else None
+        except Exception:
+            out["detail"]["value_norm"] = None
+        out["detail"]["question_hash"] = _yureeka_hash_text_v1(str(question_text or "")) if question_text else ""
+
+        # Cap penalty to keep tie-break gentle
+        try:
+            out["penalty_points"] = int(max(0, min(6, int(out.get("penalty_points") or 0))))
+        except Exception:
+            out["penalty_points"] = 0
+
+        # Deterministic flags order
+        try:
+            out["flags"] = sorted({str(f) for f in (out.get("flags") or []) if str(f)})
+        except Exception:
+            pass
+
+        return out
+    except Exception:
+        return out
+
+def _llm04__validate_relevance_obj_v1(obj: Any) -> Tuple[bool, str]:
+    try:
+        if not isinstance(obj, dict):
+            return (False, "not_dict")
+        if "relevant" not in obj:
+            return (False, "missing_relevant")
+        rel = obj.get("relevant")
+        if not isinstance(rel, bool):
+            return (False, "relevant_not_bool")
+        conf = obj.get("confidence")
+        if conf is None:
+            return (False, "missing_confidence")
+        try:
+            cf = float(conf)
+        except Exception:
+            return (False, "confidence_not_float")
+        if not (0.0 <= cf <= 1.0):
+            return (False, "confidence_range")
+        rat = obj.get("rationale")
+        if rat is not None and not isinstance(rat, str):
+            return (False, "rationale_not_str")
+        return (True, "ok")
+    except Exception:
+        return (False, "exception")
+
+def _llm04_llm_relevance_check_v1(
+    *,
+    question_text: str,
+    canonical_key: str,
+    spec: dict,
+    candidate: dict,
+) -> Tuple[Optional[dict], dict]:
+    """Optional OpenAI relevance probe. Returns (obj, diag). Obj is strict JSON:
+    {relevant: bool, confidence: 0-1, rationale: short str}
+    """
+    diag = {"ok": False, "reason": "", "llm_used": False}
+    try:
+        if not bool(globals().get("ENABLE_LLM_ANOMALY_FLAGS")):
+            diag["reason"] = "disabled"
+            return (None, diag)
+
+        # Avoid calling if requests/key missing (diag will explain).
+        try:
+            model = os.environ.get("YUREEKA_LLM_MODEL") or os.environ.get("OPENAI_MODEL") or "gpt-4o-mini"
+        except Exception:
+            model = "gpt-4o-mini"
+
+        prompt_version = "llm04_anomaly_relevance_v1"
+        schema_version = "schema_frozen_v1"
+
+        # Cache key (replayable)
+        try:
+            input_obj = {
+                "q": str(question_text or "")[:400],
+                "canonical_key": str(canonical_key or "")[:160],
+                "spec_name": str((spec or {}).get("name") or "")[:120],
+                "spec_unit": str((spec or {}).get("unit_tag") or (spec or {}).get("unit") or "")[:16],
+                "raw": str((candidate or {}).get("raw") or "")[:80],
+                "ctx": str((candidate or {}).get("context_snippet") or "")[:260],
+            }
+            input_hash = _yureeka_hash_text_v1(_yureeka__stable_json_dumps_v1(input_obj))
+            q_hash = _yureeka_hash_text_v1(str(question_text or ""))
+            key = get_llm_cache_key(str(model), prompt_version, schema_version, input_hash, "", q_hash)
+        except Exception:
+            key = ""
+
+        if key:
+            cached = get_cached_llm_response(key)
+            if cached is not None:
+                diag["llm_used"] = True
+                diag["ok"] = True
+                diag["reason"] = "cache_hit"
+                if isinstance(cached, dict):
+                    return (cached, diag)
+                return (None, diag)
+
+        system_prompt = (
+            "You are a metric relevance checker. "
+            "Given a user question, a canonical metric spec, and an evidence snippet with a number, "
+            "decide if the number is actually describing the target metric. "
+            "Return ONLY strict JSON: {\"relevant\": true/false, \"confidence\": 0..1, \"rationale\": \"<max 120 chars>\"}."
+        )
+        user_payload = {
+            "question": str(question_text or "")[:420],
+            "canonical_key": str(canonical_key or "")[:180],
+            "metric_name": str((spec or {}).get("name") or canonical_key)[:140],
+            "expected_unit": str((spec or {}).get("unit_tag") or (spec or {}).get("unit") or "")[:18],
+            "required_years": _llm04__extract_years_v1(canonical_key),
+            "evidence_raw": str((candidate or {}).get("raw") or "")[:120],
+            "evidence_snippet": str((candidate or {}).get("context_snippet") or (candidate or {}).get("context") or "")[:320],
+        }
+
+        obj, call_diag = _yureeka_call_openai_chat_json_v1(
+            model=str(model),
+            system_prompt=system_prompt,
+            user_payload=user_payload,
+            timeout_sec=30,
+            max_tokens=180,
+        )
+        diag.update(call_diag or {})
+        diag["llm_used"] = True
+
+        ok, reason = _llm04__validate_relevance_obj_v1(obj)
+        if ok:
+            # sanitize
+            out = {
+                "relevant": bool(obj.get("relevant")),
+                "confidence": float(obj.get("confidence") or 0.0),
+                "rationale": str(obj.get("rationale") or "")[:120],
+            }
+            diag["ok"] = True
+            diag["reason"] = "ok"
+            if key:
+                try:
+                    cache_llm_response(key, out)
+                except Exception:
+                    pass
+            return (out, diag)
+
+        diag["ok"] = False
+        diag["reason"] = "invalid:" + str(reason or "")
+        return (None, diag)
+    except Exception as e:
+        diag["ok"] = False
+        diag["reason"] = "exception:" + str(type(e).__name__)
+        try:
+            diag["exception_snip"] = str(e)[:160]
+        except Exception:
+            pass
+        return (None, diag)
 
 def _llm01__coerce_int_v1(x, default=None):
     try:
@@ -2119,6 +2394,15 @@ except Exception:
 
 
 
+
+
+
+# LLM04: patch tracker overlay (avoid touching the compressed canonical blob)
+try:
+    if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "LLM04" for e in PATCH_TRACKER_V1):
+        PATCH_TRACKER_V1.insert(0, {"patch_id": "LLM04", "scope": "llm-sidecar", "summary": "Add anomaly flags + confidence-penalty sidecar (rule-based outlier/irrelevance checks + optional OpenAI relevance probe) behind ENABLE_LLM_ANOMALY_FLAGS (default OFF).", "risk": "medium"})
+except Exception:
+    pass
 
 # LLM03: patch tracker overlay (avoid touching the compressed canonical blob)
 try:
@@ -26249,6 +26533,37 @@ def rebuild_metrics_from_snapshots_analysis_canonical_v1(prev_response: dict, ba
         except Exception:
             pass
 
+        # LLM04: anomaly context (per-canonical_key)
+        _llm04_question_text = ""
+        _llm04_pool_stats = {}
+        if bool(globals().get("ENABLE_LLM_ANOMALY_FLAGS")):
+            try:
+                _llm04_question_text = str(prev_response.get("question") or "")
+            except Exception:
+                _llm04_question_text = ""
+            try:
+                _vals = []
+                for _pc in (_fix2d2s_pool or []):
+                    try:
+                        _vn = _pc.get("value_norm")
+                        if isinstance(_vn, (int, float)) and not isinstance(_vn, bool):
+                            if _fix2d24_is_yearlike(_vn, _pc.get("raw")):
+                                continue
+                            _vals.append(float(_vn))
+                    except Exception:
+                        continue
+                _vals.sort()
+                if _vals:
+                    mid = len(_vals) // 2
+                    med = _vals[mid] if (len(_vals) % 2 == 1) else 0.5 * (_vals[mid - 1] + _vals[mid])
+                    _llm04_pool_stats = {"n": int(len(_vals)), "median": float(med), "min": float(_vals[0]), "max": float(_vals[-1])}
+            except Exception:
+                _llm04_pool_stats = {}
+            try:
+                dbg.setdefault("llm04_anomaly_summary_v1", {"enabled": True, "keys": 0, "llm_attempts": 0, "llm_ok": 0, "llm_fail": 0})
+            except Exception:
+                pass
+
         for c in (_fix2d2s_pool or []):
             ok, _reason = _fix17_candidate_allowed_with_reason(c, spec, canonical_key=canonical_key)
             if not ok:
@@ -26329,10 +26644,37 @@ def rebuild_metrics_from_snapshots_analysis_canonical_v1(prev_response: dict, ba
                 except Exception:
                     pass
 
+            # LLM04: anomaly penalty (rule-based) — only affects tie-break when ENABLE_LLM_ANOMALY_FLAGS is ON
+            _llm04_penalty_points = 0
+            _llm04_anom_obj = None
+            try:
+                if bool(globals().get("ENABLE_LLM_ANOMALY_FLAGS")):
+                    _llm04_anom_obj = _llm04_rule_anomaly_flags_v1(
+                        candidate=c,
+                        spec=spec,
+                        canonical_key=str(canonical_key),
+                        pool_stats=_llm04_pool_stats,
+                        question_text=_llm04_question_text,
+                    )
+                    if isinstance(_llm04_anom_obj, dict):
+                        _llm04_penalty_points = int(_llm04_anom_obj.get("penalty_points") or 0)
+                        try:
+                            c["_llm04_anomaly_v1"] = _llm04_anom_obj
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+
             if _rf135_is_m_metric:
-                tie = (-hits, -int(bool(_rf135_has_million_cue)), -int(bool(_rf135_has_decimal)), -int(_rf135_decimal_places)) + _cand_sort_key(c)
+                if bool(globals().get("ENABLE_LLM_ANOMALY_FLAGS")):
+                    tie = (-hits, int(_llm04_penalty_points), -int(bool(_rf135_has_million_cue)), -int(bool(_rf135_has_decimal)), -int(_rf135_decimal_places)) + _cand_sort_key(c)
+                else:
+                    tie = (-hits, -int(bool(_rf135_has_million_cue)), -int(bool(_rf135_has_decimal)), -int(_rf135_decimal_places)) + _cand_sort_key(c)
             else:
-                tie = (-hits,) + _cand_sort_key(c)
+                if bool(globals().get("ENABLE_LLM_ANOMALY_FLAGS")):
+                    tie = (-hits, int(_llm04_penalty_points)) + _cand_sort_key(c)
+                else:
+                    tie = (-hits,) + _cand_sort_key(c)
 
             # REFACTOR135 trace: keep a compact top-N for chargers_2040
             try:
@@ -26454,7 +26796,7 @@ def rebuild_metrics_from_snapshots_analysis_canonical_v1(prev_response: dict, ba
                 }
         except Exception:
             pass
-        rebuilt[canonical_key] = {
+        _entry = {
             "canonical_key": canonical_key,
             "name": spec.get("name") or canonical_key,
             "value": best.get("value"),
@@ -26471,6 +26813,83 @@ def rebuild_metrics_from_snapshots_analysis_canonical_v1(prev_response: dict, ba
             }],
             "anchor_used": False,
         }
+
+        # LLM04: attach anomaly flags for the chosen winner + optional relevance probe (no prompt leakage)
+        if bool(globals().get("ENABLE_LLM_ANOMALY_FLAGS")):
+            try:
+                _anom_best = None
+                try:
+                    _anom_best = best.get("_llm04_anomaly_v1")
+                except Exception:
+                    _anom_best = None
+                if not isinstance(_anom_best, dict):
+                    _anom_best = _llm04_rule_anomaly_flags_v1(
+                        candidate=best,
+                        spec=spec,
+                        canonical_key=str(canonical_key),
+                        pool_stats=_llm04_pool_stats,
+                        question_text=_llm04_question_text,
+                    )
+                if isinstance(_anom_best, dict) and (int(_anom_best.get("penalty_points") or 0) > 0 or (_anom_best.get("flags") or [])):
+                    _entry["anomaly_flags_v1"] = list(_anom_best.get("flags") or [])
+                    _entry["anomaly_penalty_points"] = int(_anom_best.get("penalty_points") or 0)
+
+                    # Optional LLM relevance check for high-risk anomalies only
+                    _llm_obj = None
+                    _llm_diag = None
+                    try:
+                        if int(_entry.get("anomaly_penalty_points") or 0) >= 2:
+                            _llm_obj, _llm_diag = _llm04_llm_relevance_check_v1(
+                                question_text=_llm04_question_text,
+                                canonical_key=str(canonical_key),
+                                spec=spec,
+                                candidate=best,
+                            )
+                    except Exception:
+                        _llm_obj = None
+                        _llm_diag = None
+
+                    if isinstance(_llm_obj, dict):
+                        _entry["anomaly_llm_relevance_v1"] = {
+                            "relevant": bool(_llm_obj.get("relevant")),
+                            "confidence": float(_llm_obj.get("confidence") or 0.0),
+                            "rationale": str(_llm_obj.get("rationale") or "")[:120],
+                        }
+                        # Only penalize (never force acceptance)
+                        if (not bool(_llm_obj.get("relevant"))) and float(_llm_obj.get("confidence") or 0.0) >= 0.65:
+                            try:
+                                _entry["anomaly_flags_v1"].append("llm_irrelevant")
+                            except Exception:
+                                pass
+                            try:
+                                _entry["anomaly_penalty_points"] = int(_entry.get("anomaly_penalty_points") or 0) + 2
+                            except Exception:
+                                pass
+
+                    # Debug: store non-sensitive call diagnostics
+                    try:
+                        if isinstance(_llm_diag, dict):
+                            dbg.setdefault("llm04_anomaly_by_key_v1", {})[str(canonical_key)] = {
+                                "penalty_points": int(_entry.get("anomaly_penalty_points") or 0),
+                                "flags": list(_entry.get("anomaly_flags_v1") or []),
+                                "llm_diag": _llm_diag,
+                                "llm_response": _entry.get("anomaly_llm_relevance_v1"),
+                            }
+                            _s = dbg.get("llm04_anomaly_summary_v1") or {}
+                            _s["keys"] = int(_s.get("keys") or 0) + 1
+                            if bool(_llm_diag.get("llm_used")):
+                                _s["llm_attempts"] = int(_s.get("llm_attempts") or 0) + 1
+                                if bool(_llm_diag.get("ok")):
+                                    _s["llm_ok"] = int(_s.get("llm_ok") or 0) + 1
+                                else:
+                                    _s["llm_fail"] = int(_s.get("llm_fail") or 0) + 1
+                            dbg["llm04_anomaly_summary_v1"] = _s
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
+        rebuilt[canonical_key] = _entry
 
     return rebuilt
 
