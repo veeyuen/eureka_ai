@@ -136,12 +136,12 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "LLM04H"
+_YUREEKA_CODE_VERSION_LOCK = "LLM06"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 
 # REFACTOR206: Release Candidate freeze (no pipeline behavior change).
 YUREEKA_RELEASE_CANDIDATE_V1 = False
-YUREEKA_RELEASE_TAG_V1 = "LLM04H"
+YUREEKA_RELEASE_TAG_V1 = "LLM06"
 YUREEKA_FREEZE_MODE_V1 = True
 # Small default regression set (optional; used for manual triad smoke tests).
 YUREEKA_REGRESSION_QUESTIONS_V1 = [
@@ -159,8 +159,8 @@ YUREEKA_REGRESSION_QUESTIONS_V1 = [
 
 ENABLE_LLM_EVIDENCE_SNIPPETS = False
 ENABLE_LLM_SOURCE_CLUSTERING = False
-ENABLE_LLM_QUERY_FRAME = 1
-ENABLE_LLM_ANOMALY_FLAGS = 1
+ENABLE_LLM_QUERY_FRAME = True
+ENABLE_LLM_ANOMALY_FLAGS = False
 
 
 
@@ -710,6 +710,10 @@ def _llm03_get_query_frame_v1(query: str, base_signals: Optional[Dict[str, Any]]
         cached = get_cached_llm_response(key)
         if cached is not None:
             dbg["llm_cache_hit"] = True
+            try:
+                _yureeka_llm_global_agg_update_v1("llm03_query_frame", {"ok": True, "status": None, "reason": "cache_hit", "model": str(model)}, cache_hit=True)
+            except Exception:
+                pass
             if isinstance(cached, dict) and "frame" in cached and isinstance(cached.get("frame"), dict):
                 candidate = cached.get("frame")
             elif isinstance(cached, dict):
@@ -745,6 +749,10 @@ def _llm03_get_query_frame_v1(query: str, base_signals: Optional[Dict[str, Any]]
             max_tokens=260,
         )
         dbg["llm_call_diag"] = call_diag or {}
+        try:
+            _yureeka_llm_global_agg_update_v1("llm03_query_frame", (call_diag or {}), cache_hit=False)
+        except Exception:
+            pass
         if isinstance(obj, dict) and obj:
             candidate = obj
 
@@ -1165,6 +1173,39 @@ def _llm04_llm_relevance_check_v1(
     {relevant: bool, confidence: 0-1, rationale: short str}
     """
     diag = {"ok": False, "reason": "", "llm_used": False}
+
+    # LLM05: run-scope circuit breaker + call budget guard (non-behavioral; only affects failing/disabled calls).
+    try:
+        _is_open, _cb = _yureeka_llm_circuit_is_open_v1()
+        if bool(_is_open):
+            diag["reason"] = "circuit_open"
+            try:
+                diag["status"] = _cb.get("status")
+            except Exception:
+                pass
+            try:
+                diag["hint"] = str(_cb.get("hint") or "")[:200]
+            except Exception:
+                pass
+            return (None, diag)
+    except Exception:
+        pass
+
+    try:
+        _max_calls = 0
+        try:
+            _max_calls = int(os.environ.get("YUREEKA_LLM_MAX_CALLS_PER_RUN") or os.environ.get("LLM_MAX_CALLS_PER_RUN") or 0)
+        except Exception:
+            _max_calls = 0
+        if _max_calls and _max_calls > 0:
+            _agg = globals().get("_YUREEKA_LLM_RUN_AGG_V1")
+            if isinstance(_agg, dict) and int(_agg.get("attempts") or 0) >= int(_max_calls):
+                diag["reason"] = "call_budget_exhausted"
+                diag["hint"] = "increase YUREEKA_LLM_MAX_CALLS_PER_RUN or reduce enabled LLM flags"
+                return (None, diag)
+    except Exception:
+        pass
+
     try:
         _af_on, _af_src = _yureeka_llm_flag_effective_v1("ENABLE_LLM_ANOMALY_FLAGS")
         diag["flag_source"] = str(_af_src)[:80]
@@ -1203,6 +1244,10 @@ def _llm04_llm_relevance_check_v1(
                 diag["llm_used"] = True
                 diag["ok"] = True
                 diag["reason"] = "cache_hit"
+                try:
+                    _yureeka_llm_global_agg_update_v1("llm04_anomaly_relevance", {"ok": True, "status": None, "reason": "cache_hit", "model": str(model)}, cache_hit=True)
+                except Exception:
+                    pass
                 if isinstance(cached, dict):
                     return (cached, diag)
                 return (None, diag)
@@ -1232,6 +1277,10 @@ def _llm04_llm_relevance_check_v1(
         )
         diag.update(call_diag or {})
         diag["llm_used"] = True
+        try:
+            _yureeka_llm_global_agg_update_v1("llm04_anomaly_relevance", (call_diag or {}), cache_hit=False)
+        except Exception:
+            pass
 
         ok, reason = _llm04__validate_relevance_obj_v1(obj)
         if ok:
@@ -1256,6 +1305,10 @@ def _llm04_llm_relevance_check_v1(
     except Exception as e:
         diag["ok"] = False
         diag["reason"] = "exception:" + str(type(e).__name__)
+        try:
+            diag["hint"] = _yureeka_llm_hint_from_diag_v1(diag)
+        except Exception:
+            pass
         try:
             diag["exception_snip"] = str(e)[:160]
         except Exception:
@@ -1505,9 +1558,46 @@ def _yureeka_call_openai_chat_json_v1(
 ) -> Tuple[Optional[dict], dict]:
     """Call OpenAI Chat Completions for a strict JSON object response (best-effort)."""
     diag = {"ok": False, "status": None, "reason": "", "model": str(model or ""), "requests_present": bool(requests is not None), "api_key_present": False, "base_url": "", "strict_mode": bool(globals().get("LLM_STRICT_MODE")), "response_format": False, "timeout_sec": int(timeout_sec or 30)}
+
+    # LLM05: run-scope circuit breaker + call budget guard (non-behavioral; only affects failing/disabled calls).
+    try:
+        _is_open, _cb = _yureeka_llm_circuit_is_open_v1()
+        if bool(_is_open):
+            diag["reason"] = "circuit_open"
+            try:
+                diag["status"] = _cb.get("status")
+            except Exception:
+                pass
+            try:
+                diag["hint"] = str(_cb.get("hint") or "")[:200]
+            except Exception:
+                pass
+            return (None, diag)
+    except Exception:
+        pass
+
+    try:
+        _max_calls = 0
+        try:
+            _max_calls = int(os.environ.get("YUREEKA_LLM_MAX_CALLS_PER_RUN") or os.environ.get("LLM_MAX_CALLS_PER_RUN") or 0)
+        except Exception:
+            _max_calls = 0
+        if _max_calls and _max_calls > 0:
+            _agg = globals().get("_YUREEKA_LLM_RUN_AGG_V1")
+            if isinstance(_agg, dict) and int(_agg.get("attempts") or 0) >= int(_max_calls):
+                diag["reason"] = "call_budget_exhausted"
+                diag["hint"] = "increase YUREEKA_LLM_MAX_CALLS_PER_RUN or reduce enabled LLM flags"
+                return (None, diag)
+    except Exception:
+        pass
+
     try:
         if requests is None:
             diag["reason"] = "requests_missing"
+            try:
+                diag["hint"] = _yureeka_llm_hint_from_diag_v1(diag)
+            except Exception:
+                pass
             return (None, diag)
 
         api_key = os.environ.get("OPENAI_API_KEY") or os.environ.get("YUREEKA_OPENAI_API_KEY") or ""
@@ -1517,6 +1607,14 @@ def _yureeka_call_openai_chat_json_v1(
             pass
         if not api_key:
             diag["reason"] = "missing_api_key"
+            try:
+                diag["hint"] = _yureeka_llm_hint_from_diag_v1(diag)
+            except Exception:
+                pass
+            try:
+                _yureeka_llm_circuit_open_from_diag_v1(diag)
+            except Exception:
+                pass
             return (None, diag)
 
         base = os.environ.get("OPENAI_BASE_URL") or "https://api.openai.com/v1"
@@ -1542,6 +1640,17 @@ def _yureeka_call_openai_chat_json_v1(
             "temperature": 0,
             "max_tokens": int(max_tokens or 220),
         }
+        # Perplexity Sonar (OpenAI-compatible): disable search for determinism unless explicitly enabled.
+        try:
+            _base_l = str(base or "").lower()
+            if "perplexity.ai" in _base_l:
+                payload["disable_search"] = True
+                try:
+                    diag["disable_search"] = True
+                except Exception:
+                    pass
+        except Exception:
+            pass
         # Best-effort: request JSON object output
         try:
             if bool(globals().get("LLM_STRICT_MODE")):
@@ -1559,6 +1668,14 @@ def _yureeka_call_openai_chat_json_v1(
             diag["reason"] = "http_" + str(resp.status_code)
             try:
                 diag["body_snip"] = str(getattr(resp, "text", "") or "")[:180]
+            except Exception:
+                pass
+            try:
+                diag["hint"] = _yureeka_llm_hint_from_diag_v1(diag)
+            except Exception:
+                pass
+            try:
+                _yureeka_llm_circuit_open_from_diag_v1(diag)
             except Exception:
                 pass
             return (None, diag)
@@ -1615,7 +1732,220 @@ def _llm01_provider_status_v1() -> dict:
     }
 
 
-def _llm01_update_llm_diag_agg_v1(out_debug: dict, call_diag: dict, *, cache_hit: bool = False) -> None:
+def _yureeka_llm_hint_from_diag_v1(diag: dict) -> str:
+    """Return a short non-sensitive hint for common LLM failure reasons."""
+    try:
+        if not isinstance(diag, dict):
+            return ""
+        r = str(diag.get("reason") or "")
+        s = diag.get("status")
+        body = str(diag.get("body_snip") or "")[:300].lower()
+        if "missing_api_key" in r:
+            return "missing_api_key:set OPENAI_API_KEY (or YUREEKA_OPENAI_API_KEY)"
+        if "requests_missing" in r:
+            return "requests_missing:install 'requests' in your environment"
+        # HTTP status hints
+        try:
+            sc = int(s) if s is not None else None
+        except Exception:
+            sc = None
+        if sc == 401 or sc == 403:
+            return "auth_error:check OPENAI_API_KEY and permissions"
+        if sc == 429:
+            if "exceeded your current quota" in body or "billing" in body or "quota" in body:
+                return "quota_exceeded:ChatGPT subscription ≠ API quota; check OpenAI billing/credits for OPENAI_API_KEY"
+            return "rate_limited:slow down or raise rate limits"
+        if sc and sc >= 500:
+            return "server_error:temporary upstream issue; retry later"
+        if "parse_failed" in r:
+            return "parse_failed:model did not return JSON; try strict_mode or different model"
+        if r.startswith("exception:"):
+            return "exception:see exception_snip/body_snip"
+    except Exception:
+        pass
+    return ""
+
+def _yureeka_llm_reset_run_state_v1(stage: str = "") -> None:
+    """Reset per-run LLM diagnostics + circuit breaker state (best-effort)."""
+    try:
+        globals()["_YUREEKA_LLM_RUN_AGG_V1"] = {
+            "stage": str(stage or "")[:40],
+            "started_at": float(time.time()),
+            "attempts": 0,
+            "ok": 0,
+            "cache_hits": 0,
+            "features": {},
+            "reasons": {},
+            "status": {},
+            "last": {},
+        }
+    except Exception:
+        pass
+    try:
+        globals()["_YUREEKA_LLM_CIRCUIT_V1"] = {"open_until": 0.0, "status": None, "reason": "", "hint": ""}
+    except Exception:
+        pass
+
+def _yureeka_llm_global_agg_update_v1(feature: str, call_diag: dict, *, cache_hit: bool = False) -> None:
+    """Global (run-scope) call aggregation; does not store prompts/outputs."""
+    try:
+        agg = globals().get("_YUREEKA_LLM_RUN_AGG_V1")
+        if not isinstance(agg, dict):
+            return
+        try:
+            agg["attempts"] = int(agg.get("attempts") or 0) + 1
+        except Exception:
+            pass
+        if bool(cache_hit):
+            try:
+                agg["cache_hits"] = int(agg.get("cache_hits") or 0) + 1
+            except Exception:
+                pass
+        if isinstance(call_diag, dict) and bool(call_diag.get("ok")):
+            try:
+                agg["ok"] = int(agg.get("ok") or 0) + 1
+            except Exception:
+                pass
+
+        f = str(feature or "unknown")[:80]
+        try:
+            fs = agg.get("features")
+            if not isinstance(fs, dict):
+                fs = {}
+                agg["features"] = fs
+            fe = fs.get(f)
+            if not isinstance(fe, dict):
+                fe = {"attempts": 0, "ok": 0, "cache_hits": 0}
+                fs[f] = fe
+            fe["attempts"] = int(fe.get("attempts") or 0) + 1
+            if bool(cache_hit):
+                fe["cache_hits"] = int(fe.get("cache_hits") or 0) + 1
+            if isinstance(call_diag, dict) and bool(call_diag.get("ok")):
+                fe["ok"] = int(fe.get("ok") or 0) + 1
+        except Exception:
+            pass
+
+        if not isinstance(call_diag, dict):
+            return
+
+        reason = str(call_diag.get("reason") or "")[:120]
+        status = call_diag.get("status")
+        status_s = ""
+        try:
+            status_s = str(int(status))
+        except Exception:
+            status_s = str(status) if status is not None else ""
+
+        try:
+            rs = agg.get("reasons")
+            if not isinstance(rs, dict):
+                rs = {}
+                agg["reasons"] = rs
+            rs[reason] = int(rs.get(reason) or 0) + 1
+        except Exception:
+            pass
+
+        try:
+            ss = agg.get("status")
+            if not isinstance(ss, dict):
+                ss = {}
+                agg["status"] = ss
+            if status_s:
+                ss[status_s] = int(ss.get(status_s) or 0) + 1
+        except Exception:
+            pass
+
+        try:
+            agg["last"] = {
+                "feature": f,
+                "reason": reason,
+                "status": status if status is None else int(status),
+                "model": str(call_diag.get("model") or "")[:80],
+                "hint": str(call_diag.get("hint") or _yureeka_llm_hint_from_diag_v1(call_diag))[:200],
+            }
+        except Exception:
+            pass
+    except Exception:
+        pass
+
+def _yureeka_llm_circuit_is_open_v1() -> Tuple[bool, dict]:
+    try:
+        cb = globals().get("_YUREEKA_LLM_CIRCUIT_V1")
+        if not isinstance(cb, dict):
+            return (False, {})
+        until = float(cb.get("open_until") or 0.0)
+        if until and until > float(time.time()):
+            return (True, dict(cb))
+    except Exception:
+        pass
+    return (False, {})
+
+def _yureeka_llm_circuit_open_from_diag_v1(call_diag: dict) -> None:
+    """Open circuit breaker on persistent-failure signals (e.g., quota/auth)."""
+    try:
+        if not isinstance(call_diag, dict):
+            return
+        st = call_diag.get("status")
+        try:
+            sc = int(st) if st is not None else None
+        except Exception:
+            sc = None
+        # Only open circuit on likely-persistent or very noisy failure modes
+        if sc not in (401, 403, 429) and not (sc and sc >= 500):
+            return
+        sec = 180
+        try:
+            sec = int(os.environ.get("YUREEKA_LLM_CIRCUIT_SECONDS") or os.environ.get("LLM_CIRCUIT_SECONDS") or 180)
+        except Exception:
+            sec = 180
+        cb = globals().get("_YUREEKA_LLM_CIRCUIT_V1")
+        if not isinstance(cb, dict):
+            cb = {}
+            globals()["_YUREEKA_LLM_CIRCUIT_V1"] = cb
+        cb["open_until"] = float(time.time()) + float(max(15, sec))
+        cb["status"] = sc
+        cb["reason"] = str(call_diag.get("reason") or "")[:120]
+        cb["hint"] = str(call_diag.get("hint") or _yureeka_llm_hint_from_diag_v1(call_diag))[:200]
+    except Exception:
+        pass
+
+def _yureeka_llm_health_snapshot_v1(stage: str = "") -> dict:
+    """Compact per-run LLM health snapshot for JSON reports (non-sensitive)."""
+    out = {"v": "llm_health_v1", "stage": str(stage or "")[:40]}
+    try:
+        out["provider"] = _llm01_provider_status_v1()
+    except Exception:
+        pass
+    try:
+        agg = globals().get("_YUREEKA_LLM_RUN_AGG_V1")
+        if isinstance(agg, dict):
+            out["agg"] = {
+                "attempts": int(agg.get("attempts") or 0),
+                "ok": int(agg.get("ok") or 0),
+                "cache_hits": int(agg.get("cache_hits") or 0),
+                "status": dict(agg.get("status") or {}),
+                "reasons": dict(agg.get("reasons") or {}),
+                "last": dict(agg.get("last") or {}),
+                "features": dict(agg.get("features") or {}),
+            }
+    except Exception:
+        pass
+    try:
+        is_open, cb = _yureeka_llm_circuit_is_open_v1()
+        out["circuit_open"] = bool(is_open)
+        if is_open and isinstance(cb, dict):
+            out["circuit"] = {
+                "open_until": float(cb.get("open_until") or 0.0),
+                "status": cb.get("status"),
+                "reason": str(cb.get("reason") or "")[:120],
+                "hint": str(cb.get("hint") or "")[:200],
+            }
+    except Exception:
+        pass
+    return out
+
+
+def _llm01_update_llm_diag_agg_v1(out_debug: dict, call_diag: dict, *, cache_hit: bool = False, feature: str = "llm01") -> None:
     """Aggregate call outcomes without storing prompts or raw model outputs."""
     if not isinstance(out_debug, dict) or not isinstance(call_diag, dict):
         return
@@ -1624,6 +1954,11 @@ def _llm01_update_llm_diag_agg_v1(out_debug: dict, call_diag: dict, *, cache_hit
     if not isinstance(agg, dict):
         agg = {"attempts": 0, "ok": 0, "cache_hits": 0, "reasons": {}, "status": {}, "last": {}}
         out_debug["llm01_llm_diag_agg_v1"] = agg
+        # LLM05: global run-scope aggregation (non-sensitive).
+        try:
+            _yureeka_llm_global_agg_update_v1(str(feature or "llm01"), call_diag, cache_hit=bool(cache_hit))
+        except Exception:
+            pass
 
     try:
         agg["attempts"] = int(agg.get("attempts") or 0) + 1
@@ -23321,6 +23656,12 @@ def main():
 
             query = query.strip()[:500]
 
+            # LLM05: reset per-run LLM diagnostics
+            try:
+                _yureeka_llm_reset_run_state_v1(stage="analysis")
+            except Exception:
+                pass
+
             query_structure = extract_query_structure(query) or {}
             question_profile = categorize_question_signals(query, qs=query_structure)
             question_signals = question_profile.get("signals", {}) or {}
@@ -23651,6 +23992,14 @@ def main():
             # LLM01H hotfix: ensure evidence snippet fields land in the final exported wrapper.
             try:
                 _llm01_hotfix_apply_evidence_snippets_final_v1(output, stage="analysis_final", question=str(output.get("question") or query or ""))
+            except Exception:
+                pass
+
+            # LLM05: attach compact LLM sidecar health snapshot (non-sensitive)
+            try:
+                output.setdefault("debug", {})
+                if isinstance(output.get("debug"), dict):
+                    output["debug"]["llm_sidecar_health_v1"] = _yureeka_llm_health_snapshot_v1(stage="analysis")
             except Exception:
                 pass
 
@@ -24016,6 +24365,12 @@ def main():
                 if not evolution_query:
                     st.error("❌ No question found in baseline.")
                     return
+
+                # LLM05: reset per-run LLM diagnostics
+                try:
+                    _yureeka_llm_reset_run_state_v1(stage="evolution")
+                except Exception:
+                    pass
 
                 with st.spinner("🧬 Running source-anchored evolution..."):
 
@@ -24481,6 +24836,21 @@ def main():
                 # LLM01H hotfix: ensure evidence snippet fields land in the final exported wrapper.
                 try:
                     _llm01_hotfix_apply_evidence_snippets_final_v1(evolution_output, stage="evolution_final", question=str(evolution_output.get("question") or ""))
+                except Exception:
+                    pass
+
+                # LLM05: attach compact LLM sidecar health snapshot (non-sensitive)
+                try:
+                    evolution_output.setdefault("results", {})
+                    _dbg = (evolution_output.get("results", {}) or {}).get("debug")
+                    if not isinstance(_dbg, dict):
+                        try:
+                            evolution_output["results"]["debug"] = {}
+                            _dbg = evolution_output["results"]["debug"]
+                        except Exception:
+                            _dbg = None
+                    if isinstance(_dbg, dict):
+                        _dbg["llm_sidecar_health_v1"] = _yureeka_llm_health_snapshot_v1(stage="evolution")
                 except Exception:
                     pass
 
@@ -29472,6 +29842,22 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
             return _fail(f"run_source_anchored_evolution crashed: {e}", tb=traceback.format_exc())
     except Exception as e:
         return _fail(f"run_source_anchored_evolution crashed: {e}", tb=traceback.format_exc())
+
+# LLM05: patch tracker overlay (LLM sidecar health beacons + circuit breaker).
+try:
+    if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "LLM05" for e in PATCH_TRACKER_V1):
+        PATCH_TRACKER_V1.insert(0, {"patch_id": "LLM05", "scope": "llm-sidecar", "summary": "Add run-scope LLM health beacons + circuit breaker/call-budget guards and unify non-sensitive diagnostics across LLM03 query framing and LLM04 anomaly relevance probes. Attach llm_sidecar_health_v1 to exported JSON (analysis + evolution) with status/last error hints; no winner/value changes.", "risk": "low"})
+except Exception:
+    pass
+
+# LLM06: patch tracker overlay (Perplexity determinism patch).
+try:
+    if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "LLM06" for e in PATCH_TRACKER_V1):
+        PATCH_TRACKER_V1.insert(0, {"patch_id": "LLM06", "scope": "llm-sidecar", "summary": "If OPENAI_BASE_URL points at Perplexity (api.perplexity.ai), automatically add disable_search=true to OpenAI-compatible chat/completions payload for deterministic sidecar behavior; add non-sensitive diag flag. No winner/value changes.", "risk": "low"})
+except Exception:
+    pass
+
+
 
 # Why:
 # - Streamlit can execute main() before later end-of-file patch-tracker "ADD" blocks run.
