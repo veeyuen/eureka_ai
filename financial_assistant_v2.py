@@ -136,12 +136,12 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "LLM01F"
+_YUREEKA_CODE_VERSION_LOCK = "LLM02"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 
 # REFACTOR206: Release Candidate freeze (no pipeline behavior change).
 YUREEKA_RELEASE_CANDIDATE_V1 = False
-YUREEKA_RELEASE_TAG_V1 = "LLM00"
+YUREEKA_RELEASE_TAG_V1 = "LLM02"
 YUREEKA_FREEZE_MODE_V1 = True
 # Small default regression set (optional; used for manual triad smoke tests).
 YUREEKA_REGRESSION_QUESTIONS_V1 = [
@@ -157,10 +157,246 @@ YUREEKA_REGRESSION_QUESTIONS_V1 = [
 # Design rule: LLM assists; deterministic rules decide.
 # All feature flags are OFF by default to preserve REFACTOR206 behavior.
 
-ENABLE_LLM_EVIDENCE_SNIPPETS = False
+ENABLE_LLM_EVIDENCE_SNIPPETS = True
 ENABLE_LLM_SOURCE_CLUSTERING = False
 ENABLE_LLM_QUERY_FRAME = False
 ENABLE_LLM_ANOMALY_FLAGS = False
+
+
+
+def _yureeka__parse_boolish_v1(v: Any) -> Optional[bool]:
+    """Parse bool-ish env strings safely. Returns None if unparseable."""
+    try:
+        if v is None:
+            return None
+        if isinstance(v, bool):
+            return bool(v)
+        s = str(v).strip().lower()
+        if s in ("1", "true", "yes", "y", "on", "enable", "enabled"):
+            return True
+        if s in ("0", "false", "no", "n", "off", "disable", "disabled"):
+            return False
+        return None
+    except Exception:
+        return None
+
+
+def _yureeka_llm_flag_effective_v1(flag_name: str) -> Tuple[bool, str]:
+    """Resolve effective flag value with optional env override.
+
+    Env override names:
+      - YUREEKA_<FLAG_NAME> (e.g., YUREEKA_ENABLE_LLM_EVIDENCE_SNIPPETS=1)
+    """
+    try:
+        env_name = "YUREEKA_" + str(flag_name or "").strip()
+        raw = os.environ.get(env_name)
+        if raw is not None:
+            pv = _yureeka__parse_boolish_v1(raw)
+            if pv is not None:
+                return (bool(pv), "env:" + env_name)
+    except Exception:
+        pass
+    try:
+        return (bool(globals().get(flag_name)), "code:" + str(flag_name or ""))
+    except Exception:
+        return (False, "default")
+
+
+def _yureeka_llm_flag_bool_v1(flag_name: str) -> bool:
+    try:
+        return bool(_yureeka_llm_flag_effective_v1(flag_name)[0])
+    except Exception:
+        return False
+
+
+def _yureeka_llm_flags_snapshot_v1() -> dict:
+    """Non-sensitive effective flag snapshot (helps diagnose why a feature didn't run)."""
+    out = {}
+    for k in (
+        "ENABLE_LLM_EVIDENCE_SNIPPETS",
+        "ENABLE_LLM_SOURCE_CLUSTERING",
+        "ENABLE_LLM_QUERY_FRAME",
+        "ENABLE_LLM_ANOMALY_FLAGS",
+        "ENABLE_LLM_DATASET_LOGGING",
+    ):
+        try:
+            v, src = _yureeka_llm_flag_effective_v1(k)
+            out[k] = {"value": bool(v), "source": str(src)[:80]}
+        except Exception:
+            out[k] = {"value": False, "source": "error"}
+    return out
+
+
+def _llm02__tokenize_v1(s: str) -> List[str]:
+    try:
+        t = (s or "").lower()
+        t = re.sub(r"[^a-z0-9]+", " ", t)
+        toks = [w for w in t.split() if len(w) > 2]
+        return toks[:160]
+    except Exception:
+        return []
+
+
+def _llm02__jaccard_v1(a: set, b: set) -> float:
+    try:
+        if not a or not b:
+            return 0.0
+        inter = len(a.intersection(b))
+        union = len(a.union(b))
+        return float(inter) / float(union) if union else 0.0
+    except Exception:
+        return 0.0
+
+
+def _llm02_cluster_urls_v1(
+    urls: List[str],
+    search_results: List[dict],
+    *,
+    jaccard_threshold: float = 0.78,
+) -> Tuple[List[str], dict]:
+    """Cluster near-duplicate search results and reorder URLs so cluster primaries come first.
+
+    This does NOT drop URLs; it only reorders to reduce duplicate scraping when `num_sources` is small.
+    Deterministic, NLP-first. Optional LLM tiebreakers are deferred to a later patch.
+    """
+    dbg = {
+        "v": "llm02_source_cluster_v1",
+        "enabled": True,
+        "jaccard_threshold": float(jaccard_threshold),
+        "urls_before": int(len(urls or [])),
+        "urls_after": int(len(urls or [])),
+        "clusters_n": 0,
+        "moved_to_front": 0,
+        "primaries": [],
+    }
+    try:
+        if not isinstance(urls, list) or not urls:
+            dbg["enabled"] = False
+            dbg["reason"] = "no_urls"
+            return (urls or [], dbg)
+        if not isinstance(search_results, list) or not search_results:
+            dbg["enabled"] = False
+            dbg["reason"] = "no_search_results"
+            return (urls or [], dbg)
+
+        # Map normalized URL -> (title, snippet)
+        meta = {}
+        for r in (search_results or []):
+            if not isinstance(r, dict):
+                continue
+            u = str((r.get("link") or r.get("url") or "")).strip()
+            if not u:
+                continue
+            try:
+                # Keep consistent with fetch_web_context normalization
+                u = u.strip()
+            except Exception:
+                pass
+            meta[u] = {
+                "title": str(r.get("title") or "")[:220],
+                "snippet": str(r.get("snippet") or "")[:420],
+                "source": str(r.get("source") or "")[:80],
+            }
+
+        # Token sets for similarity; if missing, fall back to URL tokens.
+        token_sets = []
+        for u in urls:
+            m = meta.get(u) or {}
+            t = (m.get("title") or "") + " " + (m.get("snippet") or "")
+            toks = set(_llm02__tokenize_v1(t))
+            if not toks:
+                toks = set(_llm02__tokenize_v1(u))
+            token_sets.append(toks)
+
+        clusters = []  # list of lists of indices into urls
+        for i, u in enumerate(urls):
+            placed = False
+            for c in clusters:
+                try:
+                    rep_i = c[0]
+                    sim = _llm02__jaccard_v1(token_sets[i], token_sets[rep_i])
+                    if sim >= float(jaccard_threshold):
+                        c.append(i)
+                        placed = True
+                        break
+                except Exception:
+                    continue
+            if not placed:
+                clusters.append([i])
+
+        dbg["clusters_n"] = int(len(clusters))
+
+        # Choose primary per cluster using deterministic heuristics (reliability label if available).
+        fn_rel = globals().get("classify_source_reliability")
+        def _score(u: str) -> int:
+            s = 0
+            try:
+                if callable(fn_rel):
+                    lab = str(fn_rel(u) or "")
+                    if "✅" in lab:
+                        s += 300
+                    elif "⚠️" in lab:
+                        s += 200
+                    elif "❌" in lab:
+                        s += 0
+            except Exception:
+                pass
+            try:
+                # Prefer shorter, cleaner URLs
+                s += max(0, 60 - min(60, len(str(u or ""))))
+            except Exception:
+                pass
+            try:
+                # Tiny domain heuristic
+                from urllib.parse import urlsplit
+                host = (urlsplit(u).netloc or "").lower()
+                if host.endswith(".gov") or host.endswith(".edu") or host.endswith(".org"):
+                    s += 20
+            except Exception:
+                pass
+            return int(s)
+
+        primaries = []
+        for c in clusters:
+            best_i = c[0]
+            best_s = -10**9
+            for i in c:
+                sc = _score(urls[i])
+                if sc > best_s:
+                    best_s = sc
+                    best_i = i
+            primaries.append(best_i)
+
+        # Cluster order is by first appearance (stable).
+        seen = set()
+        reordered = []
+        for best_i in primaries:
+            u = urls[best_i]
+            if u not in seen:
+                reordered.append(u)
+                seen.add(u)
+                dbg["primaries"].append(str(u)[:180])
+        for u in urls:
+            if u not in seen:
+                reordered.append(u)
+                seen.add(u)
+
+        try:
+            # Count how many URLs changed position into the primary prefix
+            prefix = set(reordered[: len(primaries)])
+            moved = 0
+            for j, u in enumerate(urls):
+                if u in prefix and j >= len(primaries):
+                    moved += 1
+            dbg["moved_to_front"] = int(moved)
+        except Exception:
+            dbg["moved_to_front"] = 0
+
+        return (reordered, dbg)
+    except Exception as e:
+        dbg["enabled"] = False
+        dbg["reason"] = "exception:" + str(type(e).__name__)
+        return (urls or [], dbg)
 
 # Strict mode (future patches): enforce schema-checked JSON responses and hard validators.
 LLM_STRICT_MODE = True
@@ -719,6 +955,7 @@ def _llm01_provider_status_v1() -> dict:
         "model": str(model or "")[:80],
         "strict_mode": bool(globals().get("LLM_STRICT_MODE")),
         "cache_dir": str(cache_dir or "")[:180],
+        "flags": _yureeka_llm_flags_snapshot_v1(),
     }
 
 
@@ -827,8 +1064,13 @@ def _llm01_llm_rank_windows_v1(
         model = "gpt-4o-mini"
         diag["model"] = model
 
-    if not bool(globals().get("ENABLE_LLM_EVIDENCE_SNIPPETS")):
+    _flag_on, _flag_src = _yureeka_llm_flag_effective_v1("ENABLE_LLM_EVIDENCE_SNIPPETS")
+    if not bool(_flag_on):
         diag["reason"] = "flag_off"
+        try:
+            diag["flag_source"] = str(_flag_src)[:80]
+        except Exception:
+            pass
         try:
             if isinstance(out_debug, dict):
                 _llm01_update_llm_diag_agg_v1(out_debug, {"ok": False, "status": None, "reason": "flag_off", "model": str(model)}, cache_hit=False)
@@ -840,6 +1082,7 @@ def _llm01_llm_rank_windows_v1(
                         "ok": False,
                         "status": None,
                         "reason": "flag_off",
+                        "flag_source": str(_flag_src)[:80],
                         "model": str(model)[:80],
                     })
         except Exception:
@@ -1230,7 +1473,7 @@ def _llm01_attach_evidence_snippets_to_pmc_v1(
                     prov["evidence_snippet_v1"].update({
                         "method": method,
                         "basis": str(basis_key or ""),
-                        "llm_flag": bool(globals().get("ENABLE_LLM_EVIDENCE_SNIPPETS")),
+                        "llm_flag": bool(_yureeka_llm_flag_bool_v1("ENABLE_LLM_EVIDENCE_SNIPPETS")),
                         "llm_used": bool(method == "llm_ranked"),
                         # Provide a bounded reason string even when falling back to deterministic.
                         "llm_reason": str((llm_diag or {}).get("reason") or "")[:120],
@@ -1268,7 +1511,7 @@ def _llm01_attach_evidence_snippets_to_pmc_v1(
                     "llm_used": int(llm_used),
                     "skipped": int(skipped),
                     "cache_hits": int(cache_hits),
-                    "flag_enable_llm": bool(globals().get("ENABLE_LLM_EVIDENCE_SNIPPETS")),
+                    "flag_enable_llm": bool(_yureeka_llm_flag_bool_v1("ENABLE_LLM_EVIDENCE_SNIPPETS")),
                 })
     except Exception:
         pass
@@ -1392,7 +1635,7 @@ def _llm01_hotfix_apply_evidence_snippets_final_v1(wrapper: dict, *, stage: str 
                         "llm_used": int(agg.get("llm_used") or 0),
                         "skipped": int(agg.get("skipped") or 0),
                         "cache_hits": int(agg.get("cache_hits") or 0),
-                        "flag_enable_llm": bool(globals().get("ENABLE_LLM_EVIDENCE_SNIPPETS")),
+                        "flag_enable_llm": bool(_yureeka_llm_flag_bool_v1("ENABLE_LLM_EVIDENCE_SNIPPETS")),
                     })
         except Exception:
             pass
@@ -1496,6 +1739,15 @@ except Exception:
 try:
     if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "LLM01F" for e in PATCH_TRACKER_V1):
         PATCH_TRACKER_V1.insert(0, {"patch_id": "LLM01F", "scope": "llm-sidecar", "summary": "Hotfix: prevent legacy LLM cache helper name collisions (get_llm_cache_key/cache_llm_response) from overriding sidecar cache utilities; LLM assist calls now proceed and cache works. Metric winners/values unchanged.", "risk": "low"})
+except Exception:
+    pass
+
+
+
+# LLM02: patch tracker overlay (source clustering behind flag + better LLM flag diagnostics).
+try:
+    if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "LLM02" for e in PATCH_TRACKER_V1):
+        PATCH_TRACKER_V1.insert(0, {"patch_id": "LLM02", "scope": "llm-sidecar", "summary": "Add env-overridable effective flag resolver + non-sensitive flag snapshot diagnostics; LLM01 evidence-snippet ranking now records flag_source. Introduce NLP-first source clustering/reordering behind ENABLE_LLM_SOURCE_CLUSTERING (OFF by default) to reduce duplicate scraping. No behavior changes unless flags enabled.", "risk": "low"})
 except Exception:
     pass
 
@@ -6573,6 +6825,26 @@ def fetch_web_context(
             continue
         seen.add(nu)
         normed.append(nu)
+
+
+    # LLM02 (optional): Source triage / de-dup clustering (NLP-first; OFF by default).
+    # When enabled, we reorder candidate URLs so cluster primaries appear first.
+    try:
+        _cl_on, _cl_src = _yureeka_llm_flag_effective_v1("ENABLE_LLM_SOURCE_CLUSTERING")
+        if bool(_cl_on) and (not bool(fallback_mode)) and isinstance(normed, list) and normed and isinstance(search_results, list) and search_results:
+            _normed2, _cl_dbg = _llm02_cluster_urls_v1(normed, search_results)
+            if isinstance(_normed2, list) and _normed2:
+                normed = _normed2
+            try:
+                out.setdefault("debug", {})
+                if isinstance(out.get("debug"), dict):
+                    _cl_dbg = dict(_cl_dbg or {})
+                    _cl_dbg["enabled_source"] = str(_cl_src)[:80]
+                    out["debug"]["source_cluster_v1"] = _cl_dbg
+            except Exception:
+                pass
+    except Exception:
+        pass
 
     # admitted for scraping (top N)
     try:
