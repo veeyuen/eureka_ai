@@ -136,7 +136,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "LLM08"
+_YUREEKA_CODE_VERSION_LOCK = "LLM09"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 
 # REFACTOR206: Release Candidate freeze (no pipeline behavior change).
@@ -159,7 +159,7 @@ YUREEKA_REGRESSION_QUESTIONS_V1 = [
 
 ENABLE_LLM_EVIDENCE_SNIPPETS = False
 ENABLE_LLM_SOURCE_CLUSTERING = False
-ENABLE_LLM_QUERY_FRAME = True
+ENABLE_LLM_QUERY_FRAME = False
 ENABLE_LLM_ANOMALY_FLAGS = False
 
 
@@ -2411,13 +2411,42 @@ def _llm01_attach_evidence_snippets_to_pmc_v1(
         if best is None and isinstance(metric.get("best_candidate"), dict):
             best = metric.get("best_candidate")
         if best is None:
+            # Evolution wrapper PMC often carries minimal `evidence` list instead of full provenance.
+            try:
+                ev = metric.get("evidence")
+                if isinstance(ev, list) and ev and isinstance(ev[0], dict):
+                    best = ev[0]
+            except Exception:
+                pass
+        if best is None:
+            # Last-resort: synthesize a minimal best candidate from shallow fields.
+            try:
+                best = {}
+                u = metric.get("source_url") or ""
+                if u:
+                    best["source_url"] = u
+                r = metric.get("raw") or ""
+                if r:
+                    best["raw"] = r
+                cs = metric.get("context_snippet") or metric.get("context") or ""
+                if cs:
+                    best["context_snippet"] = cs
+                if not best:
+                    best = None
+            except Exception:
+                best = None
+        if best is None:
             skipped += 1
             continue
-
-        url = str(best.get("source_url") or best.get("url") or "")
+        url = str(best.get("source_url") or best.get("url") or metric.get("source_url") or "")
         start_idx = _llm01__coerce_int_v1(best.get("start_idx"), default=None)
         end_idx = _llm01__coerce_int_v1(best.get("end_idx"), default=None)
-        raw = str(best.get("raw") or "")
+        raw = str(best.get("raw") or best.get("value_raw") or metric.get("raw") or "")
+        if (not raw) and (metric.get("value") is not None):
+            try:
+                raw = str(metric.get("value")) + (str(metric.get("unit") or "") if (metric.get("unit") or "") else "")
+            except Exception:
+                pass
 
         if not url:
             skipped += 1
@@ -29955,6 +29984,13 @@ try:
 except Exception:
     pass
 
+
+# LLM09: patch tracker overlay (LLM01 evolution evidence snippet attachment).
+try:
+    if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "LLM09" for e in PATCH_TRACKER_V1):
+        PATCH_TRACKER_V1.insert(0, {"patch_id": "LLM09", "scope": "llm-sidecar", "summary": "LLM01 evidence snippets: make evolution-friendly by sourcing snippet text from baseline_sources_cache (results first, then analysis fallback) and deriving the best candidate from metric.evidence[0] (or shallow fields) when provenance/best_candidate is absent. Adds evidence_best_snippet + evidence_offsets to evolution output for auditability only; winners/values unchanged.", "risk": "low"})
+except Exception:
+    pass
 
 # LLM08: patch tracker overlay (Perplexity structured outputs compatibility).
 try:
