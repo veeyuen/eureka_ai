@@ -136,12 +136,12 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "LLM06"
+_YUREEKA_CODE_VERSION_LOCK = "LLM07"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 
 # REFACTOR206: Release Candidate freeze (no pipeline behavior change).
 YUREEKA_RELEASE_CANDIDATE_V1 = False
-YUREEKA_RELEASE_TAG_V1 = "LLM06"
+YUREEKA_RELEASE_TAG_V1 = "LLM07"
 YUREEKA_FREEZE_MODE_V1 = True
 # Small default regression set (optional; used for manual triad smoke tests).
 YUREEKA_REGRESSION_QUESTIONS_V1 = [
@@ -1548,6 +1548,55 @@ def _yureeka_parse_json_object_from_text_v1(text: str) -> Optional[dict]:
         return None
     return None
 
+
+def _yureeka_llm_is_perplexity_base_v1(base_url: str) -> bool:
+    try:
+        return "perplexity.ai" in str(base_url or "").lower()
+    except Exception:
+        return False
+
+def _yureeka_llm_pick_api_key_v1(base_url: str) -> Tuple[str, str]:
+    """Pick an API key based on provider base_url. Returns (key, source_label)."""
+    try:
+        b = str(base_url or "")
+    except Exception:
+        b = ""
+    is_pplx = _yureeka_llm_is_perplexity_base_v1(b)
+
+    candidates: List[Tuple[str, Any]] = []
+    if bool(is_pplx):
+        candidates = [
+            ("PERPLEXITY_API_KEY", os.environ.get("PERPLEXITY_API_KEY") or ""),
+            ("YUREEKA_PERPLEXITY_API_KEY", os.environ.get("YUREEKA_PERPLEXITY_API_KEY") or ""),
+        ]
+        try:
+            _k = globals().get("PERPLEXITY_KEY")
+            if isinstance(_k, str) and _k.strip():
+                candidates.append(("PERPLEXITY_KEY", _k))
+        except Exception:
+            pass
+        candidates.extend([
+            ("OPENAI_API_KEY", os.environ.get("OPENAI_API_KEY") or ""),
+            ("YUREEKA_OPENAI_API_KEY", os.environ.get("YUREEKA_OPENAI_API_KEY") or ""),
+        ])
+    else:
+        candidates = [
+            ("OPENAI_API_KEY", os.environ.get("OPENAI_API_KEY") or ""),
+            ("YUREEKA_OPENAI_API_KEY", os.environ.get("YUREEKA_OPENAI_API_KEY") or ""),
+            ("YUREEKA_LLM_API_KEY", os.environ.get("YUREEKA_LLM_API_KEY") or ""),
+        ]
+
+    for label, val in candidates:
+        try:
+            if isinstance(val, str) and val.strip():
+                return (val.strip(), str(label))
+        except Exception:
+            continue
+    try:
+        return ("", str(candidates[0][0]) if candidates else "")
+    except Exception:
+        return ("", "")
+
 def _yureeka_call_openai_chat_json_v1(
     *,
     model: str,
@@ -1557,7 +1606,7 @@ def _yureeka_call_openai_chat_json_v1(
     max_tokens: int = 220,
 ) -> Tuple[Optional[dict], dict]:
     """Call OpenAI Chat Completions for a strict JSON object response (best-effort)."""
-    diag = {"ok": False, "status": None, "reason": "", "model": str(model or ""), "requests_present": bool(requests is not None), "api_key_present": False, "base_url": "", "strict_mode": bool(globals().get("LLM_STRICT_MODE")), "response_format": False, "timeout_sec": int(timeout_sec or 30)}
+    diag = {"ok": False, "status": None, "reason": "", "model": str(model or ""), "requests_present": bool(requests is not None), "api_key_present": False, "api_key_source": "", "base_url": "", "strict_mode": bool(globals().get("LLM_STRICT_MODE")), "response_format": False, "timeout_sec": int(timeout_sec or 30)}
 
     # LLM05: run-scope circuit breaker + call budget guard (non-behavioral; only affects failing/disabled calls).
     try:
@@ -1600,9 +1649,19 @@ def _yureeka_call_openai_chat_json_v1(
                 pass
             return (None, diag)
 
-        api_key = os.environ.get("OPENAI_API_KEY") or os.environ.get("YUREEKA_OPENAI_API_KEY") or ""
+        base = os.environ.get("OPENAI_BASE_URL") or "https://api.openai.com/v1"
+        try:
+            diag["base_url"] = str(base or "")[:200]
+        except Exception:
+            pass
+
+        api_key, api_key_source = _yureeka_llm_pick_api_key_v1(base)
         try:
             diag["api_key_present"] = bool(api_key)
+        except Exception:
+            pass
+        try:
+            diag["api_key_source"] = str(api_key_source or "")[:60]
         except Exception:
             pass
         if not api_key:
@@ -1617,12 +1676,15 @@ def _yureeka_call_openai_chat_json_v1(
                 pass
             return (None, diag)
 
-        base = os.environ.get("OPENAI_BASE_URL") or "https://api.openai.com/v1"
+        # Allow OPENAI_BASE_URL to be either a base (…/v1) or a full endpoint (…/chat/completions)
         try:
-            diag["base_url"] = str(base or "")[:200]
+            _b = str(base or "").rstrip("/")
         except Exception:
-            pass
-        url = base.rstrip("/") + "/chat/completions"
+            _b = str(base or "").rstrip("/")
+        if _b.lower().endswith("/chat/completions"):
+            url = _b
+        else:
+            url = _b + "/chat/completions"
 
         headers = {
             "Authorization": f"Bearer {api_key}",
@@ -1714,9 +1776,11 @@ def _llm01_provider_status_v1() -> dict:
     except Exception:
         base = "https://api.openai.com/v1"
     try:
-        api_key_present = bool(os.environ.get("OPENAI_API_KEY") or os.environ.get("YUREEKA_OPENAI_API_KEY"))
+        api_key, api_key_source = _yureeka_llm_pick_api_key_v1(base)
+        api_key_present = bool(api_key)
     except Exception:
         api_key_present = False
+        api_key_source = ""
     try:
         cache_dir = str(globals().get("LLM_CACHE_DIR_V1") or ".yureeka_llm_cache")
     except Exception:
@@ -1724,6 +1788,7 @@ def _llm01_provider_status_v1() -> dict:
     return {
         "requests_present": bool(requests is not None),
         "api_key_present": bool(api_key_present),
+        "api_key_source": str(api_key_source or "")[:60],
         "base_url": str(base or "")[:200],
         "model": str(model or "")[:80],
         "strict_mode": bool(globals().get("LLM_STRICT_MODE")),
@@ -1740,7 +1805,18 @@ def _yureeka_llm_hint_from_diag_v1(diag: dict) -> str:
         r = str(diag.get("reason") or "")
         s = diag.get("status")
         body = str(diag.get("body_snip") or "")[:300].lower()
+
+        base_url = str(diag.get("base_url") or "")
+        src = str(diag.get("api_key_source") or "")
+        if not src:
+            try:
+                src = "PERPLEXITY_API_KEY" if "perplexity.ai" in base_url.lower() else "OPENAI_API_KEY"
+            except Exception:
+                src = "OPENAI_API_KEY"
+
         if "missing_api_key" in r:
+            if "perplexity.ai" in base_url.lower():
+                return "missing_api_key:set PERPLEXITY_API_KEY (or Streamlit secrets PERPLEXITY_API_KEY)"
             return "missing_api_key:set OPENAI_API_KEY (or YUREEKA_OPENAI_API_KEY)"
         if "requests_missing" in r:
             return "requests_missing:install 'requests' in your environment"
@@ -1750,10 +1826,12 @@ def _yureeka_llm_hint_from_diag_v1(diag: dict) -> str:
         except Exception:
             sc = None
         if sc == 401 or sc == 403:
-            return "auth_error:check OPENAI_API_KEY and permissions"
+            if "perplexity.ai" in base_url.lower():
+                return f"auth_error:check {src} (Perplexity)"
+            return f"auth_error:check {src} and permissions"
         if sc == 429:
             if "exceeded your current quota" in body or "billing" in body or "quota" in body:
-                return "quota_exceeded:ChatGPT subscription ≠ API quota; check OpenAI billing/credits for OPENAI_API_KEY"
+                return "quota_exceeded:ChatGPT subscription ≠ API quota; check provider billing/credits"
             return "rate_limited:slow down or raise rate limits"
         if sc and sc >= 500:
             return "server_error:temporary upstream issue; retry later"
@@ -29847,6 +29925,13 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
 try:
     if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "LLM05" for e in PATCH_TRACKER_V1):
         PATCH_TRACKER_V1.insert(0, {"patch_id": "LLM05", "scope": "llm-sidecar", "summary": "Add run-scope LLM health beacons + circuit breaker/call-budget guards and unify non-sensitive diagnostics across LLM03 query framing and LLM04 anomaly relevance probes. Attach llm_sidecar_health_v1 to exported JSON (analysis + evolution) with status/last error hints; no winner/value changes.", "risk": "low"})
+except Exception:
+    pass
+
+# LLM07: patch tracker overlay (Perplexity auth bridging).
+try:
+    if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "LLM07" for e in PATCH_TRACKER_V1):
+        PATCH_TRACKER_V1.insert(0, {"patch_id": "LLM07", "scope": "llm-sidecar", "summary": "Perplexity provider bridging for sidecar OpenAI-compatible calls: when OPENAI_BASE_URL points at api.perplexity.ai, accept PERPLEXITY_API_KEY/YUREEKA_PERPLEXITY_API_KEY (and PERPLEXITY_KEY) as the auth token; propagate non-sensitive api_key_source into diagnostics and improve hints. No winner/value changes.", "risk": "low"})
 except Exception:
     pass
 
