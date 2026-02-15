@@ -136,7 +136,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "LLM11"
+_YUREEKA_CODE_VERSION_LOCK = "LLM12"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 
 # REFACTOR206: Release Candidate freeze (no pipeline behavior change).
@@ -157,12 +157,19 @@ YUREEKA_REGRESSION_QUESTIONS_V1 = [
 # Design rule: LLM assists; deterministic rules decide.
 # All feature flags are OFF by default to preserve REFACTOR206 behavior.
 
-ENABLE_LLM_EVIDENCE_SNIPPETS = True
+ENABLE_LLM_EVIDENCE_SNIPPETS = False
 ENABLE_LLM_SOURCE_CLUSTERING = False
 ENABLE_LLM_QUERY_FRAME = False
 ENABLE_LLM_ANOMALY_FLAGS = False
 
 
+
+
+# LLM12: Optional diagnostics/testing toggles (default OFF)
+# - LLM_BYPASS_CACHE: ignore disk/mem cache to verify live calls (may change snippet ranking output).
+# - ENABLE_LLM_SMOKE_TEST: run a one-shot provider connectivity check and attach non-sensitive diag.
+LLM_BYPASS_CACHE = True
+ENABLE_LLM_SMOKE_TEST = True
 
 def _yureeka__parse_boolish_v1(v: Any) -> Optional[bool]:
     """Parse bool-ish env strings safely. Returns None if unparseable."""
@@ -218,12 +225,21 @@ def _yureeka_llm_flags_snapshot_v1() -> dict:
         "ENABLE_LLM_QUERY_FRAME",
         "ENABLE_LLM_ANOMALY_FLAGS",
         "ENABLE_LLM_DATASET_LOGGING",
+        "LLM_BYPASS_CACHE",
+        "ENABLE_LLM_SMOKE_TEST",
     ):
         try:
             v, src = _yureeka_llm_flag_effective_v1(k)
             out[k] = {"value": bool(v), "source": str(src)[:80]}
         except Exception:
             out[k] = {"value": False, "source": "error"}
+    # LLM12: surface cache-bypass state (non-sensitive).
+    try:
+        _bypass, _src = _yureeka_llm_flag_effective_v1("LLM_BYPASS_CACHE")
+        out["cache_bypass"] = {"enabled": bool(_bypass), "source": str(_src)[:80]}
+    except Exception:
+        pass
+
     return out
 
 
@@ -871,6 +887,18 @@ def get_cached_llm_response(key: str) -> Any:
     """Return cached LLM payload for key, or None if missing/unreadable."""
     if not key:
         return None
+
+    # LLM12: optional cache bypass (helps verify live provider calls).
+    try:
+        _bypass, _src = _yureeka_llm_flag_effective_v1("LLM_BYPASS_CACHE")
+        if bool(_bypass):
+            try:
+                globals()["_YUREEKA_LLM_CACHE_BYPASS_STATUS_V1"] = {"enabled": True, "source": str(_src)[:80]}
+            except Exception:
+                pass
+            return None
+    except Exception:
+        pass
 
     try:
         if key in _LLM_CACHE_MEM_V1:
@@ -2028,6 +2056,7 @@ def _yureeka_llm_health_snapshot_v1(stage: str = "") -> dict:
                 "attempts": int(agg.get("attempts") or 0),
                 "ok": int(agg.get("ok") or 0),
                 "cache_hits": int(agg.get("cache_hits") or 0),
+                "live_calls": max(0, int(agg.get("attempts") or 0) - int(agg.get("cache_hits") or 0)),
                 "status": dict(agg.get("status") or {}),
                 "reasons": dict(agg.get("reasons") or {}),
                 "last": dict(agg.get("last") or {}),
@@ -2048,6 +2077,91 @@ def _yureeka_llm_health_snapshot_v1(stage: str = "") -> dict:
     except Exception:
         pass
     return out
+
+
+
+def _yureeka_llm_smoke_test_v1(stage: str = "") -> dict:
+    """One-shot provider connectivity check (non-sensitive; does not store prompts/outputs).
+
+    Runs only when ENABLE_LLM_SMOKE_TEST is enabled.
+    Intended for diagnosing why LLM sidecar calls are not happening (e.g., missing key, auth, 429).
+    """
+    out = {"v": "llm_smoke_test_v1", "stage": str(stage or "")[:40], "attempted": False, "ok": False, "reason": "flag_off", "diag": {}}
+
+    _on, _src = _yureeka_llm_flag_effective_v1("ENABLE_LLM_SMOKE_TEST")
+    if not bool(_on):
+        out["reason"] = "flag_off"
+        out["flag_source"] = str(_src)[:80]
+        return out
+
+    # Ensure one live attempt per run (reused across stages).
+    try:
+        cached = globals().get("_YUREEKA_LLM_SMOKE_TEST_RESULT_V1")
+        if isinstance(cached, dict) and cached.get("attempted"):
+            # reuse result; stamp stage only
+            out.update({k: cached.get(k) for k in ("attempted", "ok", "reason", "diag", "model", "base_url", "api_key_source")})
+            out["attempted"] = bool(out.get("attempted"))
+            out["ok"] = bool(out.get("ok"))
+            out["stage"] = str(stage or "")[:40]
+            return out
+    except Exception:
+        pass
+
+    out["attempted"] = True
+    out["reason"] = "attempting"
+    out["flag_source"] = str(_src)[:80]
+
+    try:
+        model = os.environ.get("YUREEKA_LLM_MODEL") or os.environ.get("OPENAI_MODEL") or "gpt-4o-mini"
+    except Exception:
+        model = "gpt-4o-mini"
+
+    system_prompt = "You are a health-check endpoint. Return ONLY the strict JSON object: {\"pong\":\"ok\"}."
+    user_payload = {"ping": 1}
+
+    t0 = time.time()
+    obj, diag = _yureeka_call_openai_chat_json_v1(
+        model=str(model),
+        system_prompt=system_prompt,
+        user_payload=user_payload,
+        timeout_sec=12,
+        max_tokens=60,
+    )
+    t1 = time.time()
+    try:
+        if isinstance(diag, dict):
+            diag = dict(diag)
+            diag["latency_ms"] = int(max(0.0, (t1 - t0) * 1000.0))
+    except Exception:
+        pass
+
+    ok = bool(isinstance(obj, dict) and str((obj or {}).get("pong") or "").strip().lower() == "ok")
+    out["ok"] = bool(ok)
+    out["reason"] = "ok" if ok else str((diag or {}).get("reason") or "failed")[:120]
+    out["diag"] = diag if isinstance(diag, dict) else {}
+    out["model"] = str(model or "")[:80]
+    try:
+        out["base_url"] = str((diag or {}).get("base_url") or "")[:200]
+    except Exception:
+        out["base_url"] = ""
+    try:
+        out["api_key_source"] = str((diag or {}).get("api_key_source") or "")[:60]
+    except Exception:
+        out["api_key_source"] = ""
+
+    # Count it in global aggregation (best-effort) so llm_sidecar_health reflects the attempt.
+    try:
+        _yureeka_llm_global_agg_update_v1("llm_smoke_test", (diag or {}), cache_hit=False)
+    except Exception:
+        pass
+
+    try:
+        globals()["_YUREEKA_LLM_SMOKE_TEST_RESULT_V1"] = dict(out)
+    except Exception:
+        pass
+
+    return out
+
 
 
 def _llm01_update_llm_diag_agg_v1(out_debug: dict, call_diag: dict, *, cache_hit: bool = False, feature: str = "llm01") -> None:
@@ -24239,6 +24353,11 @@ def main():
                 output.setdefault("debug", {})
                 if isinstance(output.get("debug"), dict):
                     output["debug"]["llm_sidecar_health_v1"] = _yureeka_llm_health_snapshot_v1(stage="analysis")
+                    try:
+                        if _yureeka_llm_flag_bool_v1("ENABLE_LLM_SMOKE_TEST"):
+                            output["debug"]["llm_smoke_test_v1"] = _yureeka_llm_smoke_test_v1(stage="analysis")
+                    except Exception:
+                        pass
             except Exception:
                 pass
 
@@ -25090,6 +25209,11 @@ def main():
                             _dbg = None
                     if isinstance(_dbg, dict):
                         _dbg["llm_sidecar_health_v1"] = _yureeka_llm_health_snapshot_v1(stage="evolution")
+                        try:
+                            if _yureeka_llm_flag_bool_v1("ENABLE_LLM_SMOKE_TEST"):
+                                _dbg["llm_smoke_test_v1"] = _yureeka_llm_smoke_test_v1(stage="evolution")
+                        except Exception:
+                            pass
                 except Exception:
                     pass
 
@@ -30119,6 +30243,13 @@ except Exception:
     pass
 
 
+# LLM12: patch tracker overlay (cache bypass + smoke-test diagnostics).
+try:
+    if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "LLM12" for e in PATCH_TRACKER_V1):
+        PATCH_TRACKER_V1.insert(0, {"patch_id": "LLM12", "scope": "llm-sidecar", "summary": "Add optional LLM_BYPASS_CACHE flag (env overridable) to ignore disk/mem cache for live-call verification, and ENABLE_LLM_SMOKE_TEST to run a one-shot provider connectivity check (non-sensitive diag only). Enhance llm_sidecar_health_v1 with live_calls and cache_bypass state. Defaults OFF; no winner/value changes unless smoke/bypass flags are enabled.", "risk": "low"})
+except Exception:
+    pass
+
 # LLM11: patch tracker overlay (LLM01 evidence-snippet validator fix + correct post-validation aggregation).
 try:
     if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "LLM11" for e in PATCH_TRACKER_V1):
@@ -30128,7 +30259,7 @@ except Exception:
 
 # LLM10_PATCH_TRACKER_REORDER_V1: move known patch ids to the front in descending order (best-effort)
 try:
-    for _pid in ["LLM11", "LLM10", "LLM09", "LLM08", "LLM07", "LLM06", "LLM05", "LLM04H", "LLM03", "LLM02", "LLM01F", "LLM01E", "LLM01D", "LLM01H", "LLM01", "LLM00"]:
+    for _pid in ["LLM12", "LLM11", "LLM10", "LLM09", "LLM08", "LLM07", "LLM06", "LLM05", "LLM04H", "LLM03", "LLM02", "LLM01F", "LLM01E", "LLM01D", "LLM01H", "LLM01", "LLM00"]:
         _yureeka_patch_tracker_ensure_head_v1(_pid, {})
 except Exception:
     pass
