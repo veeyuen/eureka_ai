@@ -136,12 +136,12 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "LLM13"
+_YUREEKA_CODE_VERSION_LOCK = "LLM14"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 
 # REFACTOR206: Release Candidate freeze (no pipeline behavior change).
 YUREEKA_RELEASE_CANDIDATE_V1 = False
-YUREEKA_RELEASE_TAG_V1 = "LLM13"
+YUREEKA_RELEASE_TAG_V1 = "LLM14"
 YUREEKA_FREEZE_MODE_V1 = True
 # Small default regression set (optional; used for manual triad smoke tests).
 YUREEKA_REGRESSION_QUESTIONS_V1 = [
@@ -3235,10 +3235,10 @@ def _yureeka_patch_tracker_ensure_head_v1(patch_id: str, entry: dict) -> None:
 
 
 try:
-    _yureeka_patch_tracker_ensure_head_v1('LLM13', {
-        'patch_id': 'LLM13',
+    _yureeka_patch_tracker_ensure_head_v1('LLM14', {
+        'patch_id': 'LLM14',
         'scope': 'llm-sidecar',
-        'summary': 'LLM13: Allow LLM feature flags to be overridden via Streamlit secrets (and still via env), while keeping code defaults OFF. Improves operator ergonomics + reduces config confusion; no selection/diff behavior changes.',
+        'summary': 'LLM14: Patch hygiene — bump code_version lock to LLM14 and normalize patch tracker head to match (discipline invariant restored). Defaults remain deterministic (assist flags OFF; cache bypass OFF unless explicitly enabled).',
         'risk': 'low'
     })
 except Exception:
