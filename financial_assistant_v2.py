@@ -136,7 +136,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "LLM09"
+_YUREEKA_CODE_VERSION_LOCK = "LLM10"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 
 # REFACTOR206: Release Candidate freeze (no pipeline behavior change).
@@ -3001,12 +3001,60 @@ except Exception:
 
 
 
+# LLM10: patch tracker head normalization + ensure evolution outputs always carry evidence snippet fields.
+# Additive only; no winner/value changes.
+
+def _yureeka_patch_tracker_ensure_head_v1(patch_id: str, entry: dict) -> None:
+    """Ensure PATCH_TRACKER_V1 has `patch_id` at index 0 (move if already present)."""
+    try:
+        pt = globals().get('PATCH_TRACKER_V1')
+        if not isinstance(pt, list):
+            return
+        pid = str(patch_id or '')
+        if not pid:
+            return
+        found_i = None
+        for i, e in enumerate(list(pt)):
+            if isinstance(e, dict) and str(e.get('patch_id') or '') == pid:
+                found_i = i
+                break
+        if found_i is not None:
+            existing = pt.pop(found_i)
+            if isinstance(existing, dict):
+                try:
+                    existing.update({k: v for k, v in (entry or {}).items() if k != 'patch_id'})
+                except Exception:
+                    pass
+                pt.insert(0, existing)
+            else:
+                pt.insert(0, dict(entry or {'patch_id': pid}))
+            return
+        pt.insert(0, dict(entry or {'patch_id': pid}))
+    except Exception:
+        return
+
+try:
+    _yureeka_patch_tracker_ensure_head_v1('LLM10', {
+        'patch_id': 'LLM10',
+        'scope': 'llm-sidecar',
+        'summary': 'Hygiene + robustness: normalize PATCH_TRACKER_V1 so head patch_id matches code_version; additionally attach LLM01 evidence snippet fields during evolution timing pass to guarantee evidence_best_snippet/evidence_offsets appear in evolution JSON outputs even when wrapper hotfix ordering differs. Additive only.',
+        'risk': 'low'
+    })
+except Exception:
+    pass
+
 def _yureeka_get_code_version(_lock=_YUREEKA_CODE_VERSION_LOCK):
     try:
         return str(_lock)
     except Exception:
         return "UNKNOWN"
 
+
+# LLM10: ensure patch tracker head matches current code version lock
+try:
+    _yureeka_patch_tracker_ensure_head_v1(_yureeka_get_code_version(), {"patch_id": _yureeka_get_code_version(), "scope": "llm-sidecar", "summary": "(auto) head normalized to code version", "risk": "low"})
+except Exception:
+    pass
 
 def _yureeka_is_injection_mode_v1(web_context: dict) -> bool:
     """Heuristic: determine whether this run should be treated as an injection run.
@@ -7010,6 +7058,29 @@ def _refactor116_apply_effective_timing_and_row_deltas_v1(evo_obj: Any, previous
                     gating["production_rows_with_delta"] += 1
 
         _stamp(res.get("metric_changes"))
+
+        # LLM10: ensure evolution JSON always carries evidence snippet fields (auditability only)
+        try:
+            _pmc = res.get("primary_metrics_canonical")
+            if isinstance(_pmc, dict) and _pmc:
+                _pool = []
+                if isinstance(res.get("baseline_sources_cache_current"), list) and res.get("baseline_sources_cache_current"):
+                    _pool = res.get("baseline_sources_cache_current")
+                elif isinstance(res.get("baseline_sources_cache"), list):
+                    _pool = res.get("baseline_sources_cache")
+                elif isinstance((wrap or {}).get("baseline_sources_cache"), list):
+                    _pool = (wrap or {}).get("baseline_sources_cache")
+                _stats = _llm01_attach_evidence_snippets_to_pmc_v1(
+                    pmc=_pmc,
+                    baseline_sources_cache=_pool,
+                    metric_schema=res.get("metric_schema_frozen"),
+                    question=str((wrap or {}).get("question") or ""),
+                    stage="evolution_timing_pass",
+                    out_debug=dbg,
+                )
+                dbg["llm01_evidence_snippets_evolution_timing_hook_v1"] = _stats
+        except Exception:
+            pass
 
         _gating_dbg = dict(gating)
         dbg["row_delta_gating_v4"] = _gating_dbg
@@ -30012,6 +30083,14 @@ try:
         PATCH_TRACKER_V1.insert(0, {"patch_id": "LLM06", "scope": "llm-sidecar", "summary": "If OPENAI_BASE_URL points at Perplexity (api.perplexity.ai), automatically add disable_search=true to OpenAI-compatible chat/completions payload for deterministic sidecar behavior; add non-sensitive diag flag. No winner/value changes.", "risk": "low"})
 except Exception:
     pass
+
+# LLM10_PATCH_TRACKER_REORDER_V1: move known patch ids to the front in descending order (best-effort)
+try:
+    for _pid in ["LLM10", "LLM09", "LLM08", "LLM07", "LLM06", "LLM05", "LLM04H", "LLM03", "LLM02", "LLM01F", "LLM01E", "LLM01D", "LLM01H", "LLM01", "LLM00"]:
+        _yureeka_patch_tracker_ensure_head_v1(_pid, {})
+except Exception:
+    pass
+
 
 
 
