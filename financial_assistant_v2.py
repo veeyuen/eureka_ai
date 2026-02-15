@@ -136,12 +136,12 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "LLM12"
+_YUREEKA_CODE_VERSION_LOCK = "LLM13"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 
 # REFACTOR206: Release Candidate freeze (no pipeline behavior change).
 YUREEKA_RELEASE_CANDIDATE_V1 = False
-YUREEKA_RELEASE_TAG_V1 = "LLM08"
+YUREEKA_RELEASE_TAG_V1 = "LLM13"
 YUREEKA_FREEZE_MODE_V1 = True
 # Small default regression set (optional; used for manual triad smoke tests).
 YUREEKA_REGRESSION_QUESTIONS_V1 = [
@@ -168,8 +168,8 @@ ENABLE_LLM_ANOMALY_FLAGS = False
 # LLM12: Optional diagnostics/testing toggles (default OFF)
 # - LLM_BYPASS_CACHE: ignore disk/mem cache to verify live calls (may change snippet ranking output).
 # - ENABLE_LLM_SMOKE_TEST: run a one-shot provider connectivity check and attach non-sensitive diag.
-LLM_BYPASS_CACHE = True
-ENABLE_LLM_SMOKE_TEST = True
+LLM_BYPASS_CACHE = False
+ENABLE_LLM_SMOKE_TEST = False
 
 def _yureeka__parse_boolish_v1(v: Any) -> Optional[bool]:
     """Parse bool-ish env strings safely. Returns None if unparseable."""
@@ -189,13 +189,53 @@ def _yureeka__parse_boolish_v1(v: Any) -> Optional[bool]:
 
 
 def _yureeka_llm_flag_effective_v1(flag_name: str) -> Tuple[bool, str]:
-    """Resolve effective flag value with optional env override.
+    """Resolve effective flag value with optional secrets/env override.
 
-    Env override names:
-      - YUREEKA_<FLAG_NAME> (e.g., YUREEKA_ENABLE_LLM_EVIDENCE_SNIPPETS=1)
+    Precedence (highest → lowest):
+      1) Streamlit secrets (if present):
+         - Direct: st.secrets[FLAG_NAME]
+         - Nested: st.secrets['YUREEKA_LLM_FLAGS'][FLAG_NAME] (also supports 'YUREEKA_FLAGS' / 'LLM_FLAGS')
+      2) Environment variable: YUREEKA_<FLAG_NAME>
+      3) Code default: globals()[FLAG_NAME]
+
+    This improves operator ergonomics without changing REFACTOR206 default behavior
+    (all flags remain OFF unless explicitly enabled).
     """
+    _fname = str(flag_name or '').strip()
     try:
-        env_name = "YUREEKA_" + str(flag_name or "").strip()
+        # 1) Streamlit secrets override (safe: we only record which key provided the value).
+        try:
+            _st = globals().get('st')
+            _secrets = getattr(_st, 'secrets', None) if _st is not None else None
+        except Exception:
+            _secrets = None
+
+        if _secrets is not None and _fname:
+            # Nested preferred locations
+            for root in ('YUREEKA_LLM_FLAGS', 'YUREEKA_FLAGS', 'LLM_FLAGS'):
+                try:
+                    sub = _secrets.get(root)  # type: ignore[attr-defined]
+                    if isinstance(sub, dict) and _fname in sub:
+                        pv = _yureeka__parse_boolish_v1(sub.get(_fname))
+                        if pv is not None:
+                            return (bool(pv), f"secrets:{root}.{_fname}")
+                except Exception:
+                    pass
+            # Direct key
+            try:
+                raw = _secrets.get(_fname)  # type: ignore[attr-defined]
+                if raw is not None:
+                    pv = _yureeka__parse_boolish_v1(raw)
+                    if pv is not None:
+                        return (bool(pv), f"secrets:{_fname}")
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    # 2) Env override
+    try:
+        env_name = "YUREEKA_" + _fname
         raw = os.environ.get(env_name)
         if raw is not None:
             pv = _yureeka__parse_boolish_v1(raw)
@@ -203,10 +243,13 @@ def _yureeka_llm_flag_effective_v1(flag_name: str) -> Tuple[bool, str]:
                 return (bool(pv), "env:" + env_name)
     except Exception:
         pass
+
+    # 3) Code default
     try:
-        return (bool(globals().get(flag_name)), "code:" + str(flag_name or ""))
+        return (bool(globals().get(_fname)), "code:" + _fname)
     except Exception:
         return (False, "default")
+
 
 
 def _yureeka_llm_flag_bool_v1(flag_name: str) -> bool:
@@ -3153,7 +3196,11 @@ except Exception:
 # Additive only; no winner/value changes.
 
 def _yureeka_patch_tracker_ensure_head_v1(patch_id: str, entry: dict) -> None:
-    """Ensure PATCH_TRACKER_V1 has `patch_id` at index 0 (move if already present)."""
+    """Ensure PATCH_TRACKER_V1 has `patch_id` at index 0 (move if already present).
+
+    LLM13: Be conservative when merging metadata: do not overwrite non-empty existing fields
+    (e.g., keep a human-written summary) when later "head normalization" runs.
+    """
     try:
         pt = globals().get('PATCH_TRACKER_V1')
         if not isinstance(pt, list):
@@ -3170,7 +3217,12 @@ def _yureeka_patch_tracker_ensure_head_v1(patch_id: str, entry: dict) -> None:
             existing = pt.pop(found_i)
             if isinstance(existing, dict):
                 try:
-                    existing.update({k: v for k, v in (entry or {}).items() if k != 'patch_id'})
+                    ent = dict(entry or {})
+                    ent.pop('patch_id', None)
+                    for k, v in ent.items():
+                        # Only fill blanks / missing keys; don't stomp existing content
+                        if k not in existing or existing.get(k) in (None, '', [], {}, ()):
+                            existing[k] = v
                 except Exception:
                     pass
                 pt.insert(0, existing)
@@ -3181,11 +3233,12 @@ def _yureeka_patch_tracker_ensure_head_v1(patch_id: str, entry: dict) -> None:
     except Exception:
         return
 
+
 try:
-    _yureeka_patch_tracker_ensure_head_v1('LLM10', {
-        'patch_id': 'LLM10',
+    _yureeka_patch_tracker_ensure_head_v1('LLM13', {
+        'patch_id': 'LLM13',
         'scope': 'llm-sidecar',
-        'summary': 'Hygiene + robustness: normalize PATCH_TRACKER_V1 so head patch_id matches code_version; additionally attach LLM01 evidence snippet fields during evolution timing pass to guarantee evidence_best_snippet/evidence_offsets appear in evolution JSON outputs even when wrapper hotfix ordering differs. Additive only.',
+        'summary': 'LLM13: Allow LLM feature flags to be overridden via Streamlit secrets (and still via env), while keeping code defaults OFF. Improves operator ergonomics + reduces config confusion; no selection/diff behavior changes.',
         'risk': 'low'
     })
 except Exception:
