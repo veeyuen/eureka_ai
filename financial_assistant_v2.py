@@ -136,12 +136,12 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "LLM02"
+_YUREEKA_CODE_VERSION_LOCK = "LLM03"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 
 # REFACTOR206: Release Candidate freeze (no pipeline behavior change).
 YUREEKA_RELEASE_CANDIDATE_V1 = False
-YUREEKA_RELEASE_TAG_V1 = "LLM02"
+YUREEKA_RELEASE_TAG_V1 = "LLM03"
 YUREEKA_FREEZE_MODE_V1 = True
 # Small default regression set (optional; used for manual triad smoke tests).
 YUREEKA_REGRESSION_QUESTIONS_V1 = [
@@ -409,6 +409,381 @@ LLM_CACHE_DIR_V1 = os.environ.get("YUREEKA_LLM_CACHE_DIR") or ".yureeka_llm_cach
 LLM_CACHE_MAX_MEM_ENTRIES_V1 = 128
 _LLM_CACHE_MEM_V1: dict = {}
 _LLM_CACHE_MEM_ORDER_V1: list = []
+
+
+# -------------------------------
+# LLM03 — Query framing / intent decomposition (proposal-only, strict validation)
+# -------------------------------
+
+_LLM03_ALLOWED_METRIC_FAMILIES_V1 = [
+    # Mirror classify_question_signals() intent buckets (stable, deterministic)
+    "market_size",
+    "growth_forecast",
+    "competitive_landscape",
+    "pricing",
+    "consumer_demand",
+    "supply_chain",
+    "regulation",
+    "investment",
+    "macro_outlook",
+]
+
+_LLM03_ALLOWED_GEO_SCOPES_V1 = ["global", "regional", "country", "unknown"]
+_LLM03_ALLOWED_TIME_SCOPES_V1 = ["current", "historical", "forecast", "ytd", "unknown"]
+
+_LLM03_ALLOWED_UNIT_PREFS_V1 = [
+    "usd", "eur", "sgd", "cny", "jpy", "inr",
+    "percent", "percentage",
+    "vehicles", "units", "chargers",
+    "billion", "million",
+]
+
+def _llm03__deterministic_query_frame_v1(query: str, base_signals: Optional[Dict[str, Any]] = None) -> dict:
+    """Deterministically derive a query-frame from existing rule-based classifiers."""
+    q_raw = (query or "").strip()
+    q = q_raw.lower()
+    base = base_signals if isinstance(base_signals, dict) else (classify_question_signals(q_raw) or {})
+
+    years = base.get("years", []) if isinstance(base.get("years", []), list) else []
+    regions = base.get("regions", []) if isinstance(base.get("regions", []), list) else []
+    intents = base.get("intents", []) if isinstance(base.get("intents", []), list) else []
+
+    # Metric families: clamp to allowed list
+    metric_families = []
+    for it in intents:
+        s = str(it or "").strip()
+        if s and s in _LLM03_ALLOWED_METRIC_FAMILIES_V1 and s not in metric_families:
+            metric_families.append(s)
+
+    # Geo scope
+    geo_scope = "unknown"
+    geo_name = ""
+    try:
+        if any(tok in q for tok in ("global", "worldwide", "world", "international")):
+            geo_scope = "global"
+        elif regions:
+            geo_scope = "country" if len(regions) == 1 else "regional"
+            geo_name = str(regions[0] or "")[:64]
+    except Exception:
+        pass
+
+    # Time scope
+    time_scope = "unknown"
+    try:
+        if "ytd" in q or "year to date" in q:
+            time_scope = "ytd"
+        elif "growth_forecast" in metric_families:
+            time_scope = "forecast"
+        elif years:
+            if any(int(y) >= 2025 for y in years if str(y).isdigit()):
+                time_scope = "forecast"
+            else:
+                time_scope = "historical"
+        else:
+            time_scope = "current"
+    except Exception:
+        time_scope = "unknown"
+
+    # Unit preferences (very light)
+    unit_prefs = []
+    try:
+        if "$" in q_raw or "usd" in q:
+            unit_prefs.append("usd")
+        if "eur" in q:
+            unit_prefs.append("eur")
+        if "sgd" in q:
+            unit_prefs.append("sgd")
+        if "%" in q_raw or "percent" in q or "percentage" in q:
+            unit_prefs.append("percent")
+        if "vehicle" in q:
+            unit_prefs.append("vehicles")
+        if "charger" in q:
+            unit_prefs.append("chargers")
+        if "billion" in q or "bn" in q:
+            unit_prefs.append("billion")
+        if "million" in q or "mn" in q:
+            unit_prefs.append("million")
+    except Exception:
+        pass
+    unit_prefs = [u for u in unit_prefs if u in _LLM03_ALLOWED_UNIT_PREFS_V1]
+
+    # Normalize years
+    years_out = []
+    try:
+        for y in years or []:
+            try:
+                yi = int(y)
+            except Exception:
+                continue
+            if 1900 <= yi <= 2100 and yi not in years_out:
+                years_out.append(yi)
+        years_out = sorted(years_out)
+    except Exception:
+        years_out = []
+
+    return {
+        "metric_families": metric_families,
+        "geo_scope": geo_scope if geo_scope in _LLM03_ALLOWED_GEO_SCOPES_V1 else "unknown",
+        "geo_name": geo_name,
+        "time_scope": time_scope if time_scope in _LLM03_ALLOWED_TIME_SCOPES_V1 else "unknown",
+        "years": years_out,
+        "unit_preferences": unit_prefs,
+        "confidence": 0.55,
+        "source": "deterministic",
+    }
+
+def _llm03__validate_query_frame_v1(frame: Any) -> Tuple[bool, str]:
+    """Strict validator for LLM query frame proposals."""
+    if not isinstance(frame, dict) or not frame:
+        return (False, "not_dict")
+
+    mf = frame.get("metric_families", [])
+    if not isinstance(mf, list):
+        return (False, "metric_families_not_list")
+    for x in mf:
+        s = str(x or "").strip()
+        if not s or s not in _LLM03_ALLOWED_METRIC_FAMILIES_V1:
+            return (False, "metric_family_invalid")
+
+    geo_scope = str(frame.get("geo_scope") or "").strip()
+    if geo_scope not in _LLM03_ALLOWED_GEO_SCOPES_V1:
+        return (False, "geo_scope_invalid")
+
+    time_scope = str(frame.get("time_scope") or "").strip()
+    if time_scope not in _LLM03_ALLOWED_TIME_SCOPES_V1:
+        return (False, "time_scope_invalid")
+
+    years = frame.get("years", [])
+    if not isinstance(years, list):
+        return (False, "years_not_list")
+    for y in years:
+        try:
+            yi = int(y)
+        except Exception:
+            return (False, "year_not_int")
+        if yi < 1900 or yi > 2100:
+            return (False, "year_out_of_range")
+
+    up = frame.get("unit_preferences", [])
+    if up is not None:
+        if not isinstance(up, list):
+            return (False, "unit_prefs_not_list")
+        for u in up:
+            s = str(u or "").strip().lower()
+            if s and s not in _LLM03_ALLOWED_UNIT_PREFS_V1:
+                return (False, "unit_pref_invalid")
+
+    if "confidence" in frame:
+        try:
+            c = float(frame.get("confidence"))
+            if c < 0.0 or c > 1.0:
+                return (False, "confidence_out_of_range")
+        except Exception:
+            return (False, "confidence_not_number")
+
+    try:
+        if len(str(frame.get("geo_name") or "")) > 128:
+            return (False, "geo_name_too_long")
+    except Exception:
+        pass
+
+    return (True, "ok")
+
+def _llm03_build_boost_terms_v1(query: str, frame: Optional[dict]) -> List[str]:
+    """Deterministic term expansion based on query frame. Used only when ENABLE_LLM_QUERY_FRAME is True."""
+    q = (query or "").lower()
+    terms: List[str] = []
+    if not isinstance(frame, dict):
+        return terms
+
+    mfs = frame.get("metric_families") if isinstance(frame.get("metric_families"), list) else []
+    geo_scope = str(frame.get("geo_scope") or "").strip()
+    time_scope = str(frame.get("time_scope") or "").strip()
+    years = frame.get("years") if isinstance(frame.get("years"), list) else []
+
+    if "market_size" in mfs:
+        for t in ["market size", "market value", "market revenue"]:
+            if t not in terms and t not in q:
+                terms.append(t)
+    if "growth_forecast" in mfs:
+        for t in ["forecast", "cagr", "projection"]:
+            if t not in terms and t not in q:
+                terms.append(t)
+    if "investment" in mfs:
+        for t in ["investment", "capex", "spending"]:
+            if t not in terms and t not in q:
+                terms.append(t)
+
+    if geo_scope == "global" and "global" not in q:
+        terms.append("global")
+    if time_scope == "ytd" and "ytd" not in q:
+        terms.append("ytd")
+
+    try:
+        if years:
+            y = max(int(x) for x in years)
+            ys = str(y)
+            if ys not in q:
+                terms.append(ys)
+    except Exception:
+        pass
+
+    return terms[:10]
+
+def _llm03_boost_web_query_v1(query: str, frame: Optional[dict], *, _force: bool = False) -> str:
+    """Return boosted web-search query string when ENABLE_LLM_QUERY_FRAME is True; otherwise original query."""
+    q_raw = (query or "")
+    if not _force and not bool(globals().get("ENABLE_LLM_QUERY_FRAME")):
+        return q_raw
+    if not isinstance(frame, dict):
+        return q_raw
+
+    try:
+        terms = _llm03_build_boost_terms_v1(q_raw, frame)
+        if not terms:
+            return q_raw
+        out = (q_raw.strip() + " " + " ".join([t.strip() for t in terms if str(t).strip()])).strip()
+        return out[:500]
+    except Exception:
+        return q_raw
+
+def _llm03_get_query_frame_v1(query: str, base_signals: Optional[Dict[str, Any]] = None) -> Tuple[dict, dict]:
+    """Return (effective_frame, debug). LLM output is proposal-only and must pass strict validation."""
+    q_raw = (query or "").strip()
+
+    det = _llm03__deterministic_query_frame_v1(q_raw, base_signals=base_signals)
+
+    dbg: Dict[str, Any] = {
+        "v": "llm03_query_frame_v1",
+        "flag_enable_llm": bool(globals().get("ENABLE_LLM_QUERY_FRAME")),
+        "provider": {},
+        "deterministic_frame": det,
+        "llm_used": False,
+        "llm_cache_hit": False,
+        "llm_ok": False,
+        "llm_reason": "",
+        "llm_call_diag": {},
+        "llm_candidate_frame": None,
+        "effective_frame": det,
+        "boost_preview_terms": [],
+        "boosted_query_preview": "",
+    }
+
+    # Preview boosted query (deterministic)
+    try:
+        dbg["boost_preview_terms"] = _llm03_build_boost_terms_v1(q_raw, det)
+        dbg["boosted_query_preview"] = _llm03_boost_web_query_v1(q_raw, det, _force=True)
+    except Exception:
+        pass
+
+    if not bool(globals().get("ENABLE_LLM_QUERY_FRAME")):
+        dbg["llm_reason"] = "flag_off"
+        return (det, dbg)
+
+    # Provider snapshot (non-sensitive)
+    try:
+        dbg["provider"] = _llm01_provider_status_v1()
+    except Exception:
+        dbg["provider"] = {"ok": False}
+
+    try:
+        model = os.environ.get("YUREEKA_LLM_MODEL") or os.environ.get("OPENAI_MODEL") or "gpt-4o-mini"
+    except Exception:
+        model = "gpt-4o-mini"
+
+    prompt_version = "llm03_query_frame_v1"
+    schema_version = "schema_frozen_v1"
+
+    try:
+        input_obj = {"query": q_raw, "deterministic_frame": det}
+        input_hash = _yureeka_hash_text_v1(_yureeka__stable_json_dumps_v1(input_obj))
+        q_hash = _yureeka_hash_text_v1(q_raw)
+        key = get_llm_cache_key(str(model), prompt_version, schema_version, input_hash, "", q_hash)
+    except Exception:
+        key = ""
+
+    candidate = None
+    if key:
+        cached = get_cached_llm_response(key)
+        if cached is not None:
+            dbg["llm_cache_hit"] = True
+            if isinstance(cached, dict) and "frame" in cached and isinstance(cached.get("frame"), dict):
+                candidate = cached.get("frame")
+            elif isinstance(cached, dict):
+                candidate = cached
+
+    if candidate is None:
+        system_prompt = (
+            "You are a query-framing assistant. "
+            "Return ONLY a strict JSON object with keys:\n"
+            "  metric_families: array of strings from allowed list\n"
+            "  geo_scope: one of [global, regional, country, unknown]\n"
+            "  geo_name: short string or empty\n"
+            "  time_scope: one of [current, historical, forecast, ytd, unknown]\n"
+            "  years: array of integers\n"
+            "  unit_preferences: array of strings from allowed list\n"
+            "  confidence: number 0-1\n"
+            "No extra keys. No commentary."
+        )
+        user_payload = {
+            "query": q_raw,
+            "deterministic_frame": det,
+            "allowed_metric_families": _LLM03_ALLOWED_METRIC_FAMILIES_V1,
+            "allowed_geo_scopes": _LLM03_ALLOWED_GEO_SCOPES_V1,
+            "allowed_time_scopes": _LLM03_ALLOWED_TIME_SCOPES_V1,
+            "allowed_unit_preferences": _LLM03_ALLOWED_UNIT_PREFS_V1,
+        }
+
+        obj, call_diag = _yureeka_call_openai_chat_json_v1(
+            model=str(model),
+            system_prompt=system_prompt,
+            user_payload=user_payload,
+            timeout_sec=30,
+            max_tokens=260,
+        )
+        dbg["llm_call_diag"] = call_diag or {}
+        if isinstance(obj, dict) and obj:
+            candidate = obj
+
+        if key and candidate is not None:
+            try:
+                cache_llm_response(key, candidate)
+            except Exception:
+                pass
+    else:
+        dbg["llm_call_diag"] = {"ok": True, "reason": "cache_hit"}
+
+    dbg["llm_used"] = True
+
+    ok, reason = _llm03__validate_query_frame_v1(candidate)
+    if ok:
+        eff = {
+            "metric_families": [str(x).strip() for x in (candidate.get("metric_families") or []) if str(x).strip()],
+            "geo_scope": str(candidate.get("geo_scope") or "unknown").strip(),
+            "geo_name": str(candidate.get("geo_name") or "")[:64],
+            "time_scope": str(candidate.get("time_scope") or "unknown").strip(),
+            "years": sorted({int(y) for y in (candidate.get("years") or []) if str(y).strip().lstrip("-").isdigit() and 1900 <= int(y) <= 2100}),
+            "unit_preferences": [str(u).strip().lower() for u in (candidate.get("unit_preferences") or []) if str(u).strip()],
+            "confidence": float(candidate.get("confidence")) if candidate.get("confidence") is not None else 0.6,
+            "source": "llm",
+        }
+        dbg["llm_ok"] = True
+        dbg["llm_reason"] = "ok"
+        dbg["llm_candidate_frame"] = eff
+        dbg["effective_frame"] = eff
+        try:
+            dbg["boost_preview_terms"] = _llm03_build_boost_terms_v1(q_raw, eff)
+            dbg["boosted_query_preview"] = _llm03_boost_web_query_v1(q_raw, eff, _force=True)
+        except Exception:
+            pass
+        return (eff, dbg)
+
+    dbg["llm_ok"] = False
+    dbg["llm_reason"] = str(reason or "invalid")
+    dbg["llm_candidate_frame"] = candidate if isinstance(candidate, dict) else None
+    dbg["effective_frame"] = det
+    return (det, dbg)
+
 
 
 def _yureeka__stable_json_dumps_v1(obj: Any) -> str:
@@ -1743,6 +2118,14 @@ except Exception:
     pass
 
 
+
+
+# LLM03: patch tracker overlay (avoid touching the compressed canonical blob)
+try:
+    if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "LLM03" for e in PATCH_TRACKER_V1):
+        PATCH_TRACKER_V1.insert(0, {"patch_id": "LLM03", "scope": "llm-sidecar", "summary": "Add strict query framing / intent decomposition sidecar (deterministic frame + optional OpenAI JSON proposal + validator); enables safe web-query boosting behind ENABLE_LLM_QUERY_FRAME (default OFF).", "risk": "medium"})
+except Exception:
+    pass
 
 # LLM02: patch tracker overlay (source clustering behind flag + better LLM flag diagnostics).
 try:
@@ -21576,10 +21959,27 @@ def categorize_question_signals(query: str, qs: Optional[Dict[str, Any]] = None)
     # Deterministic signals (richer classifier)
     base = classify_question_signals(q) or {}
 
+    # LLM03: query framing / intent decomposition (proposal-only; rules decide)
+    _llm03_frame_eff = None
+    _llm03_frame_dbg = None
+    try:
+        _llm03_frame_eff, _llm03_frame_dbg = _llm03_get_query_frame_v1(q, base_signals=base)
+    except Exception:
+        _llm03_frame_eff, _llm03_frame_dbg = None, None
+
     # Force category + expected_metric_ids to match query_structure category
     # (but preserve other extracted info like years/regions/intents)
     signals: Dict[str, Any] = {}
     signals["category"] = category
+
+    # Attach query frame for downstream (search boosting / scoring hints). Safe: proposals only.
+    try:
+        if isinstance(_llm03_frame_eff, dict):
+            signals["query_frame_v1"] = _llm03_frame_eff
+            signals["query_frame_used_llm"] = bool((_llm03_frame_dbg or {}).get("llm_used"))
+            signals["query_frame_llm_ok"] = bool((_llm03_frame_dbg or {}).get("llm_ok"))
+    except Exception:
+        pass
 
     # Carry over extracted fields
     signals["years"] = base.get("years", []) or []
@@ -21648,6 +22048,13 @@ def categorize_question_signals(query: str, qs: Optional[Dict[str, Any]] = None)
     # Keep debug for traceability
     if qs.get("debug") is not None:
         profile["debug_query_structure"] = qs.get("debug")
+
+    # LLM03: query frame debug (no prompts; proposal-only)
+    try:
+        if isinstance(_llm03_frame_dbg, dict):
+            profile["debug_query_frame_v1"] = _llm03_frame_dbg
+    except Exception:
+        pass
 
     return profile
 
@@ -22661,7 +23068,7 @@ def main():
                     _analysis_run_id = _inj_diag_make_run_id("analysis")
 
                     web_context = fetch_web_context(
-                        query,
+                        _llm03_boost_web_query_v1(query, (question_signals or {}).get("query_frame_v1")),
                         num_sources=3,
                         existing_snapshots=existing_snapshots,
                         extra_urls=extra_urls,
@@ -23816,7 +24223,7 @@ def main():
                         existing_snapshots = None
 
                     web_context = fetch_web_context(
-                        query,
+                        _llm03_boost_web_query_v1(query, (question_signals or {}).get("query_frame_v1")),
                         num_sources=3,
                         existing_snapshots=existing_snapshots,
                     )
