@@ -136,12 +136,12 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "LLM07"
+_YUREEKA_CODE_VERSION_LOCK = "LLM08"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 
 # REFACTOR206: Release Candidate freeze (no pipeline behavior change).
 YUREEKA_RELEASE_CANDIDATE_V1 = False
-YUREEKA_RELEASE_TAG_V1 = "LLM07"
+YUREEKA_RELEASE_TAG_V1 = "LLM08"
 YUREEKA_FREEZE_MODE_V1 = True
 # Small default regression set (optional; used for manual triad smoke tests).
 YUREEKA_REGRESSION_QUESTIONS_V1 = [
@@ -1713,14 +1713,38 @@ def _yureeka_call_openai_chat_json_v1(
                     pass
         except Exception:
             pass
-        # Best-effort: request JSON object output
+        # Best-effort: request JSON output
+        # - OpenAI: legacy json_object mode
+        # - Perplexity Sonar: supports JSON Schema structured outputs (json_schema) but not json_object
         try:
             if bool(globals().get("LLM_STRICT_MODE")):
-                payload["response_format"] = {"type": "json_object"}
                 try:
-                    diag["response_format"] = True
+                    _is_pplx = _yureeka_llm_is_perplexity_base_v1(base)
                 except Exception:
-                    pass
+                    _is_pplx = False
+
+                if bool(_is_pplx):
+                    # Minimal schema: enforce "a JSON object" without constraining fields.
+                    # Perplexity requires: response_format.type="json_schema" + json_schema.name + json_schema.schema
+                    payload["response_format"] = {
+                        "type": "json_schema",
+                        "json_schema": {
+                            "name": "yureekaSidecar1",
+                            "schema": {"type": "object", "additionalProperties": True},
+                        },
+                    }
+                    try:
+                        diag["response_format"] = True
+                        diag["response_format_type"] = "json_schema"
+                    except Exception:
+                        pass
+                else:
+                    payload["response_format"] = {"type": "json_object"}
+                    try:
+                        diag["response_format"] = True
+                        diag["response_format_type"] = "json_object"
+                    except Exception:
+                        pass
         except Exception:
             pass
 
@@ -1829,6 +1853,9 @@ def _yureeka_llm_hint_from_diag_v1(diag: dict) -> str:
             if "perplexity.ai" in base_url.lower():
                 return f"auth_error:check {src} (Perplexity)"
             return f"auth_error:check {src} and permissions"
+        if sc == 400:
+            if "perplexity.ai" in base_url.lower() and ("response_format" in body or "json_schema" in body or "responseformat" in body):
+                return "bad_request:Perplexity needs response_format.type='json_schema' (json_object unsupported)"
         if sc == 429:
             if "exceeded your current quota" in body or "billing" in body or "quota" in body:
                 return "quota_exceeded:ChatGPT subscription ≠ API quota; check provider billing/credits"
@@ -29925,6 +29952,14 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
 try:
     if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "LLM05" for e in PATCH_TRACKER_V1):
         PATCH_TRACKER_V1.insert(0, {"patch_id": "LLM05", "scope": "llm-sidecar", "summary": "Add run-scope LLM health beacons + circuit breaker/call-budget guards and unify non-sensitive diagnostics across LLM03 query framing and LLM04 anomaly relevance probes. Attach llm_sidecar_health_v1 to exported JSON (analysis + evolution) with status/last error hints; no winner/value changes.", "risk": "low"})
+except Exception:
+    pass
+
+
+# LLM08: patch tracker overlay (Perplexity structured outputs compatibility).
+try:
+    if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "LLM08" for e in PATCH_TRACKER_V1):
+        PATCH_TRACKER_V1.insert(0, {"patch_id": "LLM08", "scope": "llm-sidecar", "summary": "Perplexity compatibility hotfix: when OPENAI_BASE_URL points at api.perplexity.ai and LLM_STRICT_MODE is on, use response_format.type='json_schema' with a minimal object schema (json_object unsupported). Add response_format_type to call diagnostics and provide a targeted 400 hint. No behavior changes unless strict_mode+Perplexity are used.", "risk": "low"})
 except Exception:
     pass
 
