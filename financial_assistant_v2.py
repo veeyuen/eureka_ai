@@ -136,12 +136,11 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "LLM14"
+_YUREEKA_CODE_VERSION_LOCK = "LLM15"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
-
 # REFACTOR206: Release Candidate freeze (no pipeline behavior change).
 YUREEKA_RELEASE_CANDIDATE_V1 = False
-YUREEKA_RELEASE_TAG_V1 = "LLM14"
+YUREEKA_RELEASE_TAG_V1 = "LLM15"
 YUREEKA_FREEZE_MODE_V1 = True
 # Small default regression set (optional; used for manual triad smoke tests).
 YUREEKA_REGRESSION_QUESTIONS_V1 = [
@@ -2216,11 +2215,13 @@ def _llm01_update_llm_diag_agg_v1(out_debug: dict, call_diag: dict, *, cache_hit
     if not isinstance(agg, dict):
         agg = {"attempts": 0, "ok": 0, "cache_hits": 0, "reasons": {}, "status": {}, "last": {}}
         out_debug["llm01_llm_diag_agg_v1"] = agg
-        # LLM05: global run-scope aggregation (non-sensitive).
-        try:
+
+    # LLM15: global run-scope aggregation (non-sensitive) — skip flag_off so health reflects real LLM usage.
+    try:
+        if str(call_diag.get("reason") or "") != "flag_off":
             _yureeka_llm_global_agg_update_v1(str(feature or "llm01"), call_diag, cache_hit=bool(cache_hit))
-        except Exception:
-            pass
+    except Exception:
+        pass
 
     try:
         agg["attempts"] = int(agg.get("attempts") or 0) + 1
@@ -3238,7 +3239,17 @@ try:
     _yureeka_patch_tracker_ensure_head_v1('LLM14', {
         'patch_id': 'LLM14',
         'scope': 'llm-sidecar',
-        'summary': 'LLM14: Patch hygiene — bump code_version lock to LLM14 and normalize patch tracker head to match (discipline invariant restored). Defaults remain deterministic (assist flags OFF; cache bypass OFF unless explicitly enabled).',
+        'summary': 'LLM14: Patch hygiene fix (code_version + patch tracker head alignment) and safer defaults (LLM_BYPASS_CACHE default OFF; assist flags remain OFF by default). No selection/diff behavior changes.',
+        'risk': 'low'
+    })
+except Exception:
+    pass
+
+try:
+    _yureeka_patch_tracker_ensure_head_v1('LLM15', {
+        'patch_id': 'LLM15',
+        'scope': 'llm-sidecar',
+        'summary': 'LLM15: Fix patch tracker reorder bug that forced head to LLM00; extend reorder list through LLM15. Also tighten LLM health aggregation so flag_off does not count as an attempt (global agg reflects real use). No selection/diff behavior changes.',
         'risk': 'low'
     })
 except Exception:
@@ -30312,7 +30323,7 @@ except Exception:
 
 # LLM10_PATCH_TRACKER_REORDER_V1: move known patch ids to the front in descending order (best-effort)
 try:
-    for _pid in ["LLM12", "LLM11", "LLM10", "LLM09", "LLM08", "LLM07", "LLM06", "LLM05", "LLM04H", "LLM03", "LLM02", "LLM01F", "LLM01E", "LLM01D", "LLM01H", "LLM01", "LLM00"]:
+    for _pid in ["LLM00", "LLM01", "LLM01H", "LLM01D", "LLM01E", "LLM01F", "LLM02", "LLM03", "LLM04H", "LLM05", "LLM06", "LLM07", "LLM08", "LLM09", "LLM10", "LLM11", "LLM12", "LLM13", "LLM14", "LLM15"]:
         _yureeka_patch_tracker_ensure_head_v1(_pid, {})
 except Exception:
     pass
