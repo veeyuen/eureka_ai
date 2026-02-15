@@ -136,12 +136,12 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "LLM04"
+_YUREEKA_CODE_VERSION_LOCK = "LLM04H"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 
 # REFACTOR206: Release Candidate freeze (no pipeline behavior change).
 YUREEKA_RELEASE_CANDIDATE_V1 = False
-YUREEKA_RELEASE_TAG_V1 = "LLM04"
+YUREEKA_RELEASE_TAG_V1 = "LLM04H"
 YUREEKA_FREEZE_MODE_V1 = True
 # Small default regression set (optional; used for manual triad smoke tests).
 YUREEKA_REGRESSION_QUESTIONS_V1 = [
@@ -159,8 +159,8 @@ YUREEKA_REGRESSION_QUESTIONS_V1 = [
 
 ENABLE_LLM_EVIDENCE_SNIPPETS = False
 ENABLE_LLM_SOURCE_CLUSTERING = False
-ENABLE_LLM_QUERY_FRAME = False
-ENABLE_LLM_ANOMALY_FLAGS = True
+ENABLE_LLM_QUERY_FRAME = 1
+ENABLE_LLM_ANOMALY_FLAGS = 1
 
 
 
@@ -633,7 +633,8 @@ def _llm03_build_boost_terms_v1(query: str, frame: Optional[dict]) -> List[str]:
 def _llm03_boost_web_query_v1(query: str, frame: Optional[dict], *, _force: bool = False) -> str:
     """Return boosted web-search query string when ENABLE_LLM_QUERY_FRAME is True; otherwise original query."""
     q_raw = (query or "")
-    if not _force and not bool(globals().get("ENABLE_LLM_QUERY_FRAME")):
+    _qf_on, _qf_src = _yureeka_llm_flag_effective_v1("ENABLE_LLM_QUERY_FRAME")
+    if not _force and not bool(_qf_on):
         return q_raw
     if not isinstance(frame, dict):
         return q_raw
@@ -646,16 +647,18 @@ def _llm03_boost_web_query_v1(query: str, frame: Optional[dict], *, _force: bool
         return out[:500]
     except Exception:
         return q_raw
-
 def _llm03_get_query_frame_v1(query: str, base_signals: Optional[Dict[str, Any]] = None) -> Tuple[dict, dict]:
     """Return (effective_frame, debug). LLM output is proposal-only and must pass strict validation."""
     q_raw = (query or "").strip()
+
+    _qf_on, _qf_src = _yureeka_llm_flag_effective_v1("ENABLE_LLM_QUERY_FRAME")
 
     det = _llm03__deterministic_query_frame_v1(q_raw, base_signals=base_signals)
 
     dbg: Dict[str, Any] = {
         "v": "llm03_query_frame_v1",
-        "flag_enable_llm": bool(globals().get("ENABLE_LLM_QUERY_FRAME")),
+        "flag_enable_llm": bool(_qf_on),
+        "flag_source": str(_qf_src)[:80],
         "provider": {},
         "deterministic_frame": det,
         "llm_used": False,
@@ -676,7 +679,7 @@ def _llm03_get_query_frame_v1(query: str, base_signals: Optional[Dict[str, Any]]
     except Exception:
         pass
 
-    if not bool(globals().get("ENABLE_LLM_QUERY_FRAME")):
+    if not bool(_qf_on):
         dbg["llm_reason"] = "flag_off"
         return (det, dbg)
 
@@ -946,7 +949,8 @@ def debug_llm_dataset_v1(
 
     Captures only hashes + small structured windows to enable later offline replay/testing.
     """
-    if not bool(globals().get("ENABLE_LLM_DATASET_LOGGING")):
+    _dl_on, _dl_src = _yureeka_llm_flag_effective_v1("ENABLE_LLM_DATASET_LOGGING")
+    if not bool(_dl_on):
         return
     try:
         rec = {
@@ -1162,7 +1166,9 @@ def _llm04_llm_relevance_check_v1(
     """
     diag = {"ok": False, "reason": "", "llm_used": False}
     try:
-        if not bool(globals().get("ENABLE_LLM_ANOMALY_FLAGS")):
+        _af_on, _af_src = _yureeka_llm_flag_effective_v1("ENABLE_LLM_ANOMALY_FLAGS")
+        diag["flag_source"] = str(_af_src)[:80]
+        if not bool(_af_on):
             diag["reason"] = "disabled"
             return (None, diag)
 
@@ -2399,6 +2405,9 @@ except Exception:
 
 # LLM04: patch tracker overlay (avoid touching the compressed canonical blob)
 try:
+
+    if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "LLM04H" for e in PATCH_TRACKER_V1):
+        PATCH_TRACKER_V1.insert(0, {"patch_id": "LLM04H", "scope": "llm-sidecar", "summary": "Hotfix: make all LLM sidecar feature-flag gates use the env-overridable resolver (not globals().get), so ENABLE_LLM_QUERY_FRAME / ENABLE_LLM_ANOMALY_FLAGS / ENABLE_LLM_DATASET_LOGGING behave consistently. Add flag_source to LLM03/LLM04 debug beacons. Also fix harness version mismatch banner to compare against patch-tracker head (supports LLM series) while still recording latest REFACTOR id.", "risk": "low"})
     if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "LLM04" for e in PATCH_TRACKER_V1):
         PATCH_TRACKER_V1.insert(0, {"patch_id": "LLM04", "scope": "llm-sidecar", "summary": "Add anomaly flags + confidence-penalty sidecar (rule-based outlier/irrelevance checks + optional OpenAI relevance probe) behind ENABLE_LLM_ANOMALY_FLAGS (default OFF).", "risk": "medium"})
 except Exception:
@@ -21217,6 +21226,13 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
             _latest = None
             _maxn = None
             _pt = globals().get("PATCH_TRACKER_V1")
+
+            _head = None
+            try:
+                if isinstance(_pt, list) and _pt and isinstance(_pt[0], dict):
+                    _head = str(_pt[0].get("patch_id") or "")
+            except Exception:
+                _head = None
             if isinstance(_pt, list):
                 for _e in _pt:
                     if not isinstance(_e, dict):
@@ -21233,7 +21249,9 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                             _latest = _pid
             _inv["code_version"] = _cv
             _inv["patch_tracker_latest_refactor"] = _latest
-            _inv["code_version_matches_patch_tracker_latest"] = ((_cv == _latest) if (_cv and _latest) else None)
+            _inv["patch_tracker_head_patch_id"] = _head
+            _inv["code_version_matches_patch_tracker_head"] = ((_cv == _head) if (_cv and _head) else None)
+            _inv["code_version_matches_patch_tracker_latest_refactor"] = ((_cv == _latest) if (_cv and _latest) else None)
         except Exception:
             pass
 
@@ -21260,9 +21278,9 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
         # REFACTOR78: Surface version mismatch banner (if any)
         try:
             _cv = str(_inv.get("code_version") or "")
-            _latest = str(_inv.get("patch_tracker_latest_refactor") or "")
-            if _cv and _latest and (_cv != _latest):
-                _parts.append(f"version_mismatch={_cv}!={_latest}")
+            _head = str(_inv.get("patch_tracker_head_patch_id") or "")
+            if _cv and _head and (_cv != _head):
+                _parts.append(f"version_mismatch={_cv}!={_head}")
         except Exception:
             pass
 
@@ -26536,7 +26554,7 @@ def rebuild_metrics_from_snapshots_analysis_canonical_v1(prev_response: dict, ba
         # LLM04: anomaly context (per-canonical_key)
         _llm04_question_text = ""
         _llm04_pool_stats = {}
-        if bool(globals().get("ENABLE_LLM_ANOMALY_FLAGS")):
+        if _yureeka_llm_flag_bool_v1("ENABLE_LLM_ANOMALY_FLAGS"):
             try:
                 _llm04_question_text = str(prev_response.get("question") or "")
             except Exception:
@@ -26560,7 +26578,7 @@ def rebuild_metrics_from_snapshots_analysis_canonical_v1(prev_response: dict, ba
             except Exception:
                 _llm04_pool_stats = {}
             try:
-                dbg.setdefault("llm04_anomaly_summary_v1", {"enabled": True, "keys": 0, "llm_attempts": 0, "llm_ok": 0, "llm_fail": 0})
+                dbg.setdefault("llm04_anomaly_summary_v1", {"enabled": True, "keys": 0, "llm_attempts": 0, "llm_ok": 0, "llm_fail": 0, "flag_source": str(_yureeka_llm_flag_effective_v1("ENABLE_LLM_ANOMALY_FLAGS")[1])[:80]})
             except Exception:
                 pass
 
@@ -26648,7 +26666,7 @@ def rebuild_metrics_from_snapshots_analysis_canonical_v1(prev_response: dict, ba
             _llm04_penalty_points = 0
             _llm04_anom_obj = None
             try:
-                if bool(globals().get("ENABLE_LLM_ANOMALY_FLAGS")):
+                if _yureeka_llm_flag_bool_v1("ENABLE_LLM_ANOMALY_FLAGS"):
                     _llm04_anom_obj = _llm04_rule_anomaly_flags_v1(
                         candidate=c,
                         spec=spec,
@@ -26666,12 +26684,12 @@ def rebuild_metrics_from_snapshots_analysis_canonical_v1(prev_response: dict, ba
                 pass
 
             if _rf135_is_m_metric:
-                if bool(globals().get("ENABLE_LLM_ANOMALY_FLAGS")):
+                if _yureeka_llm_flag_bool_v1("ENABLE_LLM_ANOMALY_FLAGS"):
                     tie = (-hits, int(_llm04_penalty_points), -int(bool(_rf135_has_million_cue)), -int(bool(_rf135_has_decimal)), -int(_rf135_decimal_places)) + _cand_sort_key(c)
                 else:
                     tie = (-hits, -int(bool(_rf135_has_million_cue)), -int(bool(_rf135_has_decimal)), -int(_rf135_decimal_places)) + _cand_sort_key(c)
             else:
-                if bool(globals().get("ENABLE_LLM_ANOMALY_FLAGS")):
+                if _yureeka_llm_flag_bool_v1("ENABLE_LLM_ANOMALY_FLAGS"):
                     tie = (-hits, int(_llm04_penalty_points)) + _cand_sort_key(c)
                 else:
                     tie = (-hits,) + _cand_sort_key(c)
@@ -26815,7 +26833,7 @@ def rebuild_metrics_from_snapshots_analysis_canonical_v1(prev_response: dict, ba
         }
 
         # LLM04: attach anomaly flags for the chosen winner + optional relevance probe (no prompt leakage)
-        if bool(globals().get("ENABLE_LLM_ANOMALY_FLAGS")):
+        if _yureeka_llm_flag_bool_v1("ENABLE_LLM_ANOMALY_FLAGS"):
             try:
                 _anom_best = None
                 try:
