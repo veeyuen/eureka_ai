@@ -136,11 +136,11 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "LLM16"
+_YUREEKA_CODE_VERSION_LOCK = "LLM17"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 # REFACTOR206: Release Candidate freeze (no pipeline behavior change).
 YUREEKA_RELEASE_CANDIDATE_V1 = False
-YUREEKA_RELEASE_TAG_V1 = "LLM15"
+YUREEKA_RELEASE_TAG_V1 = "LLM17"
 YUREEKA_FREEZE_MODE_V1 = True
 # Small default regression set (optional; used for manual triad smoke tests).
 YUREEKA_REGRESSION_QUESTIONS_V1 = [
@@ -156,7 +156,7 @@ YUREEKA_REGRESSION_QUESTIONS_V1 = [
 # Design rule: LLM assists; deterministic rules decide.
 # All feature flags are OFF by default to preserve REFACTOR206 behavior.
 
-ENABLE_LLM_EVIDENCE_SNIPPETS = False
+ENABLE_LLM_EVIDENCE_SNIPPETS = True
 ENABLE_LLM_SOURCE_CLUSTERING = False
 ENABLE_LLM_QUERY_FRAME = False
 ENABLE_LLM_ANOMALY_FLAGS = False
@@ -201,6 +201,23 @@ def _yureeka_llm_flag_effective_v1(flag_name: str) -> Tuple[bool, str]:
     (all flags remain OFF unless explicitly enabled).
     """
     _fname = str(flag_name or '').strip()
+    # 0) Streamlit UI/session_state override (highest precedence)
+    try:
+        _st0 = globals().get('st')
+        _ss0 = getattr(_st0, 'session_state', None) if _st0 is not None else None
+        if isinstance(_ss0, dict) and _fname:
+            for root in ('YUREEKA_LLM_FLAGS', 'YUREEKA_FLAGS', 'LLM_FLAGS'):
+                try:
+                    sub = _ss0.get(root)
+                    if isinstance(sub, dict) and _fname in sub:
+                        pv = _yureeka__parse_boolish_v1(sub.get(_fname))
+                        if pv is not None:
+                            return (bool(pv), f"ui:{root}.{_fname}")
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
     try:
         # 1) Streamlit secrets override (safe: we only record which key provided the value).
         try:
@@ -3267,6 +3284,26 @@ try:
         'patch_id': 'LLM15',
         'scope': 'llm-sidecar',
         'summary': 'LLM15: Fix patch tracker reorder bug that forced head to LLM00; extend reorder list through LLM15. Also tighten LLM health aggregation so flag_off does not count as an attempt (global agg reflects real use). No selection/diff behavior changes.',
+        'risk': 'low'
+    })
+except Exception:
+    pass
+
+try:
+    _yureeka_patch_tracker_ensure_head_v1('LLM16', {
+        'patch_id': 'LLM16',
+        'scope': 'llm-sidecar',
+        'summary': 'LLM16: Add LLM01 evidence snippet assist instrumentation to both analysis + evolution runs, plus run-delta display and health snapshots. Flags remain OFF by default. No selection/diff behavior changes.',
+        'risk': 'low'
+    })
+except Exception:
+    pass
+
+try:
+    _yureeka_patch_tracker_ensure_head_v1('LLM17', {
+        'patch_id': 'LLM17',
+        'scope': 'llm-sidecar',
+        'summary': 'LLM17: Add Streamlit UI toggles for LLM sidecar flags (session_state override) so evidence-snippet assist can be enabled without code edits. Fix release_tag mismatch. Defaults remain OFF (REFACTOR206 behavior preserved).',
         'risk': 'low'
     })
 except Exception:
@@ -24505,6 +24542,43 @@ def main():
                 help="Advanced: allows reuse of unchanged evolution results to reduce fetch/load. Automatically bypassed in injection mode."
             )
 
+            st.markdown("---")
+            st.subheader("🧠 LLM Sidecar (experimental)")
+            st.caption("LLM assists; deterministic rules decide. Defaults OFF to preserve REFACTOR206 behavior.")
+
+            try:
+                _ss = st.session_state
+                if not isinstance(_ss.get("YUREEKA_LLM_FLAGS"), dict):
+                    _ss["YUREEKA_LLM_FLAGS"] = {}
+                _llm_ui_flags = _ss.get("YUREEKA_LLM_FLAGS") or {}
+            except Exception:
+                _llm_ui_flags = {}
+
+            def _llm_ui_checkbox(flag: str, label: str, default: bool = False, help: str = "") -> None:
+                try:
+                    cur = bool(_llm_ui_flags.get(flag, default))
+                    val = st.checkbox(label, value=cur, key=f"ui_llmflag_{flag}", help=help)
+                    _llm_ui_flags[flag] = bool(val)
+                except Exception:
+                    pass
+
+            _llm_ui_checkbox(
+                "ENABLE_LLM_EVIDENCE_SNIPPETS",
+                "Enable LLM evidence snippet ranking (assist only)",
+                default=False,
+                help="When ON, the sidecar may rank candidate evidence snippets. Metric winners/values remain deterministic."
+            )
+
+            with st.expander("Advanced LLM flags", expanded=False):
+                _llm_ui_checkbox("ENABLE_LLM_SOURCE_CLUSTERING", "Enable LLM source clustering", default=False, help="Experimental.")
+                _llm_ui_checkbox("ENABLE_LLM_QUERY_FRAME", "Enable LLM query framing", default=False, help="Experimental; may change search terms.")
+                _llm_ui_checkbox("ENABLE_LLM_ANOMALY_FLAGS", "Enable LLM anomaly flags", default=False, help="Experimental.")
+                _llm_ui_checkbox("ENABLE_LLM_DATASET_LOGGING", "Enable LLM dataset logging", default=False, help="Experimental; may write small local logs.")
+
+            st.markdown("**Diagnostics**")
+            _llm_ui_checkbox("ENABLE_LLM_SMOKE_TEST", "Run LLM smoke test (connectivity)", default=False, help="Records non-sensitive status in the JSON debug.")
+            _llm_ui_checkbox("LLM_BYPASS_CACHE", "Bypass LLM cache (debug)", default=False, help="Forces live calls; turn OFF for cached/replayable runs.")
+
         # ✅ REFACTOR99: Evolution baseline MUST be an Analysis payload (exclude evolution reports) and default to latest.
         history_all = get_history() or []
 
@@ -30371,7 +30445,7 @@ except Exception:
 
 # LLM10_PATCH_TRACKER_REORDER_V1: move known patch ids to the front in descending order (best-effort)
 try:
-    for _pid in ["LLM00", "LLM01", "LLM01H", "LLM01D", "LLM01E", "LLM01F", "LLM02", "LLM03", "LLM04H", "LLM05", "LLM06", "LLM07", "LLM08", "LLM09", "LLM10", "LLM11", "LLM12", "LLM13", "LLM14", "LLM15", "LLM16"]:
+    for _pid in ["LLM00", "LLM01", "LLM01H", "LLM01D", "LLM01E", "LLM01F", "LLM02", "LLM03", "LLM04H", "LLM05", "LLM06", "LLM07", "LLM08", "LLM09", "LLM10", "LLM11", "LLM12", "LLM13", "LLM14", "LLM15", "LLM16", "LLM17"]:
         _yureeka_patch_tracker_ensure_head_v1(_pid, {})
 except Exception:
     pass
