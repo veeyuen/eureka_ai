@@ -166,11 +166,11 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "LLM24"
+_YUREEKA_CODE_VERSION_LOCK = "LLM25"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 # REFACTOR206: Release Candidate freeze (no pipeline behavior change).
 YUREEKA_RELEASE_CANDIDATE_V1 = False
-YUREEKA_RELEASE_TAG_V1 = "LLM24"
+YUREEKA_RELEASE_TAG_V1 = "LLM25"
 YUREEKA_FREEZE_MODE_V1 = True
 # Small default regression set (optional; used for manual triad smoke tests).
 YUREEKA_REGRESSION_QUESTIONS_V1 = [
@@ -31065,6 +31065,15 @@ try:
         PATCH_TRACKER_V1.insert(0, {"patch_id": "LLM24", "scope": "llm-sidecar", "summary": "Fix [MOD:*] anchors to be valid Python comments (prevents SyntaxError) while keeping the Module Index + search anchors for future modularization. Also dedupe LLM01 evidence-snippet attach on final wrappers: attach once to a master PMC dict and sync audit-only fields to other PMC dict copies to avoid duplicate work and duplicate LLM calls. No winner/value changes; assist flags remain OFF by default.", "risk": "low"})
 except Exception:
     pass
+
+# LLM25: patch tracker overlay (version stamp + patch-tracker head alignment)
+try:
+    if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "LLM25" for e in PATCH_TRACKER_V1):
+        PATCH_TRACKER_V1.insert(0, {"patch_id": "LLM25", "scope": "llm-sidecar", "summary": "Patch hygiene: bump version stamp/release tag to LLM25 and advance patch-tracker head accordingly (restores CODE_VERSION ↔ patch_tracker_head invariant). No pipeline behavior changes; all LLM assist flags remain OFF by default and cache bypass stays an explicit debug-only override.", "risk": "low"})
+except Exception:
+    pass
+
+
 
 
 
