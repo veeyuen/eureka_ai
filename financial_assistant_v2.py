@@ -136,11 +136,11 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "LLM17"
+_YUREEKA_CODE_VERSION_LOCK = "LLM18"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 # REFACTOR206: Release Candidate freeze (no pipeline behavior change).
 YUREEKA_RELEASE_CANDIDATE_V1 = False
-YUREEKA_RELEASE_TAG_V1 = "LLM17"
+YUREEKA_RELEASE_TAG_V1 = "LLM18"
 YUREEKA_FREEZE_MODE_V1 = True
 # Small default regression set (optional; used for manual triad smoke tests).
 YUREEKA_REGRESSION_QUESTIONS_V1 = [
@@ -156,7 +156,7 @@ YUREEKA_REGRESSION_QUESTIONS_V1 = [
 # Design rule: LLM assists; deterministic rules decide.
 # All feature flags are OFF by default to preserve REFACTOR206 behavior.
 
-ENABLE_LLM_EVIDENCE_SNIPPETS = True
+ENABLE_LLM_EVIDENCE_SNIPPETS = False
 ENABLE_LLM_SOURCE_CLUSTERING = False
 ENABLE_LLM_QUERY_FRAME = False
 ENABLE_LLM_ANOMALY_FLAGS = False
@@ -167,8 +167,17 @@ ENABLE_LLM_ANOMALY_FLAGS = False
 # LLM12: Optional diagnostics/testing toggles (default OFF)
 # - LLM_BYPASS_CACHE: ignore disk/mem cache to verify live calls (may change snippet ranking output).
 # - ENABLE_LLM_SMOKE_TEST: run a one-shot provider connectivity check and attach non-sensitive diag.
-LLM_BYPASS_CACHE = True
+LLM_BYPASS_CACHE = False
 ENABLE_LLM_SMOKE_TEST = False
+
+
+# LLM18: Evidence snippet assist acceptance policy (deterministic rules decide)
+# These thresholds gate whether an LLM proposal is *accepted* (i.e., actually used) vs. rejected.
+# Env overrides (optional):
+#   YUREEKA_LLM01_EVIDENCE_CONFIDENCE_THRESHOLD
+#   YUREEKA_LLM01_EVIDENCE_SCORE_TIE_DELTA
+LLM01_EVIDENCE_CONFIDENCE_THRESHOLD = 0.75
+LLM01_EVIDENCE_SCORE_TIE_DELTA = 2.5
 
 def _yureeka__parse_boolish_v1(v: Any) -> Optional[bool]:
     """Parse bool-ish env strings safely. Returns None if unparseable."""
@@ -185,6 +194,22 @@ def _yureeka__parse_boolish_v1(v: Any) -> Optional[bool]:
         return None
     except Exception:
         return None
+
+
+def _yureeka__parse_floatish_v1(v: Any) -> Optional[float]:
+    """Parse float-ish env/secrets strings safely. Returns None if unparseable."""
+    try:
+        if v is None:
+            return None
+        if isinstance(v, (int, float)):
+            return float(v)
+        s = str(v).strip()
+        if not s:
+            return None
+        return float(s)
+    except Exception:
+        return None
+
 
 
 def _yureeka_llm_flag_effective_v1(flag_name: str) -> Tuple[bool, str]:
@@ -1618,6 +1643,74 @@ def _llm01_score_window_v1(window_text: str, num_tokens: List[str], unit_tokens:
     except Exception:
         return 0.0
 
+
+def _llm01_evidence_policy_snapshot_v1() -> dict:
+    """Deterministic acceptance policy for LLM01 evidence-snippet assist (non-sensitive).
+    Returns: {confidence_threshold, score_tie_delta, sources:{...}}
+    """
+    try:
+        thr = float(globals().get("LLM01_EVIDENCE_CONFIDENCE_THRESHOLD") or 0.75)
+    except Exception:
+        thr = 0.75
+    try:
+        tie = float(globals().get("LLM01_EVIDENCE_SCORE_TIE_DELTA") or 2.5)
+    except Exception:
+        tie = 2.5
+
+    src_thr = "code"
+    src_tie = "code"
+
+    # Environment overrides (best-effort)
+    try:
+        v = os.environ.get("YUREEKA_LLM01_EVIDENCE_CONFIDENCE_THRESHOLD")
+        vv = _yureeka__parse_floatish_v1(v)
+        if vv is not None:
+            thr = float(vv)
+            src_thr = "env:YUREEKA_LLM01_EVIDENCE_CONFIDENCE_THRESHOLD"
+    except Exception:
+        pass
+    try:
+        v = os.environ.get("YUREEKA_LLM01_EVIDENCE_SCORE_TIE_DELTA")
+        vv = _yureeka__parse_floatish_v1(v)
+        if vv is not None:
+            tie = float(vv)
+            src_tie = "env:YUREEKA_LLM01_EVIDENCE_SCORE_TIE_DELTA"
+    except Exception:
+        pass
+
+    # Clamp to sensible bounds
+    try:
+        thr = max(0.0, min(1.0, float(thr)))
+    except Exception:
+        thr = 0.75
+    try:
+        tie = max(0.05, min(12.0, float(tie)))
+    except Exception:
+        tie = 2.5
+
+    return {
+        "confidence_threshold": float(thr),
+        "score_tie_delta": float(tie),
+        "sources": {"confidence_threshold": str(src_thr), "score_tie_delta": str(src_tie)},
+    }
+
+
+def _llm01_window_kind_priority_v1(kind: str) -> int:
+    """Deterministic tie-break priority for snippet windows (lower is better)."""
+    try:
+        k = str(kind or "").strip().lower()
+    except Exception:
+        k = ""
+    # Prefer readable excerpts when scores tie.
+    order = {
+        "sentence": 0,
+        "line": 1,
+        "char_240": 2,
+        "char_140": 3,
+    }
+    return int(order.get(k, 9))
+
+
 def _yureeka_parse_json_object_from_text_v1(text: str) -> Optional[dict]:
     """Best-effort JSON object parse from model text (extracts first {...})."""
     if not isinstance(text, str) or not text.strip():
@@ -1904,6 +1997,7 @@ def _llm01_provider_status_v1() -> dict:
         "model": str(model or "")[:80],
         "strict_mode": bool(globals().get("LLM_STRICT_MODE")),
         "cache_dir": str(cache_dir or "")[:180],
+        "evidence_policy": _llm01_evidence_policy_snapshot_v1(),
         "flags": _yureeka_llm_flags_snapshot_v1(),
     }
 
@@ -2602,9 +2696,18 @@ def _llm01_attach_evidence_snippets_to_pmc_v1(
     pool_llm01 = baseline_sources_cache if isinstance(baseline_sources_cache, list) else []
 
     applied = 0
-    llm_used = 0
+    llm_used = 0  # accepted overrides (back-compat)
     skipped = 0
     cache_hits = 0
+
+    llm_calls = 0
+    llm_accepts = 0
+    llm_agrees = 0
+    llm_rejects = 0
+
+    _llm01_policy = _llm01_evidence_policy_snapshot_v1()
+    _llm01_conf_thr = float(_llm01_policy.get("confidence_threshold") or 0.75)
+    _llm01_tie_delta = float(_llm01_policy.get("score_tie_delta") or 2.5)
 
     try:
         schema_keys = list(metric_schema.keys()) if isinstance(metric_schema, dict) else list(pmc.keys())
@@ -2702,16 +2805,43 @@ def _llm01_attach_evidence_snippets_to_pmc_v1(
         num_tokens = _llm01_extract_number_tokens_v1(raw)
         unit_tokens = _llm01_unit_tokens_v1(metric, best)
 
-        # Score deterministically
-        scored = []
+        # Score deterministically (with explicit tie-break)
+        scored: List[Tuple[float, int]] = []
+        score_map: Dict[int, float] = {}
         for i, w in enumerate(windows):
             wt = str(w.get("text") or "")
-            sc = _llm01_score_window_v1(wt, num_tokens, unit_tokens)
-            scored.append((float(sc), i))
-        scored.sort(key=lambda x: x[0], reverse=True)
-        best_i = scored[0][1] if scored else 0
+            sc = float(_llm01_score_window_v1(wt, num_tokens, unit_tokens))
+            scored.append((sc, i))
+            score_map[int(i)] = float(sc)
 
-        # Optional LLM rank (proposal only)
+        def _det_key(tup: Tuple[float, int]) -> Tuple[float, int, int, int]:
+            sc, i = tup
+            try:
+                kind = windows[int(i)].get("kind")
+            except Exception:
+                kind = ""
+            pri = _llm01_window_kind_priority_v1(str(kind))
+            try:
+                ln = len(str(windows[int(i)].get("text") or ""))
+            except Exception:
+                ln = 0
+            # Sort: higher score first, then preferred kind, then shorter, then stable index.
+            return (-float(sc), int(pri), int(ln), int(i))
+
+        scored.sort(key=_det_key)
+        best_i = scored[0][1] if scored else 0
+        best_score = float(scored[0][0]) if scored else 0.0
+        second_score = float(scored[1][0]) if len(scored) > 1 else None
+
+        # Define the deterministic "tie set" as all windows within _llm01_tie_delta of the best score.
+        tie_set: List[int] = []
+        try:
+            for sc, i in scored:
+                if (best_score - float(sc)) <= float(_llm01_tie_delta):
+                    tie_set.append(int(i))
+        except Exception:
+            tie_set = [int(best_i)]
+# Optional LLM rank (proposal only)
         llm_i = None
         llm_conf = None
         llm_diag = {}
@@ -2749,10 +2879,47 @@ def _llm01_attach_evidence_snippets_to_pmc_v1(
 
         chosen_i = best_i
         method = "deterministic"
-        if llm_i is not None and isinstance(llm_i, int):
-            chosen_i = llm_i
-            method = "llm_ranked"
-            llm_used += 1
+
+        llm_called = bool(llm_i is not None and isinstance(llm_i, int))
+        llm_accepted = False
+        llm_decision_reason = ""
+
+        if llm_called:
+            llm_calls += 1
+
+            # Confidence gate
+            try:
+                conf_v = float(llm_conf) if llm_conf is not None else 0.0
+            except Exception:
+                conf_v = 0.0
+
+            if conf_v < float(_llm01_conf_thr):
+                llm_decision_reason = "conf_below_threshold"
+                llm_rejects += 1
+            else:
+                # Tie-break rule: only accept LLM when there is genuine ambiguity (>=2 windows in tie_set),
+                # and the proposed index is inside the tie_set.
+                if not isinstance(tie_set, list) or len(tie_set) < 2:
+                    llm_decision_reason = "no_tie_set"
+                    # If LLM agrees with the deterministic winner, count as 'agree' not 'reject'.
+                    if int(llm_i) == int(best_i):
+                        llm_agrees += 1
+                        llm_decision_reason = "llm_agrees_det"
+                    else:
+                        llm_rejects += 1
+                elif int(llm_i) not in tie_set:
+                    llm_decision_reason = "llm_outside_tie_set"
+                    llm_rejects += 1
+                elif int(llm_i) == int(best_i):
+                    llm_decision_reason = "llm_agrees_det"
+                    llm_agrees += 1
+                else:
+                    chosen_i = int(llm_i)
+                    method = "llm_ranked"
+                    llm_used += 1
+                    llm_accepts += 1
+                    llm_accepted = True
+                    llm_decision_reason = "accepted_tiebreak"
 
         chosen = windows[chosen_i] if 0 <= chosen_i < len(windows) else windows[best_i]
         snippet = str(chosen.get("text") or "").strip()
@@ -2793,11 +2960,32 @@ def _llm01_attach_evidence_snippets_to_pmc_v1(
             metric["evidence_snippets_top"] = top3
 
         metric["evidence_snippet_method"] = method
+
+        # Non-leaky LLM proposal/decision markers (safe for triad JSONs)
+        if llm_called:
+            try:
+                metric["evidence_snippet_llm_proposed_index"] = int(llm_i) if llm_i is not None else None
+            except Exception:
+                metric["evidence_snippet_llm_proposed_index"] = None
+            try:
+                metric["evidence_snippet_llm_proposed_confidence"] = float(llm_conf) if llm_conf is not None else None
+            except Exception:
+                metric["evidence_snippet_llm_proposed_confidence"] = None
+            metric["evidence_snippet_llm_accepted"] = bool(llm_accepted)
+            metric["evidence_snippet_llm_decision_reason"] = str(llm_decision_reason or "")[:80]
+            metric["evidence_snippet_llm_policy"] = {
+                "confidence_threshold": float(_llm01_conf_thr),
+                "score_tie_delta": float(_llm01_tie_delta),
+            }
+
         if method == "llm_ranked":
             # Minimal non-leaky markers (no raw prompts/outputs)
             metric["evidence_snippet_llm_used"] = True
             if llm_conf is not None:
-                metric["evidence_snippet_llm_confidence"] = float(llm_conf)
+                try:
+                    metric["evidence_snippet_llm_confidence"] = float(llm_conf)
+                except Exception:
+                    pass
 
         # Add minimal provenance marker (safe)
         try:
@@ -2809,6 +2997,12 @@ def _llm01_attach_evidence_snippets_to_pmc_v1(
                         "basis": str(basis_key or ""),
                         "llm_flag": bool(_yureeka_llm_flag_bool_v1("ENABLE_LLM_EVIDENCE_SNIPPETS")),
                         "llm_used": bool(method == "llm_ranked"),
+                        "llm_called": bool(llm_called),
+                        "llm_accepted": bool(llm_accepted),
+                        "llm_decision_reason": str(llm_decision_reason or "")[:80],
+                        "llm_policy": {"confidence_threshold": float(_llm01_conf_thr), "score_tie_delta": float(_llm01_tie_delta)},
+                        "llm_proposed_index": int(llm_i) if (llm_i is not None and isinstance(llm_i, int)) else None,
+
                         # Provide a bounded reason string even when falling back to deterministic.
                         "llm_reason": str((llm_diag or {}).get("reason") or "")[:120],
                         "llm_model": str((llm_diag or {}).get("model") or "")[:80],
@@ -2846,15 +3040,26 @@ def _llm01_attach_evidence_snippets_to_pmc_v1(
                     "skipped": int(skipped),
                     "cache_hits": int(cache_hits),
                     "flag_enable_llm": bool(_yureeka_llm_flag_bool_v1("ENABLE_LLM_EVIDENCE_SNIPPETS")),
+                    "llm_calls": int(llm_calls),
+                    "llm_accepts": int(llm_accepts),
+                    "llm_agrees": int(llm_agrees),
+                    "llm_rejects": int(llm_rejects),
+                    "llm_confidence_threshold": float(_llm01_conf_thr),
+                    "llm_score_tie_delta": float(_llm01_tie_delta),
+
                 })
     except Exception:
         pass
 
-    return {
+        return {
         "applied": int(applied),
         "llm_used": int(llm_used),
         "skipped": int(skipped),
         "cache_hits": int(cache_hits),
+        "llm_calls": int(llm_calls),
+        "llm_accepts": int(llm_accepts),
+        "llm_agrees": int(llm_agrees),
+        "llm_rejects": int(llm_rejects),
     }
 
 
@@ -2932,7 +3137,7 @@ def _llm01_hotfix_apply_evidence_snippets_final_v1(wrapper: dict, *, stage: str 
 
         # De-dup pmc objects by identity
         seen = set()
-        agg = {"applied": 0, "llm_used": 0, "skipped": 0, "cache_hits": 0, "pmc_targets": 0, "pmc_metric_count_total": 0, "pmc_dicts_with_work": 0}
+        agg = {"applied": 0, "llm_used": 0, "skipped": 0, "cache_hits": 0, "llm_calls": 0, "llm_accepts": 0, "llm_agrees": 0, "llm_rejects": 0, "pmc_targets": 0, "pmc_metric_count_total": 0, "pmc_dicts_with_work": 0}
         _pmc_metric_keys_unique = set()
         for pmc in pmcs:
             if not isinstance(pmc, dict) or not pmc:
@@ -2968,6 +3173,10 @@ def _llm01_hotfix_apply_evidence_snippets_final_v1(wrapper: dict, *, stage: str 
                 agg["llm_used"] += int(stt.get("llm_used") or 0)
                 agg["skipped"] += int(stt.get("skipped") or 0)
                 agg["cache_hits"] += int(stt.get("cache_hits") or 0)
+                agg["llm_calls"] += int(stt.get("llm_calls") or 0)
+                agg["llm_accepts"] += int(stt.get("llm_accepts") or 0)
+                agg["llm_agrees"] += int(stt.get("llm_agrees") or 0)
+                agg["llm_rejects"] += int(stt.get("llm_rejects") or 0)
             except Exception:
                 pass
 
@@ -2981,6 +3190,12 @@ def _llm01_hotfix_apply_evidence_snippets_final_v1(wrapper: dict, *, stage: str 
                         "pmc_targets": int(agg.get("pmc_targets") or 0),
                         "applied": int(agg.get("applied") or 0),
                         "llm_used": int(agg.get("llm_used") or 0),
+                        "llm_calls": int(agg.get("llm_calls") or 0),
+                        "llm_accepts": int(agg.get("llm_accepts") or 0),
+                        "llm_agrees": int(agg.get("llm_agrees") or 0),
+                        "llm_rejects": int(agg.get("llm_rejects") or 0),
+                        "llm_policy": _llm01_evidence_policy_snapshot_v1(),
+
                         "skipped": int(agg.get("skipped") or 0),
                         "cache_hits": int(agg.get("cache_hits") or 0),
                         "pmc_metric_count_total": int(agg.get("pmc_metric_count_total") or 0),
@@ -30414,6 +30629,14 @@ except Exception:
 
 
 
+
+# LLM18: patch tracker overlay (LLM01 acceptance policy: confidence threshold + deterministic tie-break).
+try:
+    if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "LLM18" for e in PATCH_TRACKER_V1):
+        PATCH_TRACKER_V1.insert(0, {"patch_id": "LLM18", "scope": "llm-sidecar", "summary": "LLM01 evidence snippet assist: add confidence threshold gate and explicit deterministic tie-break set. LLM proposals are accepted only when confidence >= threshold and the proposed window falls inside the deterministic tie-set (within score_tie_delta of best). Adds non-leaky proposed/accepted markers + policy snapshot in debug/provenance. No winner/value changes.", "risk": "low"})
+except Exception:
+    pass
+
 # LLM16: patch tracker overlay (LLM-series patch hygiene + diagnostics polish).
 try:
     if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "LLM16" for e in PATCH_TRACKER_V1):
@@ -30445,7 +30668,7 @@ except Exception:
 
 # LLM10_PATCH_TRACKER_REORDER_V1: move known patch ids to the front in descending order (best-effort)
 try:
-    for _pid in ["LLM00", "LLM01", "LLM01H", "LLM01D", "LLM01E", "LLM01F", "LLM02", "LLM03", "LLM04H", "LLM05", "LLM06", "LLM07", "LLM08", "LLM09", "LLM10", "LLM11", "LLM12", "LLM13", "LLM14", "LLM15", "LLM16", "LLM17"]:
+    for _pid in ["LLM00", "LLM01", "LLM01H", "LLM01D", "LLM01E", "LLM01F", "LLM02", "LLM03", "LLM04H", "LLM05", "LLM06", "LLM07", "LLM08", "LLM09", "LLM10", "LLM11", "LLM12", "LLM13", "LLM14", "LLM15", "LLM16", "LLM17", "LLM18"]:
         _yureeka_patch_tracker_ensure_head_v1(_pid, {})
 except Exception:
     pass
