@@ -136,7 +136,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "LLM19"
+_YUREEKA_CODE_VERSION_LOCK = "LLM20"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 # REFACTOR206: Release Candidate freeze (no pipeline behavior change).
 YUREEKA_RELEASE_CANDIDATE_V1 = False
@@ -2694,6 +2694,22 @@ def _llm01_llm_rank_windows_v1(
                     "model": str(model)[:80],
                     "cache_hit": bool(diag.get("cache_hit")),
                 })
+    except Exception:
+        pass
+
+    # LLM20: sync successful evidence-snippet calls into run-scope health aggregation
+    # so llm_sidecar_health_v1.agg reflects real feature calls (not only smoke tests).
+    try:
+        _yureeka_llm_global_agg_update_v1(
+            "llm01_evidence_snippets",
+            {
+                "ok": True,
+                "status": (call_diag.get("status") if isinstance(call_diag, dict) else None),
+                "reason": str(diag.get("reason") or "ok")[:120],
+                "model": str(model or "")[:80],
+            },
+            cache_hit=bool(diag.get("cache_hit")),
+        )
     except Exception:
         pass
     return (best_index, conf, diag)
@@ -30727,6 +30743,14 @@ try:
         PATCH_TRACKER_V1.insert(0, {"patch_id": "LLM19", "scope": "llm-sidecar", "summary": "LLM01 evidence snippets: fix stats return so llm01_evidence_snippets_summary accurately reflects applied/llm counts; add optional pre-gate to skip sidecar ranking when there is no deterministic tie-set, with an override toggle LLM01_EVIDENCE_FORCE_CALL for controlled call-path tests. Policy snapshot now surfaces force_call source. No metric winner/value changes; assist flags remain OFF by default.", "risk": "low"})
 except Exception:
     pass
+
+# LLM20: patch tracker overlay (LLM01 evidence-snippet calls populate run-scope health agg).
+try:
+    if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "LLM20" for e in PATCH_TRACKER_V1):
+        PATCH_TRACKER_V1.insert(0, {"patch_id": "LLM20", "scope": "llm-sidecar", "summary": "Sync successful LLM01 evidence-snippet rank outcomes into the global per-run LLM health aggregation, so llm_sidecar_health_v1.agg reflects real feature calls (not only smoke tests). No winner/value changes; assist behavior unchanged unless ENABLE_LLM_EVIDENCE_SNIPPETS is enabled.", "risk": "low"})
+except Exception:
+    pass
+
 
 # LLM10_PATCH_TRACKER_REORDER_V1: move known patch ids to the front in descending order (best-effort)
 try:
