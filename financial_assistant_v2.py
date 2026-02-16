@@ -136,7 +136,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "LLM18"
+_YUREEKA_CODE_VERSION_LOCK = "LLM19"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 # REFACTOR206: Release Candidate freeze (no pipeline behavior change).
 YUREEKA_RELEASE_CANDIDATE_V1 = False
@@ -178,6 +178,8 @@ ENABLE_LLM_SMOKE_TEST = False
 #   YUREEKA_LLM01_EVIDENCE_SCORE_TIE_DELTA
 LLM01_EVIDENCE_CONFIDENCE_THRESHOLD = 0.75
 LLM01_EVIDENCE_SCORE_TIE_DELTA = 2.5
+LLM01_EVIDENCE_FORCE_CALL = False  # If True, call LLM rank even without a tie-set (proposal still accepted only on ties).
+
 
 def _yureeka__parse_boolish_v1(v: Any) -> Optional[bool]:
     """Parse bool-ish env strings safely. Returns None if unparseable."""
@@ -1688,10 +1690,26 @@ def _llm01_evidence_policy_snapshot_v1() -> dict:
     except Exception:
         tie = 2.5
 
+
+    # Optional policy toggle: force a rank call even when there is no deterministic tie-set.
+    force_call = False
+    src_force = "code"
+    try:
+        force_call = bool(globals().get("LLM01_EVIDENCE_FORCE_CALL") or False)
+    except Exception:
+        force_call = False
+    try:
+        _fc, _src = _yureeka_llm_flag_effective_v1("LLM01_EVIDENCE_FORCE_CALL")
+        force_call = bool(_fc)
+        src_force = str(_src)[:80]
+    except Exception:
+        pass
+
     return {
         "confidence_threshold": float(thr),
         "score_tie_delta": float(tie),
-        "sources": {"confidence_threshold": str(src_thr), "score_tie_delta": str(src_tie)},
+        "force_call": bool(force_call),
+        "sources": {"confidence_threshold": str(src_thr), "score_tie_delta": str(src_tie), "force_call": str(src_force)},
     }
 
 
@@ -2689,10 +2707,10 @@ def _llm01_attach_evidence_snippets_to_pmc_v1(
     question: str = "",
     stage: str = "",
     out_debug: Optional[dict] = None,
-) -> None:
+) -> dict:
     """Mutate pmc entries to add evidence_best_snippet + evidence_offsets (additive only)."""
     if not isinstance(pmc, dict) or not pmc:
-        return
+        return {"applied": 0, "llm_used": 0, "skipped": 0, "cache_hits": 0, "llm_calls": 0, "llm_accepts": 0, "llm_agrees": 0, "llm_rejects": 0}
     pool_llm01 = baseline_sources_cache if isinstance(baseline_sources_cache, list) else []
 
     applied = 0
@@ -2845,32 +2863,68 @@ def _llm01_attach_evidence_snippets_to_pmc_v1(
         llm_i = None
         llm_conf = None
         llm_diag = {}
+
+        # LLM18/LLM19: call the sidecar only when it can matter (tie-set) unless force_call is enabled.
+        _llm_flag_on = False
+        _force_call = False
+        _tie_ok = False
         try:
-            llm_i, llm_conf, llm_diag = _llm01_llm_rank_windows_v1(
-                windows=windows,
-                metric_label=str(ckey),
-                num_tokens=list(num_tokens),
-                unit_tokens=list(unit_tokens),
-                url=str(url or ""),
-                question=str(question or ""),
-                out_debug=out_debug,
-            )
-        except Exception as e:
-            llm_i, llm_conf, llm_diag = (None, None, {"reason": "exception:" + str(type(e).__name__)})
+            _llm_flag_on = bool(_yureeka_llm_flag_bool_v1("ENABLE_LLM_EVIDENCE_SNIPPETS"))
+        except Exception:
+            _llm_flag_on = False
+        try:
+            _force_call = bool(_yureeka_llm_flag_bool_v1("LLM01_EVIDENCE_FORCE_CALL"))
+        except Exception:
+            _force_call = False
+        try:
+            _tie_ok = bool(isinstance(tie_set, list) and len(tie_set) >= 2)
+        except Exception:
+            _tie_ok = False
+
+        if _llm_flag_on and (not _tie_ok) and (not _force_call):
+            # Skip the LLM call entirely; keep deterministic winner.
+            llm_diag = {"reason": "pre_gate_no_tie"}
             try:
                 if isinstance(out_debug, dict):
-                    out_debug.setdefault("llm01_rank_call_exceptions_v1", [])
-                    if isinstance(out_debug.get("llm01_rank_call_exceptions_v1"), list) and len(out_debug["llm01_rank_call_exceptions_v1"]) < 12:
-                        out_debug["llm01_rank_call_exceptions_v1"].append({
+                    out_debug.setdefault("llm01_evidence_pre_gate_v1", [])
+                    if isinstance(out_debug.get("llm01_evidence_pre_gate_v1"), list) and len(out_debug["llm01_evidence_pre_gate_v1"]) < 30:
+                        out_debug["llm01_evidence_pre_gate_v1"].append({
                             "ckey": str(ckey)[:120],
                             "url": str(url or "")[:160],
-                            "exc": str(type(e).__name__),
-                            "msg": str(e)[:180],
+                            "tie_set_len": int(len(tie_set) if isinstance(tie_set, list) else 0),
+                            "best_i": int(best_i),
+                            "best_score": float(best_score),
+                            "second_score": float(second_score) if second_score is not None else None,
+                            "reason": "pre_gate_no_tie",
                         })
-                    _llm01_update_llm_diag_agg_v1(out_debug, {"ok": False, "status": None, "reason": "exception:" + str(type(e).__name__), "model": str(os.environ.get("YUREEKA_LLM_MODEL") or os.environ.get("OPENAI_MODEL") or "gpt-4o-mini")}, cache_hit=False)
             except Exception:
                 pass
-
+        else:
+            try:
+                llm_i, llm_conf, llm_diag = _llm01_llm_rank_windows_v1(
+                    windows=windows,
+                    metric_label=str(ckey),
+                    num_tokens=list(num_tokens),
+                    unit_tokens=list(unit_tokens),
+                    url=str(url or ""),
+                    question=str(question or ""),
+                    out_debug=out_debug,
+                )
+            except Exception as e:
+                llm_i, llm_conf, llm_diag = (None, None, {"reason": "exception:" + str(type(e).__name__)})
+                try:
+                    if isinstance(out_debug, dict):
+                        out_debug.setdefault("llm01_rank_call_exceptions_v1", [])
+                        if isinstance(out_debug.get("llm01_rank_call_exceptions_v1"), list) and len(out_debug["llm01_rank_call_exceptions_v1"]) < 12:
+                            out_debug["llm01_rank_call_exceptions_v1"].append({
+                                "ckey": str(ckey)[:120],
+                                "url": str(url or "")[:160],
+                                "exc": str(type(e).__name__),
+                                "msg": str(e)[:180],
+                            })
+                        _llm01_update_llm_diag_agg_v1(out_debug, {"ok": False, "status": None, "reason": "exception:" + str(type(e).__name__), "model": str(os.environ.get("YUREEKA_LLM_MODEL") or os.environ.get("OPENAI_MODEL") or "gpt-4o-mini")}, cache_hit=False)
+                except Exception:
+                    pass
         try:
             if isinstance(llm_diag, dict) and bool(llm_diag.get("cache_hit")):
                 cache_hits += 1
@@ -3051,7 +3105,7 @@ def _llm01_attach_evidence_snippets_to_pmc_v1(
     except Exception:
         pass
 
-        return {
+    return {
         "applied": int(applied),
         "llm_used": int(llm_used),
         "skipped": int(skipped),
@@ -30666,9 +30720,17 @@ except Exception:
     pass
 
 
+
+# LLM19: patch tracker overlay (LLM01 summary return fix + pre-gate skip / force-call toggle).
+try:
+    if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "LLM19" for e in PATCH_TRACKER_V1):
+        PATCH_TRACKER_V1.insert(0, {"patch_id": "LLM19", "scope": "llm-sidecar", "summary": "LLM01 evidence snippets: fix stats return so llm01_evidence_snippets_summary accurately reflects applied/llm counts; add optional pre-gate to skip sidecar ranking when there is no deterministic tie-set, with an override toggle LLM01_EVIDENCE_FORCE_CALL for controlled call-path tests. Policy snapshot now surfaces force_call source. No metric winner/value changes; assist flags remain OFF by default.", "risk": "low"})
+except Exception:
+    pass
+
 # LLM10_PATCH_TRACKER_REORDER_V1: move known patch ids to the front in descending order (best-effort)
 try:
-    for _pid in ["LLM00", "LLM01", "LLM01H", "LLM01D", "LLM01E", "LLM01F", "LLM02", "LLM03", "LLM04H", "LLM05", "LLM06", "LLM07", "LLM08", "LLM09", "LLM10", "LLM11", "LLM12", "LLM13", "LLM14", "LLM15", "LLM16", "LLM17", "LLM18"]:
+    for _pid in ["LLM00", "LLM01", "LLM01H", "LLM01D", "LLM01E", "LLM01F", "LLM02", "LLM03", "LLM04H", "LLM05", "LLM06", "LLM07", "LLM08", "LLM09", "LLM10", "LLM11", "LLM12", "LLM13", "LLM14", "LLM15", "LLM16", "LLM17", "LLM18", "LLM19"]:
         _yureeka_patch_tracker_ensure_head_v1(_pid, {})
 except Exception:
     pass
