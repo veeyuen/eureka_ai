@@ -161,16 +161,16 @@ from datetime import datetime, timedelta, timezone
 from bs4 import BeautifulSoup
 from pydantic import BaseModel, Field, ValidationError, ConfigDict
 
-#[MOD:VERSION_STAMP]
+# [MOD:VERSION_STAMP]
 # VERSION STAMP (LOCKED)
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "LLM23"
+_YUREEKA_CODE_VERSION_LOCK = "LLM24"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 # REFACTOR206: Release Candidate freeze (no pipeline behavior change).
 YUREEKA_RELEASE_CANDIDATE_V1 = False
-YUREEKA_RELEASE_TAG_V1 = "LLM23"
+YUREEKA_RELEASE_TAG_V1 = "LLM24"
 YUREEKA_FREEZE_MODE_V1 = True
 # Small default regression set (optional; used for manual triad smoke tests).
 YUREEKA_REGRESSION_QUESTIONS_V1 = [
@@ -181,7 +181,7 @@ YUREEKA_REGRESSION_QUESTIONS_V1 = [
     "what is the CAGR of global EV chargers from 2026 to 2040?",
 ]
 
-#[MOD:LLM_SIDECAR]
+# [MOD:LLM_SIDECAR]
 # === LLM SIDECAR (LLM01) ======================================================
 # Hybrid NLP/LLM "sidecar assist" layer scaffolding.
 # Design rule: LLM assists; deterministic rules decide.
@@ -3218,42 +3218,87 @@ def _llm01_hotfix_apply_evidence_snippets_final_v1(wrapper: dict, *, stage: str 
                 bsc = rr.get("baseline_sources_cache") or rr.get("baseline_sources_cache_current")
         except Exception:
             pass
-
         # Collect PMC dict references (wrapper shapes vary across stages)
-        pmcs = []
+        # NOTE: In some wrapper shapes (analysis runs), the same canonical metrics may exist as
+        # multiple distinct PMC dict objects (different identities). To avoid triple-work (and
+        # triple LLM calls when ENABLE_LLM_EVIDENCE_SNIPPETS is ON), we:
+        #   1) pick a "master" PMC dict,
+        #   2) run attach once on the master,
+        #   3) sync only the evidence-snippet fields + provenance to other PMC dicts.
+        pmcs = []  # list of (label, pmc_dict)
+
         try:
             pr = wrapper.get("primary_response")
             if isinstance(pr, dict) and isinstance(pr.get("primary_metrics_canonical"), dict) and pr.get("primary_metrics_canonical"):
-                pmcs.append(pr.get("primary_metrics_canonical"))
+                pmcs.append(("primary_response_pmc", pr.get("primary_metrics_canonical")))
         except Exception:
             pass
         try:
             if isinstance(wrapper.get("primary_metrics_canonical"), dict) and wrapper.get("primary_metrics_canonical"):
-                pmcs.append(wrapper.get("primary_metrics_canonical"))
+                pmcs.append(("wrapper_pmc", wrapper.get("primary_metrics_canonical")))
         except Exception:
             pass
         try:
             rr = wrapper.get("results")
             if isinstance(rr, dict) and isinstance(rr.get("primary_metrics_canonical"), dict) and rr.get("primary_metrics_canonical"):
-                pmcs.append(rr.get("primary_metrics_canonical"))
+                pmcs.append(("results_pmc", rr.get("primary_metrics_canonical")))
             pr2 = rr.get("primary_response") if isinstance(rr, dict) else None
             if isinstance(pr2, dict) and isinstance(pr2.get("primary_metrics_canonical"), dict) and pr2.get("primary_metrics_canonical"):
-                pmcs.append(pr2.get("primary_metrics_canonical"))
+                pmcs.append(("results_primary_response_pmc", pr2.get("primary_metrics_canonical")))
         except Exception:
             pass
 
-        # De-dup pmc objects by identity
+        # De-dup pmc objects by identity (keep first label)
         seen = set()
-        agg = {"applied": 0, "llm_used": 0, "skipped": 0, "cache_hits": 0, "llm_calls": 0, "llm_accepts": 0, "llm_agrees": 0, "llm_rejects": 0, "pmc_targets": 0, "pmc_metric_count_total": 0, "pmc_dicts_with_work": 0}
-        _pmc_metric_keys_unique = set()
-        for pmc in pmcs:
+        pmc_unique = []
+        for lbl, pmc in pmcs:
             if not isinstance(pmc, dict) or not pmc:
                 continue
             pid = id(pmc)
             if pid in seen:
                 continue
             seen.add(pid)
-            agg["pmc_targets"] += 1
+            pmc_unique.append((str(lbl or ""), pmc))
+
+        # Choose a master PMC dict (prefer wrapper-level PMC when present)
+        pmc_master = None
+        pmc_master_label = ""
+        try:
+            for lbl, pmc in pmc_unique:
+                if lbl == "wrapper_pmc":
+                    pmc_master = pmc
+                    pmc_master_label = lbl
+                    break
+        except Exception:
+            pass
+        if pmc_master is None and pmc_unique:
+            try:
+                pmc_master_label, pmc_master = pmc_unique[0]
+            except Exception:
+                pmc_master = None
+                pmc_master_label = ""
+
+        # Aggregate stats (counts are based on a single attach run + optional sync)
+        agg = {
+            "applied": 0,
+            "llm_used": 0,
+            "skipped": 0,
+            "cache_hits": 0,
+            "llm_calls": 0,
+            "llm_accepts": 0,
+            "llm_agrees": 0,
+            "llm_rejects": 0,
+            "pmc_targets": int(len(pmc_unique)),
+            "pmc_targets_processed": 0,
+            "pmc_targets_synced": 0,
+            "pmc_master_label": str(pmc_master_label or ""),
+            "pmc_dedup_mode": "master_sync_v1",
+            "pmc_metric_count_total": 0,
+            "pmc_dicts_with_work": 0,
+        }
+        _pmc_metric_keys_unique = set()
+
+        for lbl, pmc in pmc_unique:
             try:
                 agg["pmc_metric_count_total"] += int(len(pmc))
                 try:
@@ -3262,17 +3307,22 @@ def _llm01_hotfix_apply_evidence_snippets_final_v1(wrapper: dict, *, stage: str 
                     pass
             except Exception:
                 pass
+
+        # Attach evidence snippets once to the master PMC dict
+        if isinstance(pmc_master, dict) and pmc_master:
             stt = _llm01_attach_evidence_snippets_to_pmc_v1(
-                pmc=pmc,
+                pmc=pmc_master,
                 baseline_sources_cache=bsc,
                 metric_schema=schema,
                 question=str(question or wrapper.get("question") or ""),
                 stage=stage_s or "final",
                 out_debug=dbg,
             ) or {}
+            agg["pmc_targets_processed"] = 1
+
             try:
                 if int(stt.get("applied") or 0) > 0 or int(stt.get("llm_used") or 0) > 0:
-                    agg["pmc_dicts_with_work"] += 1
+                    agg["pmc_dicts_with_work"] = 1
             except Exception:
                 pass
             try:
@@ -3287,6 +3337,42 @@ def _llm01_hotfix_apply_evidence_snippets_final_v1(wrapper: dict, *, stage: str 
             except Exception:
                 pass
 
+        # Sync evidence fields from master -> other PMC dicts (audit-only; winners/values untouched)
+        if isinstance(pmc_master, dict) and pmc_master and len(pmc_unique) > 1:
+            _sync_fields = ["evidence_best_snippet", "evidence_offsets", "evidence_snippets_top", "evidence_snippet_method"]
+            for lbl, pmc in pmc_unique:
+                if pmc is pmc_master:
+                    continue
+                try:
+                    agg["pmc_targets_synced"] += 1
+                except Exception:
+                    pass
+                try:
+                    for _k, _m in pmc_master.items():
+                        if _k not in pmc:
+                            continue
+                        _t = pmc.get(_k)
+                        if not isinstance(_t, dict):
+                            continue
+                        if isinstance(_m, dict):
+                            for _f in _sync_fields:
+                                if _f in _m:
+                                    _t[_f] = _m.get(_f)
+                            # provenance sync (optional)
+                            _mp = _m.get("provenance")
+                            if isinstance(_mp, dict) and ("evidence_snippet_v1" in _mp):
+                                _tp = _t.get("provenance")
+                                if not isinstance(_tp, dict):
+                                    _tp = {}
+                                    _t["provenance"] = _tp
+                                try:
+                                    _tp["evidence_snippet_v1"] = _mp.get("evidence_snippet_v1")
+                                except Exception:
+                                    pass
+                except Exception:
+                    pass
+
+
         # Durable summary marker (grep-friendly)
         try:
             if isinstance(dbg, dict):
@@ -3295,6 +3381,10 @@ def _llm01_hotfix_apply_evidence_snippets_final_v1(wrapper: dict, *, stage: str 
                     dbg["llm01_evidence_snippets_summary"].update({
                         "stage": stage_s,
                         "pmc_targets": int(agg.get("pmc_targets") or 0),
+                        "pmc_targets_processed": int(agg.get("pmc_targets_processed") or 0),
+                        "pmc_targets_synced": int(agg.get("pmc_targets_synced") or 0),
+                        "pmc_master_label": str(agg.get("pmc_master_label") or ""),
+                        "pmc_dedup_mode": str(agg.get("pmc_dedup_mode") or ""),
                         "applied": int(agg.get("applied") or 0),
                         "llm_used": int(agg.get("llm_used") or 0),
                         "llm_calls": int(agg.get("llm_calls") or 0),
@@ -3378,7 +3468,7 @@ def _yureeka__decode_patch_tracker_v1(blob: str) -> list:
 
 _PATCH_TRACKER_CANONICAL_ENTRIES_V1 = _yureeka__decode_patch_tracker_v1(_PATCH_TRACKER_B64_ZLIB_V1)
 
-#[MOD:PATCH_TRACKER]
+# [MOD:PATCH_TRACKER]
 # Patch tracker registry (latest-first).
 # Streamlit reruns start from a clean module state, so we can bind directly.
 try:
@@ -24539,7 +24629,7 @@ def render_native_comparison(baseline: Dict, compare: Dict):
 #     * set unit_mismatch flag / change_type to "unit_mismatch" where possible
 # - Purely additive; does not refactor upstream pipelines.
 
-#[MOD:UI_APP]
+# [MOD:UI_APP]
 def main():
     st.set_page_config(
         page_title="Yureeka Market Report",
@@ -30969,9 +31059,18 @@ except Exception:
     pass
 
 
+# LLM24: patch tracker overlay (fix [MOD:*] anchors + dedupe evidence-snippet attach across wrapper PMCs)
+try:
+    if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "LLM24" for e in PATCH_TRACKER_V1):
+        PATCH_TRACKER_V1.insert(0, {"patch_id": "LLM24", "scope": "llm-sidecar", "summary": "Fix [MOD:*] anchors to be valid Python comments (prevents SyntaxError) while keeping the Module Index + search anchors for future modularization. Also dedupe LLM01 evidence-snippet attach on final wrappers: attach once to a master PMC dict and sync audit-only fields to other PMC dict copies to avoid duplicate work and duplicate LLM calls. No winner/value changes; assist flags remain OFF by default.", "risk": "low"})
+except Exception:
+    pass
+
+
+
 # LLM10_PATCH_TRACKER_REORDER_V1: move known patch ids to the front in descending order (best-effort)
 try:
-    for _pid in ["LLM00", "LLM01", "LLM01H", "LLM01D", "LLM01E", "LLM01F", "LLM02", "LLM03", "LLM04H", "LLM05", "LLM06", "LLM07", "LLM08", "LLM09", "LLM10", "LLM11", "LLM12", "LLM13", "LLM14", "LLM15", "LLM16", "LLM17", "LLM18", "LLM19", "LLM20", "LLM21", "LLM22", "LLM23"]:
+    for _pid in ["LLM00", "LLM01", "LLM01H", "LLM01D", "LLM01E", "LLM01F", "LLM02", "LLM03", "LLM04H", "LLM05", "LLM06", "LLM07", "LLM08", "LLM09", "LLM10", "LLM11", "LLM12", "LLM13", "LLM14", "LLM15", "LLM16", "LLM17", "LLM18", "LLM19", "LLM20", "LLM21", "LLM22", "LLM23", "LLM24"]:
         _yureeka_patch_tracker_ensure_head_v1(_pid, {})
 except Exception:
     pass
