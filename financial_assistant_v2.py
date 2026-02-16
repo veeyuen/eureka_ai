@@ -3378,7 +3378,7 @@ def _yureeka__decode_patch_tracker_v1(blob: str) -> list:
 
 _PATCH_TRACKER_CANONICAL_ENTRIES_V1 = _yureeka__decode_patch_tracker_v1(_PATCH_TRACKER_B64_ZLIB_V1)
 
-[MOD:PATCH_TRACKER]
+#[MOD:PATCH_TRACKER]
 # Patch tracker registry (latest-first).
 # Streamlit reruns start from a clean module state, so we can bind directly.
 try:
