@@ -24539,7 +24539,7 @@ def render_native_comparison(baseline: Dict, compare: Dict):
 #     * set unit_mismatch flag / change_type to "unit_mismatch" where possible
 # - Purely additive; does not refactor upstream pipelines.
 
-[MOD:UI_APP]
+#[MOD:UI_APP]
 def main():
     st.set_page_config(
         page_title="Yureeka Market Report",
