@@ -166,11 +166,11 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "LLM26"
+_YUREEKA_CODE_VERSION_LOCK = "LLM27"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 # REFACTOR206: Release Candidate freeze (no pipeline behavior change).
 YUREEKA_RELEASE_CANDIDATE_V1 = False
-YUREEKA_RELEASE_TAG_V1 = "LLM26"
+YUREEKA_RELEASE_TAG_V1 = "LLM27"
 YUREEKA_FREEZE_MODE_V1 = True
 # Small default regression set (optional; used for manual triad smoke tests).
 YUREEKA_REGRESSION_QUESTIONS_V1 = [
@@ -268,7 +268,7 @@ def _yureeka_llm_flag_effective_v1(flag_name: str) -> Tuple[bool, str]:
     try:
         _st0 = globals().get('st')
         _ss0 = getattr(_st0, 'session_state', None) if _st0 is not None else None
-        if isinstance(_ss0, dict) and _fname:
+        if (_ss0 is not None) and _fname and hasattr(_ss0, 'get'):
             for root in ('YUREEKA_LLM_FLAGS', 'YUREEKA_FLAGS', 'LLM_FLAGS'):
                 try:
                     sub = _ss0.get(root)
@@ -1698,6 +1698,47 @@ def _llm01_evidence_policy_snapshot_v1() -> dict:
 
     src_thr = "code"
     src_tie = "code"
+
+    # 0) Streamlit UI/session_state overrides (highest precedence)
+    try:
+        _st0 = globals().get('st')
+        _ss0 = getattr(_st0, 'session_state', None) if _st0 is not None else None
+        if (_ss0 is not None) and hasattr(_ss0, 'get'):
+            pol = _ss0.get('YUREEKA_LLM_POLICY')
+            if isinstance(pol, dict):
+                vv = _yureeka__parse_floatish_v1(pol.get('LLM01_EVIDENCE_CONFIDENCE_THRESHOLD'))
+                if vv is not None:
+                    thr = float(vv)
+                    src_thr = 'ui:YUREEKA_LLM_POLICY.LLM01_EVIDENCE_CONFIDENCE_THRESHOLD'
+                vv = _yureeka__parse_floatish_v1(pol.get('LLM01_EVIDENCE_SCORE_TIE_DELTA'))
+                if vv is not None:
+                    tie = float(vv)
+                    src_tie = 'ui:YUREEKA_LLM_POLICY.LLM01_EVIDENCE_SCORE_TIE_DELTA'
+    except Exception:
+        pass
+
+    # 1) Streamlit secrets overrides
+    try:
+        _st1 = globals().get('st')
+        _secrets = getattr(_st1, 'secrets', None) if _st1 is not None else None
+        if _secrets is not None:
+            for root in ('YUREEKA_LLM_POLICY', 'YUREEKA_POLICY', 'LLM_POLICY'):
+                try:
+                    sub = _secrets.get(root)  # type: ignore[attr-defined]
+                    if isinstance(sub, dict):
+                        vv = _yureeka__parse_floatish_v1(sub.get('LLM01_EVIDENCE_CONFIDENCE_THRESHOLD'))
+                        if vv is not None and src_thr == 'code':
+                            thr = float(vv)
+                            src_thr = f"secrets:{root}.LLM01_EVIDENCE_CONFIDENCE_THRESHOLD"
+                        vv = _yureeka__parse_floatish_v1(sub.get('LLM01_EVIDENCE_SCORE_TIE_DELTA'))
+                        if vv is not None and src_tie == 'code':
+                            tie = float(vv)
+                            src_tie = f"secrets:{root}.LLM01_EVIDENCE_SCORE_TIE_DELTA"
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
 
     # Environment overrides (best-effort)
     try:
@@ -25120,7 +25161,58 @@ def main():
                 help="When ON, the sidecar may rank candidate evidence snippets. Metric winners/values remain deterministic."
             )
 
+
+
+            # LLM01 evidence-snippet assist acceptance policy (UI controls; defaults preserve baseline)
+            try:
+                _ss = st.session_state
+                if not isinstance(_ss.get("YUREEKA_LLM_POLICY"), dict):
+                    _ss["YUREEKA_LLM_POLICY"] = {}
+                _llm_ui_policy = _ss.get("YUREEKA_LLM_POLICY") or {}
+            except Exception:
+                _llm_ui_policy = {}
+
+            def _llm_ui_slider_float(key: str, label: str, min_v: float, max_v: float, step_v: float, default_v: float, help: str = "") -> None:
+                try:
+                    cur = _llm_ui_policy.get(key, default_v)
+                    try:
+                        cur_f = float(cur)
+                    except Exception:
+                        cur_f = float(default_v)
+                    val = st.slider(label, min_value=float(min_v), max_value=float(max_v), value=float(cur_f), step=float(step_v), key=f"ui_llmpol_{key}", help=help)
+                    _llm_ui_policy[key] = float(val)
+                except Exception:
+                    pass
+
             with st.expander("Advanced LLM flags", expanded=False):
+
+
+                st.caption("LLM01 evidence assist policy (controls acceptance, not metric winners).")
+                _llm_ui_checkbox(
+                    "LLM01_EVIDENCE_FORCE_CALL",
+                    "Force LLM rank call (debug only)",
+                    default=False,
+                    help="When ON, the LLM rank call runs even without a deterministic tie-set. Proposal is still accepted only on ties unless confidence-gated agreement is detected."
+                )
+                _llm_ui_slider_float(
+                    "LLM01_EVIDENCE_CONFIDENCE_THRESHOLD",
+                    "LLM01 confidence threshold (accept ≥)",
+                    min_v=0.0,
+                    max_v=1.0,
+                    step_v=0.05,
+                    default_v=float(globals().get("LLM01_EVIDENCE_CONFIDENCE_THRESHOLD") or 0.75),
+                    help="Higher = more conservative acceptance of the LLM proposal."
+                )
+                _llm_ui_slider_float(
+                    "LLM01_EVIDENCE_SCORE_TIE_DELTA",
+                    "LLM01 tie delta (defines ambiguity set)",
+                    min_v=0.05,
+                    max_v=12.0,
+                    step_v=0.25,
+                    default_v=float(globals().get("LLM01_EVIDENCE_SCORE_TIE_DELTA") or 2.5),
+                    help="Larger = more windows treated as a tie-set; makes it easier to see LLM assist in action without changing metric values."
+                )
+
                 _llm_ui_checkbox("ENABLE_LLM_SOURCE_CLUSTERING", "Enable LLM source clustering", default=False, help="Experimental.")
                 _llm_ui_checkbox("ENABLE_LLM_QUERY_FRAME", "Enable LLM query framing", default=False, help="Experimental; may change search terms.")
                 _llm_ui_checkbox("ENABLE_LLM_QUERY_STRUCTURE_FALLBACK", "Enable LLM query-structure fallback (legacy)", default=False, help="OFF by default. When ON, low-confidence query structure may be refined by the sidecar (confidence-gated); may change retrieval terms.")
@@ -31070,11 +31162,21 @@ except Exception:
 
 
 
+# LLM27: patch tracker overlay (fix Streamlit session_state override for LLM flags + add UI policy knobs)
+try:
+    if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "LLM27" for e in PATCH_TRACKER_V1):
+        PATCH_TRACKER_V1.insert(0, {"patch_id": "LLM27", "scope": "llm-sidecar", "summary": "Fix LLM flag effective resolution to work with Streamlit SessionStateProxy (ui overrides now apply). Add sidebar controls for LLM01 evidence assist policy (confidence threshold, tie delta, force-call). Defaults remain OFF / conservative; no winner/value changes unless user explicitly enables.", "risk": "low"})
+except Exception:
+    pass
+
+
+
+
 
 
 # LLM10_PATCH_TRACKER_REORDER_V1: move known patch ids to the front in descending order (best-effort)
 try:
-    _order = ["LLM00", "LLM01", "LLM01H", "LLM01D", "LLM01E", "LLM01F", "LLM02", "LLM03", "LLM04H", "LLM05", "LLM06", "LLM07", "LLM08", "LLM09", "LLM10", "LLM11", "LLM12", "LLM13", "LLM14", "LLM15", "LLM16", "LLM17", "LLM18", "LLM19", "LLM20", "LLM21", "LLM22", "LLM23", "LLM24", "LLM25"]
+    _order = ["LLM00", "LLM01", "LLM01H", "LLM01D", "LLM01E", "LLM01F", "LLM02", "LLM03", "LLM04H", "LLM05", "LLM06", "LLM07", "LLM08", "LLM09", "LLM10", "LLM11", "LLM12", "LLM13", "LLM14", "LLM15", "LLM16", "LLM17", "LLM18", "LLM19", "LLM20", "LLM21", "LLM22", "LLM23", "LLM24", "LLM25", "LLM26", "LLM27"]
     # Always ensure the current stamped version ends up as the tracker head (append last).
     try:
         _cv = str(globals().get("_YUREEKA_CODE_VERSION_LOCK") or globals().get("CODE_VERSION") or "").strip()
