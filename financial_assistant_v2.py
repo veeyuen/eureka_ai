@@ -161,7 +161,7 @@ from datetime import datetime, timedelta, timezone
 from bs4 import BeautifulSoup
 from pydantic import BaseModel, Field, ValidationError, ConfigDict
 
-[MOD:VERSION_STAMP]
+#[MOD:VERSION_STAMP]
 # VERSION STAMP (LOCKED)
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
@@ -181,7 +181,7 @@ YUREEKA_REGRESSION_QUESTIONS_V1 = [
     "what is the CAGR of global EV chargers from 2026 to 2040?",
 ]
 
-[MOD:LLM_SIDECAR]
+#[MOD:LLM_SIDECAR]
 # === LLM SIDECAR (LLM01) ======================================================
 # Hybrid NLP/LLM "sidecar assist" layer scaffolding.
 # Design rule: LLM assists; deterministic rules decide.
