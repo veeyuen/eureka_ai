@@ -166,11 +166,11 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "LLM27"
+_YUREEKA_CODE_VERSION_LOCK = "LLM28"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 # REFACTOR206: Release Candidate freeze (no pipeline behavior change).
 YUREEKA_RELEASE_CANDIDATE_V1 = False
-YUREEKA_RELEASE_TAG_V1 = "LLM27"
+YUREEKA_RELEASE_TAG_V1 = "LLM28"
 YUREEKA_FREEZE_MODE_V1 = True
 # Small default regression set (optional; used for manual triad smoke tests).
 YUREEKA_REGRESSION_QUESTIONS_V1 = [
@@ -251,59 +251,82 @@ def _yureeka__parse_floatish_v1(v: Any) -> Optional[float]:
 
 
 def _yureeka_llm_flag_effective_v1(flag_name: str) -> Tuple[bool, str]:
-    """Resolve effective flag value with optional secrets/env override.
+    """Resolve effective flag value with optional UI/secrets/env override.
 
     Precedence (highest → lowest):
-      1) Streamlit secrets (if present):
-         - Direct: st.secrets[FLAG_NAME]
-         - Nested: st.secrets['YUREEKA_LLM_FLAGS'][FLAG_NAME] (also supports 'YUREEKA_FLAGS' / 'LLM_FLAGS')
+      0) Streamlit session_state override (if present) under:
+         - st.session_state['YUREEKA_LLM_FLAGS'][FLAG_NAME]
+         - st.session_state['YUREEKA_FLAGS'][FLAG_NAME]
+         - st.session_state['LLM_FLAGS'][FLAG_NAME]
+      1) Streamlit secrets override (if present), supports:
+         - st.secrets[FLAG_NAME]
+         - st.secrets['general'][FLAG_NAME] (common Streamlit pattern)
+         - st.secrets['YUREEKA_LLM_FLAGS'][FLAG_NAME] (also supports 'YUREEKA_FLAGS' / 'LLM_FLAGS')
       2) Environment variable: YUREEKA_<FLAG_NAME>
       3) Code default: globals()[FLAG_NAME]
 
-    This improves operator ergonomics without changing REFACTOR206 default behavior
-    (all flags remain OFF unless explicitly enabled).
+    Design note: Streamlit's session_state and secrets sub-sections are often
+    "mapping-like" proxies rather than plain dicts. We therefore treat any
+    object with a working .get(...) as eligible.
     """
     _fname = str(flag_name or '').strip()
+    _sentinel = object()
+
+    def _get_map_val(mobj: Any, key: str):
+        try:
+            if mobj is None or not key:
+                return _sentinel
+            getf = getattr(mobj, "get", None)
+            if not callable(getf):
+                return _sentinel
+            return getf(key, _sentinel)
+        except Exception:
+            return _sentinel
+
     # 0) Streamlit UI/session_state override (highest precedence)
     try:
         _st0 = globals().get('st')
         _ss0 = getattr(_st0, 'session_state', None) if _st0 is not None else None
-        if (_ss0 is not None) and _fname and hasattr(_ss0, 'get'):
+        if _ss0 is not None and _fname:
             for root in ('YUREEKA_LLM_FLAGS', 'YUREEKA_FLAGS', 'LLM_FLAGS'):
                 try:
-                    sub = _ss0.get(root)
-                    if isinstance(sub, dict) and _fname in sub:
-                        pv = _yureeka__parse_boolish_v1(sub.get(_fname))
-                        if pv is not None:
-                            return (bool(pv), f"ui:{root}.{_fname}")
+                    sub = _get_map_val(_ss0, root)
+                    if sub is _sentinel:
+                        continue
+                    raw = _get_map_val(sub, _fname)
+                    if raw is _sentinel:
+                        continue
+                    pv = _yureeka__parse_boolish_v1(raw)
+                    if pv is not None:
+                        return (bool(pv), f"ui:{root}.{_fname}")
                 except Exception:
-                    pass
+                    continue
     except Exception:
         pass
 
+    # 1) Streamlit secrets override (safe: we only record which key provided the value).
     try:
-        # 1) Streamlit secrets override (safe: we only record which key provided the value).
-        try:
-            _st = globals().get('st')
-            _secrets = getattr(_st, 'secrets', None) if _st is not None else None
-        except Exception:
-            _secrets = None
-
+        _st = globals().get('st')
+        _secrets = getattr(_st, 'secrets', None) if _st is not None else None
         if _secrets is not None and _fname:
-            # Nested preferred locations
-            for root in ('YUREEKA_LLM_FLAGS', 'YUREEKA_FLAGS', 'LLM_FLAGS'):
+            # Nested locations (include [general] / [GENERAL])
+            for root in ('YUREEKA_LLM_FLAGS', 'YUREEKA_FLAGS', 'LLM_FLAGS', 'general', 'GENERAL'):
                 try:
-                    sub = _secrets.get(root)  # type: ignore[attr-defined]
-                    if isinstance(sub, dict) and _fname in sub:
-                        pv = _yureeka__parse_boolish_v1(sub.get(_fname))
-                        if pv is not None:
-                            return (bool(pv), f"secrets:{root}.{_fname}")
+                    sub = _get_map_val(_secrets, root)
+                    if sub is _sentinel:
+                        continue
+                    raw = _get_map_val(sub, _fname)
+                    if raw is _sentinel:
+                        continue
+                    pv = _yureeka__parse_boolish_v1(raw)
+                    if pv is not None:
+                        return (bool(pv), f"secrets:{root}.{_fname}")
                 except Exception:
-                    pass
+                    continue
             # Direct key
             try:
-                raw = _secrets.get(_fname)  # type: ignore[attr-defined]
-                if raw is not None:
+                raw = _get_map_val(_secrets, _fname)
+                if raw is not _sentinel:
                     pv = _yureeka__parse_boolish_v1(raw)
                     if pv is not None:
                         return (bool(pv), f"secrets:{_fname}")
@@ -1705,7 +1728,7 @@ def _llm01_evidence_policy_snapshot_v1() -> dict:
         _ss0 = getattr(_st0, 'session_state', None) if _st0 is not None else None
         if (_ss0 is not None) and hasattr(_ss0, 'get'):
             pol = _ss0.get('YUREEKA_LLM_POLICY')
-            if isinstance(pol, dict):
+            if (pol is not None) and hasattr(pol, 'get'):
                 vv = _yureeka__parse_floatish_v1(pol.get('LLM01_EVIDENCE_CONFIDENCE_THRESHOLD'))
                 if vv is not None:
                     thr = float(vv)
@@ -1725,7 +1748,7 @@ def _llm01_evidence_policy_snapshot_v1() -> dict:
             for root in ('YUREEKA_LLM_POLICY', 'YUREEKA_POLICY', 'LLM_POLICY'):
                 try:
                     sub = _secrets.get(root)  # type: ignore[attr-defined]
-                    if isinstance(sub, dict):
+                    if (sub is not None) and hasattr(sub, 'get'):
                         vv = _yureeka__parse_floatish_v1(sub.get('LLM01_EVIDENCE_CONFIDENCE_THRESHOLD'))
                         if vv is not None and src_thr == 'code':
                             thr = float(vv)
@@ -31166,6 +31189,9 @@ except Exception:
 try:
     if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "LLM27" for e in PATCH_TRACKER_V1):
         PATCH_TRACKER_V1.insert(0, {"patch_id": "LLM27", "scope": "llm-sidecar", "summary": "Fix LLM flag effective resolution to work with Streamlit SessionStateProxy (ui overrides now apply). Add sidebar controls for LLM01 evidence assist policy (confidence threshold, tie delta, force-call). Defaults remain OFF / conservative; no winner/value changes unless user explicitly enables.", "risk": "low"})
+    if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "LLM28" for e in PATCH_TRACKER_V1):
+        PATCH_TRACKER_V1.insert(0, {"patch_id": "LLM28", "scope": "llm-sidecar", "summary": "Fix Streamlit secrets flag/policy resolution to accept mapping-like sections (e.g., st.secrets[general]) and not require plain dicts; ENABLE_LLM_EVIDENCE_SNIPPETS in secrets now takes effect. No behavior changes unless flags enabled.", "risk": "low"})
+
 except Exception:
     pass
 
@@ -31176,7 +31202,7 @@ except Exception:
 
 # LLM10_PATCH_TRACKER_REORDER_V1: move known patch ids to the front in descending order (best-effort)
 try:
-    _order = ["LLM00", "LLM01", "LLM01H", "LLM01D", "LLM01E", "LLM01F", "LLM02", "LLM03", "LLM04H", "LLM05", "LLM06", "LLM07", "LLM08", "LLM09", "LLM10", "LLM11", "LLM12", "LLM13", "LLM14", "LLM15", "LLM16", "LLM17", "LLM18", "LLM19", "LLM20", "LLM21", "LLM22", "LLM23", "LLM24", "LLM25", "LLM26", "LLM27"]
+    _order = ["LLM00", "LLM01", "LLM01H", "LLM01D", "LLM01E", "LLM01F", "LLM02", "LLM03", "LLM04H", "LLM05", "LLM06", "LLM07", "LLM08", "LLM09", "LLM10", "LLM11", "LLM12", "LLM13", "LLM14", "LLM15", "LLM16", "LLM17", "LLM18", "LLM19", "LLM20", "LLM21", "LLM22", "LLM23", "LLM24", "LLM25", "LLM26", "LLM27", "LLM28"]
     # Always ensure the current stamped version ends up as the tracker head (append last).
     try:
         _cv = str(globals().get("_YUREEKA_CODE_VERSION_LOCK") or globals().get("CODE_VERSION") or "").strip()
