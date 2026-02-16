@@ -166,11 +166,11 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "LLM25"
+_YUREEKA_CODE_VERSION_LOCK = "LLM26"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 # REFACTOR206: Release Candidate freeze (no pipeline behavior change).
 YUREEKA_RELEASE_CANDIDATE_V1 = False
-YUREEKA_RELEASE_TAG_V1 = "LLM25"
+YUREEKA_RELEASE_TAG_V1 = "LLM26"
 YUREEKA_FREEZE_MODE_V1 = True
 # Small default regression set (optional; used for manual triad smoke tests).
 YUREEKA_REGRESSION_QUESTIONS_V1 = [
@@ -2492,22 +2492,6 @@ def _llm01_llm_rank_windows_v1(
             diag["flag_source"] = str(_flag_src)[:80]
         except Exception:
             pass
-        try:
-            if isinstance(out_debug, dict):
-                _llm01_update_llm_diag_agg_v1(out_debug, {"ok": False, "status": None, "reason": "flag_off", "model": str(model)}, cache_hit=False)
-                # Always emit a minimal attempt record for grep-based debugging (bounded list).
-                out_debug.setdefault("llm01_evidence_snippet_call_v1", [])
-                if isinstance(out_debug.get("llm01_evidence_snippet_call_v1"), list) and len(out_debug["llm01_evidence_snippet_call_v1"]) < 12:
-                    out_debug["llm01_evidence_snippet_call_v1"].append({
-                        "url": str(url or "")[:160],
-                        "ok": False,
-                        "status": None,
-                        "reason": "flag_off",
-                        "flag_source": str(_flag_src)[:80],
-                        "model": str(model)[:80],
-                    })
-        except Exception:
-            pass
         return (None, None, diag)
 
     # Prepare minimal prompt payload
@@ -2934,7 +2918,10 @@ def _llm01_attach_evidence_snippets_to_pmc_v1(
         except Exception:
             _tie_ok = False
 
-        if _llm_flag_on and (not _tie_ok) and (not _force_call):
+        if not _llm_flag_on:
+            # Feature flag OFF: do not call the LLM rank function (avoids flag_off attempt noise).
+            llm_diag = {"reason": "flag_off"}
+        elif (not _tie_ok) and (not _force_call):
             # Skip the LLM call entirely; keep deterministic winner.
             llm_diag = {"reason": "pre_gate_no_tie"}
             try:
@@ -31074,12 +31061,31 @@ except Exception:
     pass
 
 
+# LLM26: patch tracker overlay (flag-off LLM noise fix + head normalization)
+try:
+    if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "LLM26" for e in PATCH_TRACKER_V1):
+        PATCH_TRACKER_V1.insert(0, {"patch_id": "LLM26", "scope": "llm-sidecar", "summary": "LLM01 evidence snippets: when ENABLE_LLM_EVIDENCE_SNIPPETS is OFF, hard-gate rank calls so no flag_off attempt noise is recorded (llm01_llm_diag_agg_v1 attempts stays 0). Patch-tracker head reorder now always includes the current CODE_VERSION automatically. No winner/value changes; assist flags remain OFF by default.", "risk": "low"})
+except Exception:
+    pass
+
+
 
 
 
 # LLM10_PATCH_TRACKER_REORDER_V1: move known patch ids to the front in descending order (best-effort)
 try:
-    for _pid in ["LLM00", "LLM01", "LLM01H", "LLM01D", "LLM01E", "LLM01F", "LLM02", "LLM03", "LLM04H", "LLM05", "LLM06", "LLM07", "LLM08", "LLM09", "LLM10", "LLM11", "LLM12", "LLM13", "LLM14", "LLM15", "LLM16", "LLM17", "LLM18", "LLM19", "LLM20", "LLM21", "LLM22", "LLM23", "LLM24"]:
+    _order = ["LLM00", "LLM01", "LLM01H", "LLM01D", "LLM01E", "LLM01F", "LLM02", "LLM03", "LLM04H", "LLM05", "LLM06", "LLM07", "LLM08", "LLM09", "LLM10", "LLM11", "LLM12", "LLM13", "LLM14", "LLM15", "LLM16", "LLM17", "LLM18", "LLM19", "LLM20", "LLM21", "LLM22", "LLM23", "LLM24", "LLM25"]
+    # Always ensure the current stamped version ends up as the tracker head (append last).
+    try:
+        _cv = str(globals().get("_YUREEKA_CODE_VERSION_LOCK") or globals().get("CODE_VERSION") or "").strip()
+        if _cv and _cv not in _order:
+            _order.append(_cv)
+        elif _cv and _order and _order[-1] != _cv:
+            # Move to end so the final ensure_head sets head==_cv
+            _order = [p for p in _order if p != _cv] + [_cv]
+    except Exception:
+        pass
+    for _pid in _order:
         _yureeka_patch_tracker_ensure_head_v1(_pid, {})
 except Exception:
     pass
