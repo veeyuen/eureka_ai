@@ -2,6 +2,35 @@
 # Streamlit-safe single-file build (refactor series).
 # NOTE: Long historical banner comments removed in REFACTOR159 (no behavior change).
 
+# =============================================================================
+# MODULE INDEX (v1) — single-file today, easy split tomorrow
+#
+# This file is intentionally structured as "virtual modules" to enable clean
+# modularization once the NLP/LLM roadmap reaches end-state.
+#
+# Conventions:
+# - Each module is a contiguous block marked by a banner and a [MOD:...] anchor.
+# - Modules should avoid import-time side effects; runtime init happens in main().
+# - Flags/config are resolved via helpers (prefer "read once, pass down").
+# - All LLM calls must go through the sidecar boundary (cache + strict JSON + health).
+#
+# Suggested future split (approx):
+#   yureeka/config_flags.py            [MOD:CONFIG_FLAGS]
+#   yureeka/meta/versioning.py         [MOD:VERSION_STAMP]
+#   yureeka/meta/patch_tracker.py      [MOD:PATCH_TRACKER]
+#   yureeka/llm/sidecar.py             [MOD:LLM_SIDECAR]
+#   yureeka/llm/evidence_snippets.py   [MOD:LLM01_EVIDENCE]
+#   yureeka/llm/query_structure.py     [MOD:LLM00_QSTRUCT]
+#   yureeka/core/pipeline.py           [MOD:PIPELINE_CORE]
+#   yureeka/core/diffing.py            [MOD:DIFF_CORE]
+#   yureeka/ui/app.py                  [MOD:UI_APP]
+#
+# Search anchors:
+#   [MOD:CONFIG_FLAGS] [MOD:VERSION_STAMP] [MOD:PATCH_TRACKER]
+#   [MOD:LLM_SIDECAR] [MOD:LLM01_EVIDENCE] [MOD:LLM00_QSTRUCT]
+#   [MOD:PIPELINE_CORE] [MOD:DIFF_CORE] [MOD:UI_APP]
+# =============================================================================
+
 import io
 import os
 import re
@@ -132,15 +161,16 @@ from datetime import datetime, timedelta, timezone
 from bs4 import BeautifulSoup
 from pydantic import BaseModel, Field, ValidationError, ConfigDict
 
+[MOD:VERSION_STAMP]
 # VERSION STAMP (LOCKED)
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "LLM20"
+_YUREEKA_CODE_VERSION_LOCK = "LLM23"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 # REFACTOR206: Release Candidate freeze (no pipeline behavior change).
 YUREEKA_RELEASE_CANDIDATE_V1 = False
-YUREEKA_RELEASE_TAG_V1 = "LLM18"
+YUREEKA_RELEASE_TAG_V1 = "LLM23"
 YUREEKA_FREEZE_MODE_V1 = True
 # Small default regression set (optional; used for manual triad smoke tests).
 YUREEKA_REGRESSION_QUESTIONS_V1 = [
@@ -151,6 +181,7 @@ YUREEKA_REGRESSION_QUESTIONS_V1 = [
     "what is the CAGR of global EV chargers from 2026 to 2040?",
 ]
 
+[MOD:LLM_SIDECAR]
 # === LLM SIDECAR (LLM01) ======================================================
 # Hybrid NLP/LLM "sidecar assist" layer scaffolding.
 # Design rule: LLM assists; deterministic rules decide.
@@ -159,6 +190,7 @@ YUREEKA_REGRESSION_QUESTIONS_V1 = [
 ENABLE_LLM_EVIDENCE_SNIPPETS = False
 ENABLE_LLM_SOURCE_CLUSTERING = False
 ENABLE_LLM_QUERY_FRAME = False
+ENABLE_LLM_QUERY_STRUCTURE_FALLBACK = False
 ENABLE_LLM_ANOMALY_FLAGS = False
 
 
@@ -179,6 +211,10 @@ ENABLE_LLM_SMOKE_TEST = False
 LLM01_EVIDENCE_CONFIDENCE_THRESHOLD = 0.75
 LLM01_EVIDENCE_SCORE_TIE_DELTA = 2.5
 LLM01_EVIDENCE_FORCE_CALL = False  # If True, call LLM rank even without a tie-set (proposal still accepted only on ties).
+
+# LLM22: Query-structure LLM fallback (opt-in) acceptance policy.
+# Env override (optional): YUREEKA_LLM00_QSTRUCT_CONFIDENCE_THRESHOLD
+LLM00_QUERY_STRUCTURE_CONFIDENCE_THRESHOLD = 0.75
 
 
 def _yureeka__parse_boolish_v1(v: Any) -> Optional[bool]:
@@ -309,6 +345,7 @@ def _yureeka_llm_flags_snapshot_v1() -> dict:
         "ENABLE_LLM_EVIDENCE_SNIPPETS",
         "ENABLE_LLM_SOURCE_CLUSTERING",
         "ENABLE_LLM_QUERY_FRAME",
+        "ENABLE_LLM_QUERY_STRUCTURE_FALLBACK",
         "ENABLE_LLM_ANOMALY_FLAGS",
         "ENABLE_LLM_DATASET_LOGGING",
         "LLM_BYPASS_CACHE",
@@ -3341,6 +3378,7 @@ def _yureeka__decode_patch_tracker_v1(blob: str) -> list:
 
 _PATCH_TRACKER_CANONICAL_ENTRIES_V1 = _yureeka__decode_patch_tracker_v1(_PATCH_TRACKER_B64_ZLIB_V1)
 
+[MOD:PATCH_TRACKER]
 # Patch tracker registry (latest-first).
 # Streamlit reruns start from a clean module state, so we can bind directly.
 try:
@@ -12847,7 +12885,7 @@ def _embedding_category_vote(query: str) -> Dict[str, Any]:
     conf = max(0.0, min(best_sim / 0.35, 1.0))  # 0.35 sim ~= "high"
     return {"category": best_cat, "confidence": round(conf, 2), "method": "tfidf"}
 
-def _llm_fallback_query_structure(query: str, web_context: Optional[Dict] = None) -> Optional[Dict[str, Any]]:
+def _llm_fallback_query_structure(query: str, web_context: Optional[Dict] = None, out_debug: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
     """
     Last resort: ask LLM to output ONLY a small JSON query-structure object.
     Guardrail: do NOT let the LLM invent extra side questions unless the user explicitly enumerated them.
@@ -12884,18 +12922,94 @@ def _llm_fallback_query_structure(query: str, web_context: Optional[Dict] = None
             f"Query: {q}"
         )
 
-        raw = query_perplexity_raw(prompt, max_tokens=250, timeout=30)
+        # LLM22: This fallback is opt-in. Even if the caller forgot to gate it, enforce here too.
+        _flag_on, _flag_src = _yureeka_llm_flag_effective_v1("ENABLE_LLM_QUERY_STRUCTURE_FALLBACK")
+        if not bool(_flag_on):
+            try:
+                if isinstance(out_debug, dict):
+                    out_debug["llm_fallback_reason"] = "flag_off"
+                    out_debug["llm_fallback_flag_source"] = str(_flag_src)[:80]
+            except Exception:
+                pass
+            return None
 
-        # Parse
-        if isinstance(raw, dict):
-            parsed = raw
+        # Prepare a strict JSON-only request via the same OpenAI-compatible sidecar path (Perplexity Sonar supported).
+        try:
+            model = os.environ.get("YUREEKA_LLM_MODEL") or os.environ.get("OPENAI_MODEL") or "gpt-4o-mini"
+        except Exception:
+            model = "gpt-4o-mini"
+
+        system_prompt = (
+            "Extract a query structure. Return ONLY valid JSON with keys:\n"
+            "  category: one of [country, industry, company, finance, market, unknown]\n"
+            "  category_confidence: number 0-1\n"
+            "  main: string (the main question/topic)\n"
+            "  side: array of strings (side questions)\n"
+            "No extra keys, no commentary."
+        )
+        input_payload = {"query": q}
+
+        # Deterministic cache key (replayable)
+        cache_key = ""
+        try:
+            q_hash = _yureeka_llm_text_hash_v1(q)
+            in_hash = _yureeka_llm_text_hash_v1(system_prompt + "\n" + q)
+            cache_key = get_llm_cache_key(str(model), "llm00_qstruct_v1", "qstruct_v1", in_hash, "", q_hash)
+        except Exception:
+            cache_key = ""
+
+        cached = None
+        if cache_key:
+            try:
+                cached = get_cached_llm_response(cache_key)
+            except Exception:
+                cached = None
+
+        call_diag = None
+        if isinstance(cached, dict) and cached:
+            parsed = cached
+            try:
+                if isinstance(out_debug, dict):
+                    out_debug["llm_fallback_cache_hit"] = True
+                    out_debug["llm_fallback_cache_key"] = str(cache_key)[:80]
+            except Exception:
+                pass
+            try:
+                _yureeka_llm_global_agg_update_v1("llm00_query_structure", {"ok": True, "status": None, "reason": "cache_hit", "model": str(model)}, cache_hit=True)
+            except Exception:
+                pass
         else:
-            if raw is None:
-                raw = ""
-            if not isinstance(raw, str):
-                raw = str(raw)
-            parsed = parse_json_safely(raw, "LLM Query Structure")
+            parsed, call_diag = _yureeka_call_openai_chat_json_v1(
+                model=str(model),
+                system_prompt=system_prompt,
+                user_payload=input_payload,
+                timeout_sec=30,
+                max_tokens=250,
+            )
+            try:
+                if isinstance(out_debug, dict):
+                    out_debug["llm_fallback_cache_hit"] = False
+                    out_debug["llm_fallback_cache_key"] = str(cache_key)[:80]
+                    if isinstance(call_diag, dict):
+                        out_debug["llm_fallback_call_diag"] = {
+                            "ok": bool(call_diag.get("ok")),
+                            "status": call_diag.get("status"),
+                            "reason": str(call_diag.get("reason") or "")[:80],
+                            "model": str(call_diag.get("model") or "")[:80],
+                        }
+            except Exception:
+                pass
+            try:
+                _yureeka_llm_global_agg_update_v1("llm00_query_structure", (call_diag if isinstance(call_diag, dict) else {"ok": False, "status": None, "reason": "no_diag", "model": str(model)}), cache_hit=False)
+            except Exception:
+                pass
+            if isinstance(parsed, dict) and parsed and cache_key:
+                try:
+                    cache_llm_response(cache_key, parsed)
+                except Exception:
+                    pass
 
+        # --- Parse / validate ---
         if not isinstance(parsed, dict) or parsed.get("main") is None:
             return None
 
@@ -12948,6 +13062,34 @@ def _llm_fallback_query_structure(query: str, web_context: Optional[Dict] = None
             "main": llm_main,
             "side": final_side,
         }
+        # LLM22: accept only if the model is confident (prevents low-confidence drift).
+        try:
+            _thr = _yureeka__parse_floatish_v1(os.environ.get("YUREEKA_LLM00_QSTRUCT_CONFIDENCE_THRESHOLD"))
+            if _thr is None:
+                _thr = float(globals().get("LLM00_QUERY_STRUCTURE_CONFIDENCE_THRESHOLD") or 0.75)
+            _conf = 0.0
+            try:
+                _conf = float(out.get("category_confidence") or 0.0)
+            except Exception:
+                _conf = 0.0
+            if _conf < float(_thr or 0.0):
+                try:
+                    if isinstance(out_debug, dict):
+                        out_debug["llm_fallback_reason"] = "low_confidence"
+                        out_debug["llm_fallback_confidence"] = _conf
+                        out_debug["llm_fallback_threshold"] = float(_thr)
+                except Exception:
+                    pass
+                return None
+            try:
+                if isinstance(out_debug, dict):
+                    out_debug["llm_fallback_confidence"] = _conf
+                    out_debug["llm_fallback_threshold"] = float(_thr)
+            except Exception:
+                pass
+        except Exception:
+            pass
+
         return out
 
     except Exception:
@@ -13016,10 +13158,24 @@ def extract_query_structure(query: str) -> Dict[str, Any]:
         category = emb_cat
         cat_conf = max(cat_conf, min(0.75, emb_conf))
 
-    # --- Layer 4: LLM fallback if still ambiguous ---
+    # --- Layer 4: Optional LLM fallback if still ambiguous (default OFF) ---
+    llm = None
     if cat_conf < 0.30:
-        llm = _llm_fallback_query_structure(q)
-        debug["llm_fallback_used"] = bool(llm)
+        _f_on, _f_src = _yureeka_llm_flag_effective_v1("ENABLE_LLM_QUERY_STRUCTURE_FALLBACK")
+        try:
+            debug["llm_fallback_allowed"] = bool(_f_on)
+            debug["llm_fallback_flag_source"] = str(_f_src)[:80]
+        except Exception:
+            pass
+        if not bool(_f_on):
+            try:
+                debug["llm_fallback_used"] = False
+                debug["llm_fallback_reason"] = "flag_off"
+            except Exception:
+                pass
+        else:
+            llm = _llm_fallback_query_structure(q, out_debug=debug)
+            debug["llm_fallback_used"] = bool(llm)
 
         if isinstance(llm, dict):
             category = llm.get("category", category) or category
@@ -19589,16 +19745,47 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                 except Exception:
                     pass
 
-            # Prefer Analysis-canonical rebuild (Phase 2B hard-wire) when present; else fall back to FIX16 schema-only rebuild
-            _fix41afc19_fn = globals().get("rebuild_metrics_from_snapshots_analysis_canonical_v1")
-            if callable(_fix41afc19_fn):
-                _fix41afc19_fn_name = "rebuild_metrics_from_snapshots_analysis_canonical_v1"
-            else:
-                _fix41afc19_fn = globals().get("rebuild_metrics_from_snapshots_schema_only_fix16")
-                if callable(_fix41afc19_fn):
-                    _fix41afc19_fn_name = "rebuild_metrics_from_snapshots_schema_only_fix16"
+
+            # Prefer FIX16 schema-only rebuild for non-injection runs to preserve frozen winner behavior;
+            # use analysis-canonical rebuild only when injection URLs are present (injected rows must force-win).
+            _fix41afc19_injection_present = False
+            try:
+                _inj_urls_probe = []
+                _inj_collector = globals().get("_refactor115_collect_injection_urls_v1")
+                if callable(_inj_collector):
+                    _inj_urls_probe = _inj_collector(output, web_context) or []
                 else:
-                    _fix41afc19_fn = None
+                    if isinstance(web_context, dict):
+                        _inj_urls_probe = web_context.get("injected_urls") or web_context.get("injected_url") or []
+                if isinstance(_inj_urls_probe, str):
+                    _inj_urls_probe = [_inj_urls_probe]
+                _fix41afc19_injection_present = bool(_inj_urls_probe)
+            except Exception:
+                _fix41afc19_injection_present = False
+
+            _fix41afc19_fn = None
+            _fix41afc19_fn_name = ""
+            _fn_schema = globals().get("rebuild_metrics_from_snapshots_schema_only_fix16")
+            _fn_analysis = globals().get("rebuild_metrics_from_snapshots_analysis_canonical_v1")
+
+            if _fix41afc19_injection_present:
+                # Injection run: allow analysis-canonical rebuild (supports injection force-win behavior)
+                if callable(_fn_analysis):
+                    _fix41afc19_fn = _fn_analysis
+                    _fix41afc19_fn_name = "rebuild_metrics_from_snapshots_analysis_canonical_v1"
+                elif callable(_fn_schema):
+                    _fix41afc19_fn = _fn_schema
+                    _fix41afc19_fn_name = "rebuild_metrics_from_snapshots_schema_only_fix16"
+            else:
+                # Non-injection run: prefer schema-only rebuild (FIX16) to preserve REFACTOR206 frozen selection
+                if callable(_fn_schema):
+                    _fix41afc19_fn = _fn_schema
+                    _fix41afc19_fn_name = "rebuild_metrics_from_snapshots_schema_only_fix16"
+                elif callable(_fn_analysis):
+                    _fix41afc19_fn = _fn_analysis
+                    _fix41afc19_fn_name = "rebuild_metrics_from_snapshots_analysis_canonical_v1"
+
+
 
             if callable(_fix41afc19_fn) and _fix41afc19_pool is not None:
                 try:
@@ -19611,7 +19798,7 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
                     current_metrics = dict(_fix41afc19_rebuilt)
                     _fix41afc19_applied = True
                     _fix41afc19_rebuilt_count = len(current_metrics)
-                    _fix41afc19_reason = "override_current_metrics_with_fix16_anchor_rebuild"
+                    _fix41afc19_reason = "override_current_metrics_with_rebuild:" + str(_fix41afc19_fn_name or "") + "|injection_present=" + str(bool(_fix41afc19_injection_present))
                 else:
                     _fix41afc19_reason = (_fix41afc19_reason or "") + "|rebuilt_empty_or_non_dict"
     except Exception:
@@ -19625,6 +19812,7 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
             output["debug"]["fix41afc19"]["reason"] = locals().get("_fix41afc19_reason") or ""
             output["debug"]["fix41afc19"]["fn"] = locals().get("_fix41afc19_fn_name") or ""
             output["debug"]["fix41afc19"]["rebuilt_count"] = int(locals().get("_fix41afc19_rebuilt_count") or 0)
+            output["debug"]["fix41afc19"]["injection_present"] = bool(locals().get("_fix41afc19_injection_present"))
             # REFACTOR126: surface injection-priority beacon from rebuild (if present)
             try:
                 if isinstance(web_context, dict):
@@ -24351,6 +24539,7 @@ def render_native_comparison(baseline: Dict, compare: Dict):
 #     * set unit_mismatch flag / change_type to "unit_mismatch" where possible
 # - Purely additive; does not refactor upstream pipelines.
 
+[MOD:UI_APP]
 def main():
     st.set_page_config(
         page_title="Yureeka Market Report",
@@ -24857,6 +25046,7 @@ def main():
             with st.expander("Advanced LLM flags", expanded=False):
                 _llm_ui_checkbox("ENABLE_LLM_SOURCE_CLUSTERING", "Enable LLM source clustering", default=False, help="Experimental.")
                 _llm_ui_checkbox("ENABLE_LLM_QUERY_FRAME", "Enable LLM query framing", default=False, help="Experimental; may change search terms.")
+                _llm_ui_checkbox("ENABLE_LLM_QUERY_STRUCTURE_FALLBACK", "Enable LLM query-structure fallback (legacy)", default=False, help="OFF by default. When ON, low-confidence query structure may be refined by the sidecar (confidence-gated); may change retrieval terms.")
                 _llm_ui_checkbox("ENABLE_LLM_ANOMALY_FLAGS", "Enable LLM anomaly flags", default=False, help="Experimental.")
                 _llm_ui_checkbox("ENABLE_LLM_DATASET_LOGGING", "Enable LLM dataset logging", default=False, help="Experimental; may write small local logs.")
 
@@ -30752,9 +30942,36 @@ except Exception:
     pass
 
 
+# LLM21: patch tracker overlay (avoid touching the compressed canonical blob)
+try:
+    if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "LLM21" for e in PATCH_TRACKER_V1):
+        PATCH_TRACKER_V1.insert(0, {"patch_id": "LLM21", "scope": "llm-sidecar", "summary": "LLM21: Fix FIX41AFC19 current_metrics override drift by preferring FIX16 schema-only rebuild on non-injection evolution runs, while retaining analysis-canonical rebuild only when injection URLs are present (injection force-win contract). Restores prod stability; no LLM winner/value changes.", "risk": "low"})
+except Exception:
+    pass
+
+
+
+
+
+# LLM22: patch tracker overlay (gate hidden query-structure fallback behind explicit flag)
+try:
+    if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "LLM22" for e in PATCH_TRACKER_V1):
+        PATCH_TRACKER_V1.insert(0, {"patch_id": "LLM22", "scope": "llm-sidecar", "summary": "LLM22: Gate the legacy query-structure LLM fallback behind ENABLE_LLM_QUERY_STRUCTURE_FALLBACK (default OFF) so no hidden LLM calls occur when assist flags are disabled. Route the fallback through the same OpenAI-compatible strict-JSON sidecar call path (Perplexity supported), add replayable caching + run-scope health aggregation, and enforce a confidence threshold before accepting the proposal. Prevents unexpected winner/value drift caused by untracked query-structure LLM usage.", "risk": "low"})
+except Exception:
+    pass
+
+
+# LLM23: patch tracker overlay (module index header + modularization seams)
+try:
+    if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "LLM23" for e in PATCH_TRACKER_V1):
+        PATCH_TRACKER_V1.insert(0, {"patch_id": "LLM23", "scope": "llm-sidecar", "summary": "Add a Module Index header and [MOD:*] anchors to enforce clean modular seams (single-file today, easy split later). Bump version stamp + release tag to LLM23; patch tracker updated accordingly. No pipeline behavior changes.", "risk": "low"})
+except Exception:
+    pass
+
+
 # LLM10_PATCH_TRACKER_REORDER_V1: move known patch ids to the front in descending order (best-effort)
 try:
-    for _pid in ["LLM00", "LLM01", "LLM01H", "LLM01D", "LLM01E", "LLM01F", "LLM02", "LLM03", "LLM04H", "LLM05", "LLM06", "LLM07", "LLM08", "LLM09", "LLM10", "LLM11", "LLM12", "LLM13", "LLM14", "LLM15", "LLM16", "LLM17", "LLM18", "LLM19"]:
+    for _pid in ["LLM00", "LLM01", "LLM01H", "LLM01D", "LLM01E", "LLM01F", "LLM02", "LLM03", "LLM04H", "LLM05", "LLM06", "LLM07", "LLM08", "LLM09", "LLM10", "LLM11", "LLM12", "LLM13", "LLM14", "LLM15", "LLM16", "LLM17", "LLM18", "LLM19", "LLM20", "LLM21", "LLM22", "LLM23"]:
         _yureeka_patch_tracker_ensure_head_v1(_pid, {})
 except Exception:
     pass
