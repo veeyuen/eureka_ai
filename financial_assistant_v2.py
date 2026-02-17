@@ -451,7 +451,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "NLP01"
+_YUREEKA_CODE_VERSION_LOCK = "NLP02"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 # REFACTOR206: Release Candidate freeze (no pipeline behavior change).
 YUREEKA_RELEASE_CANDIDATE_V1 = False
@@ -903,8 +903,8 @@ def _nlp01_derive_metric_families_v1(
     base_signals = base_signals if isinstance(base_signals, dict) else {}
     q0 = (q or "").strip().lower()
 
-    max_terms = int(((HYPERPARAMS.get("nlp") or {}).get("query_frame") or {}).get("max_boost_terms", 8) or 8)
-    min_conf = float(((HYPERPARAMS.get("nlp") or {}).get("query_frame") or {}).get("min_family_confidence", 0.25) or 0.25)
+    max_terms = int(((HYPERPARAMS_V1.get("nlp") or {}).get("query_frame") or {}).get("max_boost_terms", 8) or 8)
+    min_conf = float(((HYPERPARAMS_V1.get("nlp") or {}).get("query_frame") or {}).get("min_family_confidence", 0.25) or 0.25)
 
     mids = base_signals.get("expected_metric_ids") or []
     if not isinstance(mids, list):
@@ -31387,7 +31387,7 @@ def _refactor28_schema_only_rebuild_authoritative_v1(
 
                     _u = str(_sum.get("url") or "").strip()
                     try:
-                        if _fresh02_enabled and _u:
+                        if _u:
                             _un = _normalize_url(_u)
                             _fm = _fresh02_url2meta.get(_un) or {}
                             _sum["freshness_score"] = _fm.get("freshness_score")
@@ -33353,6 +33353,23 @@ try:
     })
 except Exception:
     pass
+
+# NLP02: patch tracker entry
+try:
+    PATCH_TRACKER_V1.insert(0, {
+        "patch_id": "NLP02",
+        "date": "2026-02-17",
+        "title": "NLP02 hyperparams reference fix + always-on freshness attachment",
+        "summary": [
+            "Fix NLP01 NameError: _nlp01_derive_metric_families_v1 now reads hyperparams from HYPERPARAMS_V1 (so nlp01_enrichment_v1 and metric_families enrichment populate as intended).",
+            "Always attach per-source freshness fields (published_at / age_days / freshness_score / bucket) into selection_year_anchor_v1.top3 summaries, even when ENABLE_SOURCE_FRESHNESS_TIEBREAK is OFF (visibility without behavior change).",
+            "Preserve determinism: freshness tie-breaking still only affects winner selection when ENABLE_SOURCE_FRESHNESS_TIEBREAK is explicitly enabled; otherwise it remains diagnostic-only.",
+        ],
+        "risk": "low",
+    })
+except Exception:
+    pass
+
 
 
 
