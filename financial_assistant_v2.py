@@ -47,6 +47,42 @@ try:
 except Exception:  # pragma: no cover
     requests = None  # type: ignore
 
+# FRESH00: global URL normalizer used by freshness scoring + tie-break beacons.
+# Deterministic, side-effect free.
+# Note: This does not perform any network IO; it only normalizes strings.
+def _normalize_url(s: str) -> str:
+    try:
+        t = (s or "").strip()
+        if not t:
+            return ""
+        # Add scheme if missing.
+        if not re.match(r"^https?://", t, flags=re.I):
+            if re.match(r"^[a-z0-9.-]+\.[a-z]{2,}(/.*)?$", t, flags=re.I):
+                t = "https://" + t
+            else:
+                return t.lower()
+        # Strip fragment.
+        t = re.sub(r"#.*$", "", t)
+        # Best-effort parse to normalize scheme/host casing and trailing slash.
+        try:
+            import urllib.parse as _up
+            p = _up.urlsplit(t)
+            scheme = (p.scheme or "https").lower()
+            netloc = (p.netloc or "").lower()
+            path = p.path or ""
+            if path.endswith("/") and len(path) > 1:
+                path = path[:-1]
+            query = p.query or ""
+            return _up.urlunsplit((scheme, netloc, path, query, ""))
+        except Exception:
+            return t.strip().lower()
+    except Exception:
+        try:
+            return (s or "").strip().lower()
+        except Exception:
+            return ""
+
+
 # REFACTOR108: Shared Sheets read-cache (used by sheets_get_all_values_cached). Keep TTL short to prevent stale baseline selection.
 _SHEETS_READ_CACHE = {}
 _SHEETS_READ_CACHE_TTL_SEC = 45
@@ -167,7 +203,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "LLM33"
+_YUREEKA_CODE_VERSION_LOCK = "LLM34"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 # REFACTOR206: Release Candidate freeze (no pipeline behavior change).
 YUREEKA_RELEASE_CANDIDATE_V1 = False
@@ -10101,32 +10137,71 @@ def source_consensus(web_context: dict) -> float:
 def source_freshness_score_v1(sources: Any, web_context: dict) -> Optional[float]:
     """Compute a deterministic source freshness score (0-100) from cached metadata only.
 
-    Preference order (best-effort, all deterministic):
+    Preference order (best-effort, all deterministic; no network IO):
       1) baseline_sources_cache (if present on web_context) with freshness_score.
       2) baseline_sources_cache with freshness_age_days (+ optional freshness_date_confidence).
-      3) scraped_meta (url->meta) with the same fields.
+      3) scraped_meta (url->meta) with the same fields; if missing, compute once from scraped_content + fetched_at.
+
+    Notes:
+      - Returns the median freshness score across matched sources (robust to outliers).
+      - If `sources` is provided, we filter to those URLs; otherwise we use all cached entries.
     """
     try:
-        bsc_list = []
-        # 1) baseline_sources_cache variants
+        wc = web_context or {}
+        bsc_list: list = []
+
+        # 1) baseline_sources_cache variants (prefer any that already include freshness_*).
         try:
-            for k in ("baseline_sources_cache", "baseline_sources", "sources_cache"):
-                _v = (web_context or {}).get(k)
+            for k in (
+                "baseline_sources_cache",
+                "baseline_sources",
+                "sources_cache",
+                "baseline_sources_cache_current",
+                "current_baseline_sources_cache",
+            ):
+                _v = wc.get(k)
                 if isinstance(_v, list) and _v:
                     bsc_list = list(_v)
                     break
         except Exception:
             bsc_list = []
 
-        # 2) fallback to scraped_meta (url->meta) if baseline list missing
-        try:
-            if (not bsc_list) and isinstance(web_context, dict):
-                sm = web_context.get("scraped_meta") or {}
+        # 2) If baseline list missing, build a lightweight list from scraped_meta (and compute missing freshness deterministically).
+        if not bsc_list:
+            try:
+                sm = wc.get("scraped_meta") or {}
+                sc = wc.get("scraped_content") or {}
                 if isinstance(sm, dict) and sm:
                     tmp = []
                     for url, meta in sm.items():
                         if not isinstance(meta, dict):
                             continue
+                        # Compute missing freshness fields once (no refetch; uses scraped_content + fetched_at).
+                        try:
+                            need = (meta.get("freshness_age_days") is None) or (meta.get("published_at") in (None, ""))
+                            if need:
+                                content = ""
+                                try:
+                                    content = sc.get(url) or sc.get(_normalize_url(url)) or ""
+                                except Exception:
+                                    content = ""
+                                fetched_at = meta.get("fetched_at") or meta.get("fetched_at_iso") or ""
+                                fres = _fresh01_compute_source_freshness_v2(content or "", fetched_at=str(fetched_at or ""), url=str(url or ""))
+                                if isinstance(fres, dict) and fres:
+                                    for kk in (
+                                        "published_at",
+                                        "freshness_age_days",
+                                        "freshness_bucket",
+                                        "freshness_method",
+                                        "freshness_date_confidence",
+                                        "freshness_score",
+                                        "freshness_score_method",
+                                    ):
+                                        if kk in fres:
+                                            meta[kk] = fres.get(kk)
+                        except Exception:
+                            pass
+
                         e = {"url": url}
                         for kk in ("freshness_score", "freshness_age_days", "freshness_date_confidence", "published_at"):
                             if kk in meta:
@@ -10134,8 +10209,8 @@ def source_freshness_score_v1(sources: Any, web_context: dict) -> Optional[float
                         tmp.append(e)
                     if tmp:
                         bsc_list = tmp
-        except Exception:
-            pass
+            except Exception:
+                pass
 
         if not isinstance(bsc_list, list) or not bsc_list:
             return None
@@ -10152,9 +10227,9 @@ def source_freshness_score_v1(sources: Any, web_context: dict) -> Optional[float
         def _compute_score_from_entry(ent: dict) -> Optional[float]:
             if not isinstance(ent, dict):
                 return None
-            sc = ent.get("freshness_score")
+            scv = ent.get("freshness_score")
             try:
-                return float(sc)
+                return float(scv)
             except Exception:
                 pass
             age = ent.get("freshness_age_days")
@@ -10189,7 +10264,10 @@ def source_freshness_score_v1(sources: Any, web_context: dict) -> Optional[float
                 if not isinstance(ent, dict):
                     continue
                 u = ent.get("url") or ent.get("source_url") or ""
-                un = _normalize_url(u) if isinstance(u, str) and u else ""
+                try:
+                    un = _normalize_url(u) if isinstance(u, str) and u else ""
+                except Exception:
+                    un = str(u or "").strip().lower()
                 if src_set and un and un not in src_set:
                     continue
                 scv = _compute_score_from_entry(ent)
@@ -28966,6 +29044,10 @@ def rebuild_metrics_from_snapshots_analysis_canonical_v1(prev_response: dict, ba
                 else:
                     tie = (-hits,) + _fresh02_candidate_tie_key_v1(c) + _cand_sort_key(c)
 
+            # FRESH02: base tie (no freshness) for diagnostics
+            tie_base = (-hits,) + _cand_sort_key(c)
+
+
             # REFACTOR135 trace: keep a compact top-N for chargers_2040
             try:
                 if _rf135_trace_enabled:
@@ -29916,6 +29998,21 @@ def _refactor28_schema_only_rebuild_authoritative_v1(
     except Exception:
         pass
 
+    # FRESH02: initialize a run-level tie-breaker beacon (filled per metric when it changes the winner).
+    # Note: This is deterministic and purely diagnostic unless ENABLE_SOURCE_FRESHNESS_TIEBREAK is ON.
+    global _FRESH02_TIEBREAK_V1
+    try:
+        _FRESH02_TIEBREAK_V1 = {
+            "enabled": bool(_fresh02_enabled),
+            "flag_source": str(_fresh02_src or ""),
+            "sources_indexed": int(_fresh02_sources_indexed or 0),
+            "applied_count": 0,
+            "applied_keys": [],
+            "examples": [],
+        }
+    except Exception:
+        pass
+
     def _fresh02_candidate_tie_key_v1(c: dict) -> tuple:
         """Return a tuple suitable for lexicographic ascending sort (smaller is better)."""
         if not _fresh02_enabled or not isinstance(c, dict):
@@ -30085,6 +30182,17 @@ def _refactor28_schema_only_rebuild_authoritative_v1(
         _ref100_required_years = _refactor100_required_year_tokens_from_key(canonical_key)
 
         _ref100_top3_pairs = []  # (tie, summary_dict)
+
+        # FRESH02: track the base (non-freshness) winner so we can detect when freshness changes the winner.
+        _fresh02_base_best = None
+        _fresh02_base_best_key = None
+        _fresh02_base_best_strong = None
+        _fresh02_base_best_strong_key = None
+        _fresh02_base_best_strong_years = []
+        _fresh02_base_best_weak = None
+        _fresh02_base_best_weak_key = None
+        _fresh02_base_best_weak_years = []
+
 
         _fix33_top = []
         _fix33_rej = {}
@@ -30332,8 +30440,32 @@ def _refactor28_schema_only_rebuild_authoritative_v1(
 
             if _rf129_spec_ut.upper() == "M":
                 tie = (-hits, -int(bool(_rf129_has_million_cue)), -int(bool(_rf129_has_decimal)), -int(_rf129_decimal_places)) + _fresh02_candidate_tie_key_v1(c) + _cand_sort_key(c)
+                # FRESH02: base tie (no freshness) for diagnostics
+                tie_base = (-hits, -int(bool(_rf129_has_million_cue)), -int(bool(_rf129_has_decimal)), -int(_rf129_decimal_places)) + _cand_sort_key(c)
+
             else:
                 tie = (-hits,) + _fresh02_candidate_tie_key_v1(c) + _cand_sort_key(c)
+
+            # FRESH02: update base-winner trackers (no freshness key)
+            try:
+                if _fresh02_enabled:
+                    if _ref100_required_years:
+                        if year_ok:
+                            if (_fresh02_base_best_strong is None) or (tie_base < _fresh02_base_best_strong_key):
+                                _fresh02_base_best_strong = c
+                                _fresh02_base_best_strong_key = tie_base
+                                _fresh02_base_best_strong_years = list(year_found or [])
+                        else:
+                            if (_fresh02_base_best_weak is None) or (tie_base < _fresh02_base_best_weak_key):
+                                _fresh02_base_best_weak = c
+                                _fresh02_base_best_weak_key = tie_base
+                                _fresh02_base_best_weak_years = list(year_found or [])
+                    else:
+                        if (_fresh02_base_best is None) or (tie_base < _fresh02_base_best_key):
+                            _fresh02_base_best = c
+                            _fresh02_base_best_key = tie_base
+            except Exception:
+                pass
 
             # REFACTOR129 beacon: collect precision candidates for chargers_2040 (compact)
             try:
@@ -30538,6 +30670,69 @@ def _refactor28_schema_only_rebuild_authoritative_v1(
         if not isinstance(best, dict):
 
             continue
+
+        # FRESH02: record when freshness tie-break changes the winner (diagnostic; only when enabled).
+        try:
+            if _fresh02_enabled and isinstance(best, dict) and isinstance(globals().get("_FRESH02_TIEBREAK_V1"), dict):
+                _base_winner = None
+                _base_years = []
+                if _ref100_required_years:
+                    if isinstance(_fresh02_base_best_strong, dict):
+                        _base_winner = _fresh02_base_best_strong
+                        _base_years = list(_fresh02_base_best_strong_years or [])
+                    else:
+                        _base_winner = None
+                else:
+                    if isinstance(_fresh02_base_best, dict):
+                        _base_winner = _fresh02_base_best
+                if isinstance(_base_winner, dict):
+                    # If the selected candidate differs from the base winner, freshness must have changed the ordering.
+                    if str(best.get("source_url") or "") != str(_base_winner.get("source_url") or "") or str(best.get("raw") or "") != str(_base_winner.get("raw") or ""):
+                        _tb = globals().get("_FRESH02_TIEBREAK_V1") or {}
+                        try:
+                            _tb["applied_count"] = int(_tb.get("applied_count") or 0) + 1
+                        except Exception:
+                            _tb["applied_count"] = 1
+                        try:
+                            _k = str(canonical_key or "")
+                            if _k and _k not in (_tb.get("applied_keys") or []):
+                                _tb.setdefault("applied_keys", [])
+                                _tb["applied_keys"].append(_k)
+                        except Exception:
+                            pass
+                        try:
+                            # Build a compact example for JSON audit
+                            _burl = str(_base_winner.get("source_url") or "")
+                            _curl = str(best.get("source_url") or "")
+                            try:
+                                _bmeta = _fresh02_url2meta.get(_normalize_url(_burl)) or _fresh02_url2meta.get(_burl.strip().lower()) or {}
+                            except Exception:
+                                _bmeta = _fresh02_url2meta.get(_burl.strip().lower()) or {}
+                            try:
+                                _cmeta = _fresh02_url2meta.get(_normalize_url(_curl)) or _fresh02_url2meta.get(_curl.strip().lower()) or {}
+                            except Exception:
+                                _cmeta = _fresh02_url2meta.get(_curl.strip().lower()) or {}
+                            ex = {
+                                "canonical_key": str(canonical_key or ""),
+                                "base_url": _burl,
+                                "chosen_url": _curl,
+                                "base_freshness_score": _bmeta.get("freshness_score"),
+                                "chosen_freshness_score": _cmeta.get("freshness_score"),
+                                "base_age_days": _bmeta.get("freshness_age_days"),
+                                "chosen_age_days": _cmeta.get("freshness_age_days"),
+                                "base_published_at": _bmeta.get("published_at") or "",
+                                "chosen_published_at": _cmeta.get("published_at") or "",
+                                "required_year_tokens": list(_ref100_required_years or []),
+                                "base_years": list(_base_years or []),
+                            }
+                            _tb.setdefault("examples", [])
+                            if len(_tb["examples"]) < 5:
+                                _tb["examples"].append(ex)
+                        except Exception:
+                            pass
+                        globals()["_FRESH02_TIEBREAK_V1"] = _tb
+        except Exception:
+            pass
 
         # Emit a minimal canonical metric row (schema-driven, deterministic)
         metric = {
@@ -32048,6 +32243,13 @@ try:
 except Exception:
     pass
 
+
+# LLM34: patch tracker overlay (freshness score end-to-end + tiebreak audit beacons)
+try:
+    if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "LLM34" for e in PATCH_TRACKER_V1):
+        PATCH_TRACKER_V1.insert(0, {"patch_id": "LLM34", "scope": "freshness", "summary": "Add global URL normalizer; make data_freshness score compute deterministically from scraped_meta/scraped_content even before snapshots are attached; backfill per-source freshness fields; and emit fresh02_freshness_tiebreak_v1 audit beacons when freshness changes the schema winner (flag-gated).", "risk": "medium"})
+except Exception:
+    pass
 # LLM10_PATCH_TRACKER_REORDER_V1: move known patch ids to the front in descending order (best-effort)
 try:
     _order = ["LLM00", "LLM01", "LLM01H", "LLM01D", "LLM01E", "LLM01F", "LLM02", "LLM03", "LLM04H", "LLM05", "LLM06", "LLM07", "LLM08", "LLM09", "LLM10", "LLM11", "LLM12", "LLM13", "LLM14", "LLM15", "LLM16", "LLM17", "LLM18", "LLM19", "LLM20", "LLM21", "LLM22", "LLM23", "LLM24", "LLM25", "LLM26", "LLM27", "LLM28"]
