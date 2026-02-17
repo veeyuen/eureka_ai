@@ -39,6 +39,242 @@ import json
 import time
 import streamlit as st
 
+
+# [MOD:HYPERPARAMS_V1]
+# HYPERPARAMETERS (v1)
+# Centralized "policy knobs" for deterministic + LLM/NLP layers.
+#
+# Design rules:
+# - Defaults are frozen to preserve REFACTOR206 / LLM36 deterministic outcomes.
+# - Overrides are OPTIONAL and must be explicit (env JSON or legacy env vars).
+# - LLM cache keys may be salted with an LLM-only hyperparam fingerprint while
+#   remaining backward-compatible (fallback to unsalted key).
+#
+# Override (optional):
+#   - YUREEKA_HYPERPARAMS_JSON: JSON object (nested) merged into defaults.
+#     Example: {"freshness":{"tiebreak":{"min_score_delta":5}}}
+#
+# Audit (attached additively into wrapper.debug):
+#   - hyperparams_snapshot_v1
+#   - hyperparams_fingerprint_v1
+#   - hyperparams_fingerprint_llm_v1
+#   - hyperparams_source_v1
+import copy as _hp_copy
+import hashlib as _hp_hashlib
+
+def _hp__stable_json_v1(obj):
+    try:
+        return json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    except Exception:
+        try:
+            return json.dumps(str(obj), sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+        except Exception:
+            return ""
+
+def _hp__sha256_hex_v1(s: str) -> str:
+    try:
+        return _hp_hashlib.sha256((s or "").encode("utf-8", errors="ignore")).hexdigest()
+    except Exception:
+        return ""
+
+def _hp__deep_update_v1(dst: dict, src: dict) -> dict:
+    """Deep-merge src into dst (dict-only), returning dst."""
+    try:
+        if not isinstance(dst, dict) or not isinstance(src, dict):
+            return dst
+        for k, v in src.items():
+            if isinstance(v, dict) and isinstance(dst.get(k), dict):
+                _hp__deep_update_v1(dst[k], v)
+            else:
+                dst[k] = v
+    except Exception:
+        return dst
+    return dst
+
+_HYPERPARAMS_V1_DEFAULTS = {
+    "llm": {
+        # LLM01 acceptance gates (deterministic rules decide)
+        "evidence_confidence_threshold": 0.75,
+        "evidence_score_tie_delta": 2.5,
+        "qstruct_confidence_threshold": 0.75,
+        "strict_mode": True,
+        "cache": {
+            "max_mem_entries": 128,
+            "dir": None,  # if None, fallback to YUREEKA_LLM_CACHE_DIR env or default
+            "salt_with_hyperparams": True,   # salt cache keys (with fallback to unsalted)
+            "salt_scope": "llm_only",        # reserved: llm_only / full
+        },
+    },
+    "freshness": {
+        # Deterministic freshness curve (age days -> base score)
+        "score_cutoffs_days": [30, 180, 365, 730],
+        "score_values": [100.0, 85.0, 70.0, 55.0, 40.0],
+        "bucket_labels": ["≤30d", "≤6mo", "≤1y", "≤2y", ">2y"],
+        "tiebreak": {
+            # Only affects behavior when ENABLE_SOURCE_FRESHNESS_TIEBREAK is enabled.
+            # min_score_delta=0.0 preserves existing LLM36 behavior (no quantization).
+            "min_score_delta": 0.0,
+            # Reserved for future: prefer explicit published_at over inferred date.
+            "prefer_published_at": True,
+            # Reserved for future: url_sort_v1 / source_index_v1
+            "stable_fallback": "url_sort_v1",
+        },
+    },
+    "ops": {
+        "sheets_read_cache_ttl_sec": 45,
+        "search_cache_ttl_hours": 24,
+        "max_history_items": 50,
+    },
+}
+
+def _hp__coerce_number_v1(v, default=None):
+    try:
+        if v is None:
+            return default
+        if isinstance(v, (int, float)):
+            return v
+        s = str(v).strip()
+        if not s:
+            return default
+        return float(s) if ("." in s or "e" in s.lower()) else int(s)
+    except Exception:
+        return default
+
+def _hp__coerce_bool_v1(v, default=None):
+    try:
+        if v is None:
+            return default
+        if isinstance(v, bool):
+            return v
+        s = str(v).strip().lower()
+        if s in ("1", "true", "yes", "y", "on"):
+            return True
+        if s in ("0", "false", "no", "n", "off"):
+            return False
+    except Exception:
+        return default
+    return default
+
+def _hp__load_overrides_env_json_v1() -> tuple:
+    """Return (overrides_dict, source_str)."""
+    try:
+        raw = os.environ.get("YUREEKA_HYPERPARAMS_JSON") or os.environ.get("YUREEKA_HYPERPARAMS_V1_JSON") or ""
+    except Exception:
+        raw = ""
+    raw = str(raw or "").strip()
+    if not raw:
+        return ({}, "defaults")
+    try:
+        obj = json.loads(raw)
+        if isinstance(obj, dict):
+            return (obj, "env:YUREEKA_HYPERPARAMS_JSON")
+    except Exception:
+        pass
+    return ({}, "env_json_invalid")
+
+def _hp__load_hyperparams_v1() -> tuple:
+    """Resolve hyperparams (defaults + env overrides + legacy env vars)."""
+    hp = _hp_copy.deepcopy(_HYPERPARAMS_V1_DEFAULTS)
+    src = "defaults"
+    # 1) env JSON merge
+    env_obj, env_src = _hp__load_overrides_env_json_v1()
+    if isinstance(env_obj, dict) and env_obj:
+        _hp__deep_update_v1(hp, env_obj)
+        src = env_src
+    elif env_src == "env_json_invalid":
+        src = env_src
+
+    # 2) legacy env vars (backward-compatible)
+    try:
+        v = os.environ.get("YUREEKA_LLM01_EVIDENCE_CONFIDENCE_THRESHOLD")
+        nv = _hp__coerce_number_v1(v, None)
+        if nv is not None:
+            hp["llm"]["evidence_confidence_threshold"] = float(nv)
+            src = (src + "+env:LLM01_CONF") if src else "env:LLM01_CONF"
+    except Exception:
+        pass
+    try:
+        v = os.environ.get("YUREEKA_LLM01_EVIDENCE_SCORE_TIE_DELTA")
+        nv = _hp__coerce_number_v1(v, None)
+        if nv is not None:
+            hp["llm"]["evidence_score_tie_delta"] = float(nv)
+            src = (src + "+env:LLM01_TIE") if src else "env:LLM01_TIE"
+    except Exception:
+        pass
+    try:
+        v = os.environ.get("YUREEKA_LLM00_QSTRUCT_CONFIDENCE_THRESHOLD")
+        nv = _hp__coerce_number_v1(v, None)
+        if nv is not None:
+            hp["llm"]["qstruct_confidence_threshold"] = float(nv)
+            src = (src + "+env:QSTRUCT") if src else "env:QSTRUCT"
+    except Exception:
+        pass
+
+    # 3) sanitize known shapes
+    try:
+        cut = hp.get("freshness", {}).get("score_cutoffs_days")
+        vals = hp.get("freshness", {}).get("score_values")
+        labels = hp.get("freshness", {}).get("bucket_labels")
+        if not (isinstance(cut, list) and isinstance(vals, list) and isinstance(labels, list)):
+            raise ValueError("freshness curve invalid shape")
+        # expect labels == values length and values == cutoffs+1
+        if len(vals) != (len(cut) + 1) or len(labels) != len(vals):
+            raise ValueError("freshness curve length mismatch")
+    except Exception:
+        # fallback to defaults on invalid override
+        try:
+            hp["freshness"] = _hp_copy.deepcopy(_HYPERPARAMS_V1_DEFAULTS["freshness"])
+            src = (src + "+sanitize:freshness_defaults") if src else "sanitize:freshness_defaults"
+        except Exception:
+            pass
+
+    return (hp, src)
+
+_HYPERPARAMS_V1, _HYPERPARAMS_SOURCE_V1 = _hp__load_hyperparams_v1()
+
+def _yureeka_get_hyperparams_v1() -> dict:
+    return _HYPERPARAMS_V1
+
+def _yureeka_hp_get_v1(path: str, default=None):
+    """Get a nested hyperparam by dot-path (e.g. 'freshness.tiebreak.min_score_delta')."""
+    try:
+        parts = [p for p in str(path or "").split(".") if p]
+        cur = _HYPERPARAMS_V1
+        for p in parts:
+            if not isinstance(cur, dict):
+                return default
+            cur = cur.get(p)
+        return default if cur is None else cur
+    except Exception:
+        return default
+
+def _yureeka_hyperparams_fingerprint_v1(scope: str = "full") -> str:
+    try:
+        if str(scope or "").strip().lower() == "llm_only":
+            sub = {
+                "llm": _HYPERPARAMS_V1.get("llm", {}),
+                "freshness": {"tiebreak": (_HYPERPARAMS_V1.get("freshness", {}) or {}).get("tiebreak", {})},
+            }
+        else:
+            sub = _HYPERPARAMS_V1
+        return _hp__sha256_hex_v1(_hp__stable_json_v1(sub))
+    except Exception:
+        return ""
+
+HYPERPARAMS_V1 = _HYPERPARAMS_V1
+HYPERPARAMS_FINGERPRINT_V1 = _yureeka_hyperparams_fingerprint_v1("full")
+HYPERPARAMS_FINGERPRINT_LLM_V1 = _yureeka_hyperparams_fingerprint_v1("llm_only")
+
+# Derived knobs (validated) used in hot paths
+try:
+    _FRESH01_SCORE_CUTOFFS_DAYS_V1 = list((_HYPERPARAMS_V1.get("freshness", {}) or {}).get("score_cutoffs_days") or [30, 180, 365, 730])
+    _FRESH01_SCORE_VALUES_V1 = list((_HYPERPARAMS_V1.get("freshness", {}) or {}).get("score_values") or [100.0, 85.0, 70.0, 55.0, 40.0])
+    _FRESH01_BUCKET_LABELS_V1 = list((_HYPERPARAMS_V1.get("freshness", {}) or {}).get("bucket_labels") or ["≤30d", "≤6mo", "≤1y", "≤2y", ">2y"])
+except Exception:
+    _FRESH01_SCORE_CUTOFFS_DAYS_V1 = [30, 180, 365, 730]
+    _FRESH01_SCORE_VALUES_V1 = [100.0, 85.0, 70.0, 55.0, 40.0]
+    _FRESH01_BUCKET_LABELS_V1 = ["≤30d", "≤6mo", "≤1y", "≤2y", ">2y"]
+
 # REFACTOR155: Downsizing (low-risk): prune obsolete legacy diff-binding fallback ladders (no behavior change).
 # REFACTOR177: Downsizing (low-risk): remove legacy diff_metrics_by_name authority/binding scaffolding; Diff Panel V2 remains authoritative.
 
@@ -85,7 +321,7 @@ def _normalize_url(s: str) -> str:
 
 # REFACTOR108: Shared Sheets read-cache (used by sheets_get_all_values_cached). Keep TTL short to prevent stale baseline selection.
 _SHEETS_READ_CACHE = {}
-_SHEETS_READ_CACHE_TTL_SEC = 45
+_SHEETS_READ_CACHE_TTL_SEC = int(_yureeka_hp_get_v1('ops.sheets_read_cache_ttl_sec', 45) or 45)
 _SHEETS_LAST_READ_ERROR = None
 
 # REFACTOR195: Sheets rate-limit cooldown (avoid repeated 429 loops; prefer cached/local fallbacks).
@@ -203,7 +439,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "LLM35"
+_YUREEKA_CODE_VERSION_LOCK = "LLM37"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 # REFACTOR206: Release Candidate freeze (no pipeline behavior change).
 YUREEKA_RELEASE_CANDIDATE_V1 = False
@@ -251,13 +487,13 @@ LLM_FORCE_REFRESH_ONCE = False
 # Env overrides (optional):
 #   YUREEKA_LLM01_EVIDENCE_CONFIDENCE_THRESHOLD
 #   YUREEKA_LLM01_EVIDENCE_SCORE_TIE_DELTA
-LLM01_EVIDENCE_CONFIDENCE_THRESHOLD = 0.75
-LLM01_EVIDENCE_SCORE_TIE_DELTA = 2.5
+LLM01_EVIDENCE_CONFIDENCE_THRESHOLD = float(_yureeka_hp_get_v1('llm.evidence_confidence_threshold', 0.75) or 0.75)
+LLM01_EVIDENCE_SCORE_TIE_DELTA = float(_yureeka_hp_get_v1('llm.evidence_score_tie_delta', 2.5) or 2.5)
 LLM01_EVIDENCE_FORCE_CALL = False  # If True, call LLM rank even without a tie-set (proposal still accepted only on ties).
 
 # LLM22: Query-structure LLM fallback (opt-in) acceptance policy.
 # Env override (optional): YUREEKA_LLM00_QSTRUCT_CONFIDENCE_THRESHOLD
-LLM00_QUERY_STRUCTURE_CONFIDENCE_THRESHOLD = 0.75
+LLM00_QUERY_STRUCTURE_CONFIDENCE_THRESHOLD = float(_yureeka_hp_get_v1('llm.qstruct_confidence_threshold', 0.75) or 0.75)
 
 
 def _yureeka__parse_boolish_v1(v: Any) -> Optional[bool]:
@@ -605,14 +841,14 @@ def _llm02_cluster_urls_v1(
         return (urls or [], dbg)
 
 # Strict mode (future patches): enforce schema-checked JSON responses and hard validators.
-LLM_STRICT_MODE = True
+LLM_STRICT_MODE = bool(_yureeka_hp_get_v1('llm.strict_mode', True))
 
 # Debug-only dataset logging (default OFF; never required for correctness).
 ENABLE_LLM_DATASET_LOGGING = False
 
 # Optional deterministic cache (disk + tiny in-memory LRU). Never required for correctness.
-LLM_CACHE_DIR_V1 = os.environ.get("YUREEKA_LLM_CACHE_DIR") or ".yureeka_llm_cache"
-LLM_CACHE_MAX_MEM_ENTRIES_V1 = 128
+LLM_CACHE_DIR_V1 = str((_yureeka_hp_get_v1("llm.cache.dir", None) or os.environ.get("YUREEKA_LLM_CACHE_DIR") or ".yureeka_llm_cache"))
+LLM_CACHE_MAX_MEM_ENTRIES_V1 = int(_yureeka_hp_get_v1('llm.cache.max_mem_entries', 128) or 128)
 _LLM_CACHE_MEM_V1: dict = {}
 _LLM_CACHE_MEM_ORDER_V1: list = []
 
@@ -907,13 +1143,17 @@ def _llm03_get_query_frame_v1(query: str, base_signals: Optional[Dict[str, Any]]
         input_obj = {"query": q_raw, "deterministic_frame": det}
         input_hash = _yureeka_hash_text_v1(_yureeka__stable_json_dumps_v1(input_obj))
         q_hash = _yureeka_hash_text_v1(q_raw)
-        key = get_llm_cache_key(str(model), prompt_version, schema_version, input_hash, "", q_hash)
+        key, key_fallback = get_llm_cache_key_salted_v1(str(model), prompt_version, schema_version, input_hash, "", q_hash)
     except Exception:
         key = ""
 
     candidate = None
     if key:
         cached = get_cached_llm_response(key)
+        if cached is None and key_fallback:
+            cached = get_cached_llm_response(key_fallback)
+            if cached is not None:
+                dbg["llm_cache_fallback_hit"] = True
         if cached is not None:
             dbg["llm_cache_hit"] = True
             try:
@@ -1041,6 +1281,60 @@ def get_llm_cache_key(
         return f"llm_v1_{h}"
     except Exception:
         return "llm_v1_unknown"
+
+
+def get_llm_cache_key_salted_v1(
+    model: str,
+    prompt_version: str,
+    schema_version: str,
+    input_hash: str,
+    url: str,
+    question_hash: str,
+) -> tuple:
+    """Return (primary_key, fallback_key) for LLM cache lookups.
+
+    LLM37: optionally salt the primary key with a hyperparam fingerprint (LLM-only)
+    while preserving replayability via fallback to the legacy unsalted key.
+    """
+    legacy = get_llm_cache_key(model, prompt_version, schema_version, input_hash, url, question_hash)
+    try:
+        salt_on = bool(_yureeka_hp_get_v1("llm.cache.salt_with_hyperparams", True))
+    except Exception:
+        salt_on = True
+    if not salt_on:
+        return (legacy, "")
+    try:
+        scope = str(_yureeka_hp_get_v1("llm.cache.salt_scope", "llm_only") or "llm_only").strip().lower()
+    except Exception:
+        scope = "llm_only"
+    hp_fp = ""
+    try:
+        if scope == "full":
+            hp_fp = str(globals().get("HYPERPARAMS_FINGERPRINT_V1") or "")
+        else:
+            hp_fp = str(globals().get("HYPERPARAMS_FINGERPRINT_LLM_V1") or "")
+    except Exception:
+        hp_fp = ""
+    if not hp_fp:
+        return (legacy, "")
+    payload = {
+        "v": "llm_cache_key_v2",
+        "hp_fp": hp_fp,
+        "salt_scope": scope,
+        "model": str(model or ""),
+        "prompt_version": str(prompt_version or ""),
+        "schema_version": str(schema_version or ""),
+        "input_hash": str(input_hash or ""),
+        "url": str(url or ""),
+        "question_hash": str(question_hash or ""),
+    }
+    try:
+        s = _yureeka__stable_json_dumps_v1(payload)
+        h = hashlib.sha256((s or "").encode("utf-8", errors="ignore")).hexdigest()
+        return (f"llm_v2_{h}", legacy)
+    except Exception:
+        return (legacy, "")
+
 
 
 def _llm_cache_path_v1(key: str) -> str:
@@ -1536,12 +1830,17 @@ def _llm04_llm_relevance_check_v1(
             }
             input_hash = _yureeka_hash_text_v1(_yureeka__stable_json_dumps_v1(input_obj))
             q_hash = _yureeka_hash_text_v1(str(question_text or ""))
-            key = get_llm_cache_key(str(model), prompt_version, schema_version, input_hash, "", q_hash)
+            key, key_fallback = get_llm_cache_key_salted_v1(str(model), prompt_version, schema_version, input_hash, "", q_hash)
         except Exception:
             key = ""
+            key_fallback = ""
 
         if key:
             cached = get_cached_llm_response(key)
+            if cached is None and key_fallback:
+                cached = get_cached_llm_response(key_fallback)
+                if cached is not None:
+                    diag["cache_fallback_hit"] = True
             if cached is not None:
                 diag["llm_used"] = True
                 diag["ok"] = True
@@ -2722,10 +3021,11 @@ def _llm01_llm_rank_windows_v1(
         input_hash = ""
 
     try:
-        cache_key = get_llm_cache_key(
+        cache_key, cache_key_fallback = get_llm_cache_key_salted_v1(
             str(model), prompt_version, schema_version, str(input_hash), str(url or ""), str(question_hash or "")
         )
     except Exception as e:
+        cache_key_fallback = ""
         diag["reason"] = "cache_key_exception:" + str(type(e).__name__)
         try:
             if isinstance(out_debug, dict):
@@ -2751,11 +3051,20 @@ def _llm01_llm_rank_windows_v1(
         return (None, None, diag)
 
     diag["cache_key"] = cache_key
+    try:
+        if cache_key_fallback:
+            diag["cache_key_fallback"] = cache_key_fallback
+    except Exception:
+        pass
 
     # Cache lookup (always)
     cached = None
     try:
         cached = get_cached_llm_response(cache_key)
+        if cached is None and cache_key_fallback:
+            cached = get_cached_llm_response(cache_key_fallback)
+            if cached is not None:
+                diag["cache_fallback_hit"] = True
     except Exception:
         cached = None
 
@@ -4339,6 +4648,52 @@ def _yureeka_attach_build_meta_v1(wrapper: dict, stage: str = "", injected_url: 
         wrapper.setdefault("build_meta", {})
         if isinstance(wrapper.get("build_meta"), dict):
             wrapper["build_meta"].update(meta)
+        try:
+            _yureeka_attach_hyperparams_debug_v1(wrapper, stage=str(stage or ""))
+        except Exception:
+            pass
+    except Exception:
+        return
+
+def _yureeka_attach_hyperparams_debug_v1(wrapper: dict, stage: str = ""):
+    """Additive: attach hyperparam snapshot + fingerprints for auditability (no behavior change).
+
+    Stage-aware placement:
+      - Always attach to wrapper["debug"] when available
+      - If wrapper has nested results dicts, also attach to results["debug"] for Evolution UI panels
+    """
+    if not isinstance(wrapper, dict):
+        return
+    try:
+        targets = [wrapper]
+        r1 = wrapper.get("results")
+        if isinstance(r1, dict):
+            targets.append(r1)
+            r2 = r1.get("results")
+            if isinstance(r2, dict):
+                targets.append(r2)
+
+        hp = _yureeka_get_hyperparams_v1()
+        hp_dict = hp if isinstance(hp, dict) else {}
+        fp_full = str(globals().get("HYPERPARAMS_FINGERPRINT_V1") or _yureeka_hyperparams_fingerprint_v1("full"))
+        fp_llm = str(globals().get("HYPERPARAMS_FINGERPRINT_LLM_V1") or _yureeka_hyperparams_fingerprint_v1("llm_only"))
+        src = str(globals().get("_HYPERPARAMS_SOURCE_V1") or "")
+
+        for t in targets:
+            try:
+                dbg = t.setdefault("debug", {})
+                if not isinstance(dbg, dict):
+                    continue
+                # Attach only once per debug dict
+                if isinstance(dbg.get("hyperparams_snapshot_v1"), dict):
+                    continue
+                dbg["hyperparams_snapshot_v1"] = hp_dict
+                dbg["hyperparams_fingerprint_v1"] = fp_full
+                dbg["hyperparams_fingerprint_llm_v1"] = fp_llm
+                dbg["hyperparams_source_v1"] = src
+                dbg["hyperparams_stage_v1"] = str(stage or "")
+            except Exception:
+                continue
     except Exception:
         return
 
@@ -4816,7 +5171,7 @@ _fix2af_last_scrape_ledger = {}
 # GOOGLE SHEETS HISTORY STORAGE
 # Max number of history rows to load from Sheets/session when hydrating baselines.
 # Restored in REFACTOR170 (was accidentally removed in REFACTOR169).
-MAX_HISTORY_ITEMS = 50
+MAX_HISTORY_ITEMS = int(_yureeka_hp_get_v1('ops.max_history_items', 50) or 50)
 
 # Google Sheets OAuth scopes (module-level; used by get_google_sheet/get_google_spreadsheet)
 SCOPES = [
@@ -7387,7 +7742,7 @@ PREFERRED_SOURCE_DOMAINS = [
 
 # Search results cache
 _search_cache: Dict[str, Tuple[List[Dict], datetime]] = {}
-SEARCH_CACHE_TTL_HOURS = 24
+SEARCH_CACHE_TTL_HOURS = int(_yureeka_hp_get_v1('ops.search_cache_ttl_hours', 24) or 24)
 
 def get_search_cache_key(query: str) -> str:
     """Generate stable cache key for search query"""
@@ -13480,12 +13835,14 @@ def _llm_fallback_query_structure(query: str, web_context: Optional[Dict] = None
 
         # Deterministic cache key (replayable)
         cache_key = ""
+        cache_key_fallback = ""
         try:
             q_hash = _yureeka_llm_text_hash_v1(q)
             in_hash = _yureeka_llm_text_hash_v1(system_prompt + "\n" + q)
-            cache_key = get_llm_cache_key(str(model), "llm00_qstruct_v1", "qstruct_v1", in_hash, "", q_hash)
+            cache_key, cache_key_fallback = get_llm_cache_key_salted_v1(str(model), "llm00_qstruct_v1", "qstruct_v1", in_hash, "", q_hash)
         except Exception:
             cache_key = ""
+            cache_key_fallback = ""
 
         cached = None
         if cache_key:
@@ -14206,25 +14563,63 @@ def _fresh01_pick_best_date_v1(cands: list, fetched_at: str = "") -> Optional[da
         return None
     return None
 def _fresh01_score_from_age_days_v1(age_days: Optional[int]) -> Optional[float]:
-    """Deterministic freshness score base (0-100) from age in days."""
+    """Deterministic freshness score base (0-100) from age in days.
+
+    LLM37: curve is parameterized via HYPERPARAMS_V1 (defaults preserve LLM36 behavior).
+    """
     try:
         if age_days is None:
             return None
         a = int(age_days)
         if a < 0:
             return None
-        if a <= 30:
-            return 100.0
-        if a <= 180:
-            return 85.0
-        if a <= 365:
-            return 70.0
-        if a <= 730:
-            return 55.0
-        return 40.0
+
+        cut = globals().get("_FRESH01_SCORE_CUTOFFS_DAYS_V1") or [30, 180, 365, 730]
+        vals = globals().get("_FRESH01_SCORE_VALUES_V1") or [100.0, 85.0, 70.0, 55.0, 40.0]
+        # Validate shape: len(vals) == len(cut) + 1
+        try:
+            if not (isinstance(cut, list) and isinstance(vals, list) and len(vals) == (len(cut) + 1)):
+                raise ValueError("invalid curve")
+        except Exception:
+            cut = [30, 180, 365, 730]
+            vals = [100.0, 85.0, 70.0, 55.0, 40.0]
+
+        for i, c in enumerate(cut):
+            try:
+                if a <= int(c):
+                    return float(vals[i])
+            except Exception:
+                continue
+        return float(vals[-1])
     except Exception:
         return None
 
+
+def _fresh01_bucket_from_age_days_v1(age_days: Optional[int]) -> str:
+    """Deterministic freshness bucket label from age in days (LLM37 param-driven)."""
+    try:
+        if age_days is None:
+            return ""
+        a = int(age_days)
+        if a < 0:
+            return ""
+        cut = globals().get("_FRESH01_SCORE_CUTOFFS_DAYS_V1") or [30, 180, 365, 730]
+        labels = globals().get("_FRESH01_BUCKET_LABELS_V1") or ["≤30d", "≤6mo", "≤1y", "≤2y", ">2y"]
+        try:
+            if not (isinstance(cut, list) and isinstance(labels, list) and len(labels) == (len(cut) + 1)):
+                raise ValueError("invalid labels")
+        except Exception:
+            cut = [30, 180, 365, 730]
+            labels = ["≤30d", "≤6mo", "≤1y", "≤2y", ">2y"]
+        for i, c in enumerate(cut):
+            try:
+                if a <= int(c):
+                    return str(labels[i])
+            except Exception:
+                continue
+        return str(labels[-1])
+    except Exception:
+        return ""
 def _fresh01_confidence_from_heur_v1(heur: int) -> float:
     """Map deterministic heuristic score to a [0.70, 1.00] confidence."""
     try:
@@ -14285,16 +14680,7 @@ def _fresh01_compute_source_freshness_v2(text: str, fetched_at: str = "") -> dic
                 age = 0
             if age >= 0:
                 out["freshness_age_days"] = int(age)
-                if age <= 30:
-                    out["freshness_bucket"] = "≤30d"
-                elif age <= 180:
-                    out["freshness_bucket"] = "≤6mo"
-                elif age <= 365:
-                    out["freshness_bucket"] = "≤1y"
-                elif age <= 730:
-                    out["freshness_bucket"] = "≤2y"
-                else:
-                    out["freshness_bucket"] = ">2y"
+                out["freshness_bucket"] = _fresh01_bucket_from_age_days_v1(age)
 
                 base = _fresh01_score_from_age_days_v1(age)
                 if base is not None:
@@ -17252,6 +17638,63 @@ def attach_source_snapshots_to_analysis(analysis: dict, web_context: dict) -> di
                         analysis["debug"]["fresh02_freshness_tiebreak_v1"] = _tb
                 except Exception:
                     pass
+                # LLM36: derive a run-level freshness tiebreak summary from per-metric beacons (robust; avoids globals()).
+                try:
+                    _pmc = None
+                    try:
+                        _pmc = analysis.get("primary_metrics_canonical") if isinstance(analysis, dict) else None
+                    except Exception:
+                        _pmc = None
+                    if not (isinstance(_pmc, dict) and _pmc):
+                        try:
+                            _pr = analysis.get("primary_response") if isinstance(analysis, dict) else None
+                            if isinstance(_pr, dict):
+                                _pmc = _pr.get("primary_metrics_canonical")
+                        except Exception:
+                            _pmc = None
+                    if isinstance(_pmc, dict) and _pmc:
+                        _used_n = 0
+                        _chg_n = 0
+                        _chg_keys = []
+                        _ex = []
+                        for _ck, _m in _pmc.items():
+                            if not isinstance(_m, dict):
+                                continue
+                            _prov = _m.get("provenance")
+                            if not isinstance(_prov, dict):
+                                continue
+                            _ft = _prov.get("fresh_tiebreak_v1")
+                            if not isinstance(_ft, dict):
+                                continue
+                            if bool(_ft.get("used")):
+                                _used_n += 1
+                            if bool(_ft.get("changed_winner")):
+                                _chg_n += 1
+                                _chg_keys.append(str(_ck))
+                                if len(_ex) < 6:
+                                    _ex.append({
+                                        "canonical_key": str(_ck),
+                                        "winner_url": str(_ft.get("winner_url") or ""),
+                                        "base_url": str(_ft.get("base_url") or ""),
+                                        "competitor_url": str(_ft.get("competitor_url") or ""),
+                                        "a_score": _ft.get("a_score"),
+                                        "b_score": _ft.get("b_score"),
+                                        "a_freshness": _ft.get("a_freshness"),
+                                        "b_freshness": _ft.get("b_freshness"),
+                                        "a_published_at": str(_ft.get("a_published_at") or ""),
+                                        "b_published_at": str(_ft.get("b_published_at") or ""),
+                                        "reason": str(_ft.get("reason") or ""),
+                                    })
+                        analysis["debug"]["fresh02_freshness_tiebreak_summary_v1"] = {
+                            "used_count": int(_used_n),
+                            "changed_winner_count": int(_chg_n),
+                            "changed_winner_keys": list(_chg_keys[:80]),
+                            "examples": list(_ex),
+                        }
+                except Exception:
+                    pass
+
+
         except Exception:
             pass
         analysis.setdefault("results", {})
@@ -30184,6 +30627,15 @@ def _refactor28_schema_only_rebuild_authoritative_v1(
     except Exception:
         pass
 
+    # LLM37: tie-break quantization knob (only effective when freshness tie-break is enabled).
+    _fresh02_min_score_delta = 0.0
+    try:
+        _fresh02_min_score_delta = float(_yureeka_hp_get_v1("freshness.tiebreak.min_score_delta", 0.0) or 0.0)
+        if _fresh02_min_score_delta < 0.0:
+            _fresh02_min_score_delta = 0.0
+    except Exception:
+        _fresh02_min_score_delta = 0.0
+
     def _fresh02_candidate_tie_key_v1(c: dict) -> tuple:
         """Return a tuple suitable for lexicographic ascending sort (smaller is better)."""
         if not _fresh02_enabled or not isinstance(c, dict):
@@ -30202,7 +30654,18 @@ def _refactor28_schema_only_rebuild_authoritative_v1(
             sc_f = float(sc)
         except Exception:
             sc_f = None
-        score_key = (-sc_f) if sc_f is not None else 9999
+        # Optional quantization: treat near-equal freshness scores as equal (min_score_delta).
+        sc_eff = sc_f
+        try:
+            md = float(_fresh02_min_score_delta or 0.0)
+        except Exception:
+            md = 0.0
+        if (sc_eff is not None) and (md is not None) and (md > 0.0):
+            try:
+                sc_eff = float(int(float(sc_eff) // float(md)) * float(md))
+            except Exception:
+                sc_eff = sc_f
+        score_key = (-sc_eff) if sc_eff is not None else 9999
         try:
             age_i = int(age) if age is not None else 999999
         except Exception:
@@ -30953,8 +31416,7 @@ def _refactor28_schema_only_rebuild_authoritative_v1(
                     "used_fallback_weak": bool(_ref100_used_fallback_weak),
                     "top3": list(top3 or []),
                 }
-
-                # LLM35-B: explicit per-metric freshness tie-break beacon (deterministic; flag-gated)
+                # LLM36: explicit per-metric freshness tie-break beacon (deterministic; flag-gated)
                 try:
                     _ftb = {
                         "used": False,
@@ -30967,8 +31429,13 @@ def _refactor28_schema_only_rebuild_authoritative_v1(
                         "b_freshness": None,
                         "a_age_days": None,
                         "b_age_days": None,
-                        "a_url": "",
-                        "b_url": "",
+                        "a_published_at": "",
+                        "b_published_at": "",
+                        "a_bucket": "",
+                        "b_bucket": "",
+                        "winner_url": "",
+                        "base_url": "",
+                        "competitor_url": "",
                         "stable_fallback_key": "",
                     }
 
@@ -30994,8 +31461,19 @@ def _refactor28_schema_only_rebuild_authoritative_v1(
                     else:
                         _ftb["used"] = True
 
-                        # winner url from metric (schema-preserving fields)
-                        win_url = str(metric.get("source_url") or metric.get("url") or metric.get("source") or "")
+                        # Winner URL from the selected candidate (NOT from the metric shell)
+                        win_url = ""
+                        try:
+                            win_url = str((best or {}).get("source_url") or (best or {}).get("url") or "")
+                        except Exception:
+                            win_url = ""
+                        if not win_url:
+                            try:
+                                win_url = str((((metric.get("provenance") or {}).get("best_candidate") or {}).get("source_url")) or "")
+                            except Exception:
+                                win_url = ""
+
+                        # Base (non-freshness) winner URL captured via tie_base tracking
                         base_url = ""
                         try:
                             base_best = None
@@ -31012,30 +31490,44 @@ def _refactor28_schema_only_rebuild_authoritative_v1(
                         except Exception:
                             base_url = ""
 
-                        try:
-                            win_n = _normalize_url(win_url) if win_url else ""
-                        except Exception:
-                            win_n = (win_url or "").strip().lower()
-                        try:
-                            base_n = _normalize_url(base_url) if base_url else ""
-                        except Exception:
-                            base_n = (base_url or "").strip().lower()
-
-                        _ftb["stable_fallback_key"] = base_n or win_n
-
-                        if base_n and win_n and (base_n != win_n):
-                            _ftb["reason"] = "score_tie_resolved_by_freshness"
-                            _ftb["changed_winner"] = True
-                            _ftb["a_url"] = win_url
-                            _ftb["b_url"] = base_url
-                        else:
-                            _ftb["reason"] = "score_tie_freshness_not_decisive"
-                            _ftb["changed_winner"] = False
-                            _ftb["a_url"] = win_url
+                        def _ftb_norm_url(u: str) -> str:
                             try:
-                                _ftb["b_url"] = str((_top[1] or {}).get("url") or "")
+                                return _normalize_url(u) if u else ""
                             except Exception:
-                                _ftb["b_url"] = ""
+                                return (u or "").strip().lower()
+
+                        win_n = _ftb_norm_url(win_url)
+                        base_n = _ftb_norm_url(base_url)
+
+                        _ftb["winner_url"] = win_url
+                        _ftb["base_url"] = base_url
+                        _ftb["stable_fallback_key"] = base_n or win_n
+                        _ftb["changed_winner"] = bool(base_n and win_n and (base_n != win_n))
+
+                        # competitor URL: base if winner changed, else the runner-up in top3
+                        if _ftb["changed_winner"]:
+                            _ftb["competitor_url"] = base_url
+                            _ftb["reason"] = "score_tie_resolved_by_freshness"
+                        else:
+                            try:
+                                _ftb["competitor_url"] = str((_top[1] if isinstance(_top[1], dict) else {}).get("url") or "")
+                            except Exception:
+                                _ftb["competitor_url"] = ""
+                            # More specific reason when freshness is missing/equal
+                            try:
+                                a0 = _top[0] if isinstance(_top[0], dict) else {}
+                                b0 = _top[1] if isinstance(_top[1], dict) else {}
+                                a_fs = a0.get("freshness_score")
+                                b_fs = b0.get("freshness_score")
+                                if (a_fs in (None, "")) or (b_fs in (None, "")):
+                                    _ftb["reason"] = "score_tie_missing_freshness_stable_fallback"
+                                else:
+                                    try:
+                                        _ftb["reason"] = "score_tie_freshness_equal_stable_fallback" if float(a_fs) == float(b_fs) else "score_tie_winner_unchanged"
+                                    except Exception:
+                                        _ftb["reason"] = "score_tie_winner_unchanged"
+                            except Exception:
+                                _ftb["reason"] = "score_tie_winner_unchanged"
 
                         # Attach top-2 score/freshness context (as seen in selection_year_anchor_v1.top3)
                         try:
@@ -31047,6 +31539,10 @@ def _refactor28_schema_only_rebuild_authoritative_v1(
                             _ftb["b_freshness"] = b0.get("freshness_score")
                             _ftb["a_age_days"] = a0.get("freshness_age_days")
                             _ftb["b_age_days"] = b0.get("freshness_age_days")
+                            _ftb["a_published_at"] = a0.get("published_at") or ""
+                            _ftb["b_published_at"] = b0.get("published_at") or ""
+                            _ftb["a_bucket"] = a0.get("freshness_bucket") or ""
+                            _ftb["b_bucket"] = b0.get("freshness_bucket") or ""
                         except Exception:
                             pass
                 except Exception:
@@ -31057,9 +31553,10 @@ def _refactor28_schema_only_rebuild_authoritative_v1(
                         metric["provenance"]["fresh_tiebreak_v1"] = _ftb
                 except Exception:
                     pass
+
+
         except Exception:
             pass
-
         # REFACTOR113: explicit missing reason when year-anchor gating blocks binding
         try:
             if _ref100_required_years and isinstance(metric, dict) and _ref113_missing_reason:
@@ -32549,6 +33046,40 @@ try:
         PATCH_TRACKER_V1.insert(0, {"patch_id": "LLM35", "scope": "freshness", "summary": "Wire deterministic freshness score into veracity_scores.data_freshness and surface it in Evidence Quality Scores; add per-metric fresh_tiebreak_v1 beacon (used/reason/stable fallback); and fix fresh01_source_freshness_v1 to aggregate from the same (current) source pool used by selection in evolution.", "risk": "low"})
 except Exception:
     pass
+
+# LLM36: patch tracker overlay (freshness tie-break beacon fixes + run-level summary)
+try:
+    if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "LLM36" for e in PATCH_TRACKER_V1):
+        PATCH_TRACKER_V1.insert(0, {"patch_id": "LLM36", "scope": "freshness", "summary": "Fix per-metric fresh_tiebreak_v1 fields (winner/base URLs + changed_winner detection) so freshness-driven tie-breaking is provable; add debug.fresh02_freshness_tiebreak_summary_v1 derived from per-metric beacons (analysis + evolution). No winner/value changes; cache-first determinism preserved.", "risk": "low"})
+except Exception:
+    pass
+
+# [MOD:PATCH_TRACKER]
+# LLM37: patch tracker entry
+try:
+    PATCH_TRACKER_V1.append({
+        "patch_id": "LLM37",
+        "date": "2026-02-17",
+        "title": "Hyperparameter block v1",
+        "summary": [
+            "Add [MOD:HYPERPARAMS_V1] at top-of-file to centralize policy knobs for deterministic + LLM/NLP layers.",
+            "Parameterize key thresholds (LLM confidence gates, freshness curve, cache salting, ops TTLs) while preserving LLM36 defaults.",
+            "Attach additive hyperparams snapshot + fingerprints into wrapper.debug for auditability (no behavior change).",
+        ],
+        "acceptance": [
+            "Defaults preserve REFACTOR206/LLM36 deterministic outcomes (no metric winner/value changes).",
+            "Hyperparameters are declared in one top section; optional overrides via YUREEKA_HYPERPARAMS_JSON.",
+            "LLM cache key salting is backward-compatible via fallback to legacy unsalted key.",
+        ],
+        "notes": [
+            "Override JSON is deep-merged and sanitized; invalid freshness curve overrides fall back to defaults.",
+            "Freshness tie-break quantization only takes effect when ENABLE_SOURCE_FRESHNESS_TIEBREAK is enabled.",
+        ],
+    })
+except Exception:
+    pass
+
+
 
 
 
