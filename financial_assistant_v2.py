@@ -21,6 +21,7 @@
 #   yureeka/llm/sidecar.py             [MOD:LLM_SIDECAR]
 #   yureeka/llm/evidence_snippets.py   [MOD:LLM01_EVIDENCE]
 #   yureeka/llm/query_structure.py     [MOD:LLM00_QSTRUCT]
+#   yureeka/freshness/source_freshness.py  [MOD:FRESH01]
 #   yureeka/core/pipeline.py           [MOD:PIPELINE_CORE]
 #   yureeka/core/diffing.py            [MOD:DIFF_CORE]
 #   yureeka/ui/app.py                  [MOD:UI_APP]
@@ -166,11 +167,11 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "LLM30"
+_YUREEKA_CODE_VERSION_LOCK = "LLM32"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 # REFACTOR206: Release Candidate freeze (no pipeline behavior change).
 YUREEKA_RELEASE_CANDIDATE_V1 = False
-YUREEKA_RELEASE_TAG_V1 = "LLM30"
+YUREEKA_RELEASE_TAG_V1 = "LLM32"
 YUREEKA_FREEZE_MODE_V1 = True
 # Small default regression set (optional; used for manual triad smoke tests).
 YUREEKA_REGRESSION_QUESTIONS_V1 = [
@@ -10097,6 +10098,80 @@ def source_consensus(web_context: dict) -> float:
 
     return round(consensus_score, 1)
 
+def source_freshness_score_v1(sources: Any, web_context: dict) -> Optional[float]:
+    """Compute deterministic data freshness score (0-100) for the current evidence set.
+
+    - Uses per-source freshness_score attached in baseline_sources_cache (FRESH01).
+    - Returns median of matched source scores; falls back to median of all source scores.
+    - Returns None when no freshness scores are available.
+    """
+    try:
+        bsc = None
+        if isinstance(web_context, dict):
+            bsc = web_context.get("baseline_sources_cache") or web_context.get("baseline_sources") or web_context.get("sources_cache")
+        bsc_list = bsc if isinstance(bsc, list) else []
+        url2score = {}
+        all_scores = []
+        for s in bsc_list:
+            if not isinstance(s, dict):
+                continue
+            u = s.get("url") or s.get("source_url") or ""
+            try:
+                u_norm = _normalize_url(u)
+            except Exception:
+                u_norm = str(u).strip().lower()
+            sc = s.get("freshness_score")
+            try:
+                sc_f = float(sc)
+            except Exception:
+                sc_f = None
+            if u_norm:
+                if sc_f is not None:
+                    url2score[u_norm] = sc_f
+                    all_scores.append(sc_f)
+
+        def _extract_url(txt: str) -> str:
+            if not isinstance(txt, str):
+                return ""
+            m = re.search(r"https?://\S+", txt)
+            if m:
+                return m.group(0).strip().rstrip(").,;\"'")
+            return ""
+
+        matched = []
+        if isinstance(sources, list):
+            for item in sources:
+                s_txt = str(item) if item is not None else ""
+                u_raw = _extract_url(s_txt) or s_txt
+                try:
+                    u_norm = _normalize_url(u_raw)
+                except Exception:
+                    u_norm = u_raw.strip().lower()
+                if not u_norm:
+                    continue
+                # exact
+                if u_norm in url2score:
+                    matched.append(url2score[u_norm])
+                    continue
+                # domain containment fallback
+                for k, v in url2score.items():
+                    if u_norm in k or k in u_norm:
+                        matched.append(v)
+                        break
+
+        use = matched if matched else all_scores
+        if not use:
+            return None
+        use_sorted = sorted([float(x) for x in use if x is not None])
+        if not use_sorted:
+            return None
+        mid = len(use_sorted) // 2
+        if len(use_sorted) % 2 == 1:
+            return float(use_sorted[mid])
+        return float((use_sorted[mid - 1] + use_sorted[mid]) / 2.0)
+    except Exception:
+        return None
+
 def evidence_based_veracity(primary_data: dict, web_context: dict) -> dict:
     """
     Evidence-driven veracity scoring.
@@ -10141,6 +10216,11 @@ def evidence_based_veracity(primary_data: dict, web_context: dict) -> dict:
     # 4. SOURCE CONSENSUS (15% weight)
     consensus_score = source_consensus(web_context)
     breakdown["source_consensus"] = round(consensus_score, 1)
+
+    # 5. DATA FRESHNESS (diagnostic component; 0-100; not included in overall v1 weight)
+    fresh_score = source_freshness_score_v1(sources, web_context)
+    breakdown["data_freshness"] = round(float(fresh_score), 1) if (fresh_score is not None) else None
+
 
     # Calculate weighted total
     total_score = (
@@ -13817,6 +13897,340 @@ def _yureeka_now_iso_utc() -> str:
         except Exception:
             return ""
 
+
+# =============================================================================
+# [MOD:FRESH01] Source freshness extraction (deterministic, audit-friendly)
+#
+# Purpose:
+# - Best-effort extract a published/updated date from already-scraped text (no web calls).
+# - Compute source age (days) relative to fetched_at and bucketize.
+# - Attach as additive fields to scraped_meta + baseline_sources_cache for transparency.
+# - Does NOT change metric winners/values unless ENABLE_SOURCE_FRESHNESS_TIEBREAK is explicitly enabled.
+# =============================================================================
+
+# Default OFF: baseline REFACTOR206/LLM series behavior unchanged (selection remains schema/year-anchor driven).
+ENABLE_SOURCE_FRESHNESS_TIEBREAK = False
+
+_FRESH01_MONTHS = {
+    "jan": 1, "january": 1,
+    "feb": 2, "february": 2,
+    "mar": 3, "march": 3,
+    "apr": 4, "april": 4,
+    "may": 5,
+    "jun": 6, "june": 6,
+    "jul": 7, "july": 7,
+    "aug": 8, "august": 8,
+    "sep": 9, "sept": 9, "september": 9,
+    "oct": 10, "october": 10,
+    "nov": 11, "november": 11,
+    "dec": 12, "december": 12,
+}
+
+def _fresh01__safe_int_v1(x, default=None):
+    try:
+        if isinstance(x, bool):
+            return default
+        if isinstance(x, (int, float)):
+            return int(x)
+        if isinstance(x, str) and x.strip():
+            return int(float(x.strip()))
+    except Exception:
+        pass
+    return default
+
+def _fresh01__make_dt_v1(y: int, m: int, d: int) -> Optional[datetime]:
+    try:
+        # Use noon UTC to avoid DST edge cases when only a date is known.
+        return datetime(int(y), int(m), int(d), 12, 0, 0, tzinfo=timezone.utc)
+    except Exception:
+        return None
+
+def _fresh01__norm_iso_date_v1(dt: Optional[datetime]) -> str:
+    try:
+        if not isinstance(dt, datetime):
+            return ""
+        return dt.astimezone(timezone.utc).date().isoformat()
+    except Exception:
+        return ""
+
+
+def _fresh01_extract_date_candidates_v1(text: str, max_scan: int = 5200) -> list:
+    """Return candidate dates from text with rough priority hints (deterministic regex-only)."""
+    if not isinstance(text, str) or not text.strip():
+        return []
+    t = text[: int(max_scan or 5200)]
+    out = []
+
+    def _ctx(start: int, end: int) -> str:
+        try:
+            a = max(0, int(start) - 70)
+            b = min(len(t), int(end) + 70)
+            return t[a:b].lower()
+        except Exception:
+            return ""
+
+    # ISO-ish: 2025-07-01 or 2025/07/01
+    for m in re.finditer(r"\b(20\d{2})[-/](\d{1,2})[-/](\d{1,2})\b", t):
+        yy = _fresh01__safe_int_v1(m.group(1))
+        mm = _fresh01__safe_int_v1(m.group(2))
+        dd = _fresh01__safe_int_v1(m.group(3))
+        if not yy or not mm or not dd:
+            continue
+        if mm < 1 or mm > 12 or dd < 1 or dd > 31:
+            continue
+        dt = _fresh01__make_dt_v1(yy, mm, dd)
+        if not dt:
+            continue
+        out.append({"dt": dt, "pos": int(m.start()), "raw": m.group(0), "kind": "iso", "ctx": _ctx(m.start(), m.end())})
+
+    # Month day, year: July 1, 2025 / Jul 1 2025
+    mon_re = r"Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t|tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?"
+    for m in re.finditer(rf"\b({mon_re})\s+(\d{{1,2}})(?:st|nd|rd|th)?\s*,?\s*(20\d{{2}})\b", t, flags=re.I):
+        mon_s = (m.group(1) or "").lower()
+        dd = _fresh01__safe_int_v1(m.group(2))
+        yy = _fresh01__safe_int_v1(m.group(3))
+        mm = _FRESH01_MONTHS.get(mon_s[:3], _FRESH01_MONTHS.get(mon_s, None))
+        if not yy or not mm or not dd:
+            continue
+        if mm < 1 or mm > 12 or dd < 1 or dd > 31:
+            continue
+        dt = _fresh01__make_dt_v1(yy, mm, dd)
+        if not dt:
+            continue
+        out.append({"dt": dt, "pos": int(m.start()), "raw": m.group(0), "kind": "mdy", "ctx": _ctx(m.start(), m.end())})
+
+    # Day Month year: 1 July 2025
+    for m in re.finditer(rf"\b(\d{{1,2}})(?:st|nd|rd|th)?\s+({mon_re})\s+(20\d{{2}})\b", t, flags=re.I):
+        dd = _fresh01__safe_int_v1(m.group(1))
+        mon_s = (m.group(2) or "").lower()
+        yy = _fresh01__safe_int_v1(m.group(3))
+        mm = _FRESH01_MONTHS.get(mon_s[:3], _FRESH01_MONTHS.get(mon_s, None))
+        if not yy or not mm or not dd:
+            continue
+        if mm < 1 or mm > 12 or dd < 1 or dd > 31:
+            continue
+        dt = _fresh01__make_dt_v1(yy, mm, dd)
+        if not dt:
+            continue
+        out.append({"dt": dt, "pos": int(m.start()), "raw": m.group(0), "kind": "dmy", "ctx": _ctx(m.start(), m.end())})
+
+    return out[:24]
+
+def _fresh01_pick_best_candidate_v1(cands: list, fetched_at: str = "") -> Optional[dict]:
+    """Pick the best candidate date dict using deterministic heuristics + fetched_at sanity bounds.
+
+    Returns the candidate dict with added key: _heur (int), or None.
+    """
+    if not isinstance(cands, list) or not cands:
+        return None
+    fetched_dt = _parse_iso_dt(fetched_at) if fetched_at else None
+
+    best = None
+    best_key = None  # (heur_score, dt, -pos)
+
+    for c in cands:
+        if not isinstance(c, dict) or not isinstance(c.get("dt"), datetime):
+            continue
+        dt = c["dt"].astimezone(timezone.utc)
+        pos = int(c.get("pos") or 0)
+        ctx = str(c.get("ctx") or "").lower()
+
+        # Ignore implausible years
+        if dt.year < 1990 or dt.year > 2100:
+            continue
+
+        # Bound by fetched_at when available (avoid accidentally treating future dates as publish dates)
+        if isinstance(fetched_dt, datetime):
+            if dt.date() > (fetched_dt + timedelta(days=7)).date():
+                continue
+            age = int((fetched_dt.date() - dt.date()).days)
+            if age < -3:
+                continue
+
+        heur = 0
+        if ctx:
+            if "last updated" in ctx or "updated" in ctx:
+                heur += 6
+            if "published" in ctx or "posted" in ctx:
+                heur += 4
+            if "release date" in ctx or "released" in ctx:
+                heur += 2
+        # Prefer header-like positions
+        if pos <= 600:
+            heur += 1
+
+        key = (heur, dt, -pos)
+        if (best_key is None) or (key > best_key):
+            best_key = key
+            best = dict(c)
+            try:
+                best["_heur"] = int(heur)
+            except Exception:
+                best["_heur"] = 0
+
+    return best
+
+def _fresh01_pick_best_date_v1(cands: list, fetched_at: str = "") -> Optional[datetime]:
+    """Backward-compatible wrapper returning only the datetime."""
+    best = _fresh01_pick_best_candidate_v1(cands, fetched_at=fetched_at)
+    try:
+        if isinstance(best, dict) and isinstance(best.get("dt"), datetime):
+            return best["dt"].astimezone(timezone.utc)
+    except Exception:
+        return None
+    return None
+def _fresh01_score_from_age_days_v1(age_days: Optional[int]) -> Optional[float]:
+    """Deterministic freshness score base (0-100) from age in days."""
+    try:
+        if age_days is None:
+            return None
+        a = int(age_days)
+        if a < 0:
+            return None
+        if a <= 30:
+            return 100.0
+        if a <= 180:
+            return 85.0
+        if a <= 365:
+            return 70.0
+        if a <= 730:
+            return 55.0
+        return 40.0
+    except Exception:
+        return None
+
+def _fresh01_confidence_from_heur_v1(heur: int) -> float:
+    """Map deterministic heuristic score to a [0.70, 1.00] confidence."""
+    try:
+        h = int(heur)
+    except Exception:
+        h = 0
+    # heur includes +6 for updated, +4 for published, +2 for released, +1 for header position
+    if h >= 7:
+        return 1.00   # updated + header
+    if h >= 6:
+        return 0.95   # updated
+    if h >= 5:
+        return 0.90   # published + header
+    if h >= 4:
+        return 0.88   # published
+    if h >= 3:
+        return 0.82   # released + header
+    if h >= 2:
+        return 0.80   # released
+    if h >= 1:
+        return 0.75   # header-only
+    return 0.70       # generic date
+
+def _fresh01_compute_source_freshness_v2(text: str, fetched_at: str = "") -> dict:
+    """Return additive freshness fields for a source snapshot (includes 0-100 score).
+
+    Determinism rules:
+    - Regex-only on already-scraped text (no web calls).
+    - Age computed relative to fetched_at (snapshot-local), not wall-clock at render time.
+    """
+    out = {
+        "published_at": "",                 # ISO date (YYYY-MM-DD)
+        "freshness_age_days": None,         # int days (>=0) or None
+        "freshness_bucket": "",             # categorical bucket
+        "freshness_method": "none",         # regex_v1 / none
+        "freshness_date_confidence": None,  # float in [0,1] or None
+        "freshness_score": None,            # float 0-100 or None
+        "freshness_score_method": "none",   # bucket_v1_conf_v1 / none
+    }
+    try:
+        cands = _fresh01_extract_date_candidates_v1(text)
+        best = _fresh01_pick_best_candidate_v1(cands, fetched_at=fetched_at)
+        if not (isinstance(best, dict) and isinstance(best.get("dt"), datetime)):
+            return out
+        dt = best["dt"].astimezone(timezone.utc)
+        out["published_at"] = _fresh01__norm_iso_date_v1(dt)
+        out["freshness_method"] = "regex_v1"
+
+        # confidence from heuristics used in deterministic selection
+        heur = int(best.get("_heur") or 0)
+        conf = float(_fresh01_confidence_from_heur_v1(heur))
+        out["freshness_date_confidence"] = round(conf, 3)
+
+        fdt = _parse_iso_dt(fetched_at) if fetched_at else None
+        if isinstance(fdt, datetime):
+            age = int((fdt.date() - dt.date()).days)
+            if age < 0 and age >= -3:
+                age = 0
+            if age >= 0:
+                out["freshness_age_days"] = int(age)
+                if age <= 30:
+                    out["freshness_bucket"] = "≤30d"
+                elif age <= 180:
+                    out["freshness_bucket"] = "≤6mo"
+                elif age <= 365:
+                    out["freshness_bucket"] = "≤1y"
+                elif age <= 730:
+                    out["freshness_bucket"] = "≤2y"
+                else:
+                    out["freshness_bucket"] = ">2y"
+
+                base = _fresh01_score_from_age_days_v1(age)
+                if base is not None:
+                    out["freshness_score"] = round(float(base) * float(conf), 1)
+                    out["freshness_score_method"] = "bucket_v1_conf_v1"
+    except Exception:
+        return out
+    return out
+
+# Backward-compatible name (LLM31 used v1)
+_fresh01_compute_source_freshness_v1 = _fresh01_compute_source_freshness_v2
+def _fresh01_aggregate_source_freshness_v1(baseline_sources_cache: Any, stage: str = "") -> dict:
+    """Aggregate freshness beacons across sources (diagnostic-only)."""
+    bsc = baseline_sources_cache if isinstance(baseline_sources_cache, list) else []
+    ages = []
+    bucket_counts = {}
+    samples = []
+    for s in bsc:
+        if not isinstance(s, dict):
+            continue
+        age = s.get("freshness_age_days")
+        try:
+            age_i = int(age) if age is not None else None
+        except Exception:
+            age_i = None
+        if isinstance(age_i, int) and age_i >= 0:
+            ages.append(age_i)
+            b = str(s.get("freshness_bucket") or "")
+            if b:
+                bucket_counts[b] = int(bucket_counts.get(b, 0)) + 1
+        samples.append({
+            "url": str(s.get("url") or s.get("source_url") or "")[:240],
+            "published_at": str(s.get("published_at") or ""),
+            "age_days": age_i,
+        })
+
+    ages_sorted = sorted(ages)
+    median_age = None
+    try:
+        if ages_sorted:
+            mid = len(ages_sorted) // 2
+            median_age = ages_sorted[mid] if len(ages_sorted) % 2 == 1 else int((ages_sorted[mid-1] + ages_sorted[mid]) / 2)
+    except Exception:
+        median_age = None
+
+    oldest = [x for x in samples if isinstance(x.get("age_days"), int)]
+    oldest = sorted(oldest, key=lambda r: int(r.get("age_days") or 0), reverse=True)[:5]
+    newest = [x for x in samples if isinstance(x.get("age_days"), int)]
+    newest = sorted(newest, key=lambda r: int(r.get("age_days") or 0))[:5]
+
+    return {
+        "stage": str(stage or ""),
+        "sources_total": int(len(bsc)),
+        "sources_with_published_at": int(len(ages)),
+        "median_age_days": median_age,
+        "min_age_days": (min(ages) if ages else None),
+        "max_age_days": (max(ages) if ages else None),
+        "bucket_counts": bucket_counts,
+        "sample_oldest": oldest,
+        "sample_newest": newest,
+    }
+
 # REFACTOR26: Centralized source_url attribution helpers (schema-preserving)
 # - Goal: ensure row-level injection gating can reliably attribute a current metric
 #   to its source URL (production vs injected), even when source_url lives only
@@ -16143,6 +16557,18 @@ def attach_source_snapshots_to_analysis(analysis: dict, web_context: dict) -> di
                 except Exception:
                     _sd = "pdf_unsupported_missing_dependency"
 
+            # FRESH01: compute source freshness (published_at + age buckets) from existing content
+            try:
+                _fa = meta.get("fetched_at") or _yureeka_now_iso_v1()
+                meta["fetched_at"] = _fa
+                _fresh = _fresh01_compute_source_freshness_v1(content, fetched_at=_fa)
+                if isinstance(_fresh, dict):
+                    for _k in ("published_at", "freshness_age_days", "freshness_bucket", "freshness_method", "freshness_date_confidence", "freshness_score", "freshness_score_method"):
+                        if _k in _fresh:
+                            meta[_k] = _fresh.get(_k)
+            except Exception:
+                pass
+
             baseline_sources_cache.append({
                 "url": url,
                 "status": _status,
@@ -16150,6 +16576,12 @@ def attach_source_snapshots_to_analysis(analysis: dict, web_context: dict) -> di
                 "numbers_found": int(meta.get("numbers_found") or (len(nums) if isinstance(nums, list) else 0)),
                 "fetched_at": meta.get("fetched_at") or _yureeka_now_iso_v1(),
                 "fingerprint": meta.get("fingerprint") or _fingerprint(content),
+
+                # FRESH01: deterministic published/updated date extraction (diagnostic-only)
+                "published_at": meta.get("published_at") or "",
+                "freshness_age_days": meta.get("freshness_age_days"),
+                "freshness_bucket": meta.get("freshness_bucket") or "",
+                "freshness_method": meta.get("freshness_method") or "none",
 
                 # REFACTOR121: store a lightweight excerpt for year-anchor backstop (avoid huge payloads)
                 "snapshot_text_excerpt": (content[:12000] if isinstance(content, str) else ""),
@@ -16349,6 +16781,14 @@ def attach_source_snapshots_to_analysis(analysis: dict, web_context: dict) -> di
                                 except Exception:
                                     pass
 
+                                # FRESH01: compute freshness for schema-seeded sources (diagnostic-only)
+                                try:
+                                    _fa_seed = _yureeka_now_iso_v1()
+                                    _fresh_seed = _fresh01_compute_source_freshness_v1(_txt or "", fetched_at=_fa_seed)
+                                except Exception:
+                                    _fa_seed = _yureeka_now_iso_v1()
+                                    _fresh_seed = {}
+
                                 baseline_sources_cache.append({
                                     "source_url": _u_norm,
                                     "url": _u_norm,
@@ -16361,7 +16801,11 @@ def attach_source_snapshots_to_analysis(analysis: dict, web_context: dict) -> di
                                     "numbers_found": _rf115_numbers_found,
                                     "seeded": True,
                                     "seeded_reason": "schema_seeds",
-                                    "fetched_at": _yureeka_now_iso_v1(),
+                                    "fetched_at": _fa_seed,
+                                    "published_at": (_fresh_seed.get("published_at") if isinstance(_fresh_seed, dict) else ""),
+                                    "freshness_age_days": (_fresh_seed.get("freshness_age_days") if isinstance(_fresh_seed, dict) else None),
+                                    "freshness_bucket": (_fresh_seed.get("freshness_bucket") if isinstance(_fresh_seed, dict) else ""),
+                                    "freshness_method": (_fresh_seed.get("freshness_method") if isinstance(_fresh_seed, dict) else "none"),
                                 })
                                 _existing.add(_u_norm)
                                 _rf115_added.append(_u_norm)
@@ -16377,6 +16821,14 @@ def attach_source_snapshots_to_analysis(analysis: dict, web_context: dict) -> di
                                     })
                                 except Exception:
                                     pass
+                                # FRESH01: compute freshness for schema-seeded placeholder sources (diagnostic-only)
+                                try:
+                                    _fa_seed2 = _yureeka_now_iso_v1()
+                                    _fresh_seed2 = _fresh01_compute_source_freshness_v1("", fetched_at=_fa_seed2)
+                                except Exception:
+                                    _fa_seed2 = _yureeka_now_iso_v1()
+                                    _fresh_seed2 = {}
+
                                 baseline_sources_cache.append({
                                     "source_url": _u_norm,
                                     "url": _u_norm,
@@ -16389,7 +16841,14 @@ def attach_source_snapshots_to_analysis(analysis: dict, web_context: dict) -> di
                                     "numbers_found": 0,
                                     "seeded": True,
                                     "seeded_reason": "schema_seeds_placeholder",
-                                    "fetched_at": _yureeka_now_iso_v1(),
+                                    "fetched_at": _fa_seed2,
+                                    "published_at": (_fresh_seed2.get("published_at") if isinstance(_fresh_seed2, dict) else ""),
+                                    "freshness_age_days": (_fresh_seed2.get("freshness_age_days") if isinstance(_fresh_seed2, dict) else None),
+                                    "freshness_bucket": (_fresh_seed2.get("freshness_bucket") if isinstance(_fresh_seed2, dict) else ""),
+                                    "freshness_method": (_fresh_seed2.get("freshness_method") if isinstance(_fresh_seed2, dict) else "none"),
+                                    "freshness_date_confidence": (_fresh_seed2.get("freshness_date_confidence") if isinstance(_fresh_seed2, dict) else None),
+                                    "freshness_score": (_fresh_seed2.get("freshness_score") if isinstance(_fresh_seed2, dict) else None),
+                                    "freshness_score_method": (_fresh_seed2.get("freshness_score_method") if isinstance(_fresh_seed2, dict) else "none"),
                                 })
                                 _existing.add(_u_norm)
                                 _rf115_added.append(_u_norm)
@@ -16503,6 +16962,14 @@ def attach_source_snapshots_to_analysis(analysis: dict, web_context: dict) -> di
         except Exception:
             pass
         analysis["baseline_sources_cache"] = baseline_sources_cache
+        # FRESH01: aggregate freshness beacon (diagnostic-only; does not affect selection/diff)
+        try:
+            _fresh_stage = "evolution_attach" if (("metric_changes" in analysis) or ("stability_score" in analysis)) else "analysis_attach"
+            analysis.setdefault("debug", {})
+            if isinstance(analysis.get("debug"), dict):
+                analysis["debug"]["fresh01_source_freshness_v1"] = _fresh01_aggregate_source_freshness_v1(baseline_sources_cache, stage=_fresh_stage)
+        except Exception:
+            pass
         analysis.setdefault("results", {})
         if isinstance(analysis["results"], dict):
 
@@ -24133,22 +24600,26 @@ def _yureeka_render_evidence_quality_scores_panel_v1(
         st.info("No evidence quality scores available.")
         return
 
-    cols = st.columns(5)
+    cols = st.columns(6)
     metrics_display = [
         ("Sources", "source_quality"),
         ("Numbers", "numeric_consistency"),
         ("Citations", "citation_density"),
         ("Consensus", "source_consensus"),
+        ("Freshness", "data_freshness"),
         ("Overall", "overall"),
     ]
     for i, (label, key) in enumerate(metrics_display):
-        val = _vs.get(key, 0)
+        val = _vs.get(key, None)
+        if val is None or val == "":
+            cols[i].metric(label, "—")
+            continue
         try:
             val_f = float(val)
         except Exception:
-            val_f = 0.0
+            cols[i].metric(label, "—")
+            continue
         cols[i].metric(label, f"{val_f:.0f}%")
-
 def _yureeka_render_data_visualization_panel_v1(data: Any) -> None:
     """Render Data Visualization panel (optional dependency on Plotly)."""
     st.subheader("📊 Data Visualization")
@@ -31377,8 +31848,19 @@ try:
         PATCH_TRACKER_V1.insert(0, {"patch_id": "LLM29", "scope": "llm-sidecar", "summary": "Add LLM_FORCE_REFRESH_ONCE (one-run-only cache bypass for first eligible cached key) + live_calls beacons to prove a true live HTTP call without breaking cache-first determinism.", "risk": "low"})
     if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "LLM30" for e in PATCH_TRACKER_V1):
         PATCH_TRACKER_V1.insert(0, {"patch_id": "LLM30", "scope": "llm-triad-safety", "summary": "Triad safety hardening: do not overwrite existing disk cache on forced refresh; add llm01_evidence_snippets_safety_v1 signature beacon to assert evidence-snippet assist makes no numeric/winner changes.", "risk": "low"})
+
+    if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "LLM31" for e in PATCH_TRACKER_V1):
+        PATCH_TRACKER_V1.insert(0, {"patch_id": "LLM31", "scope": "freshness", "summary": "Add deterministic source freshness extraction beacons (published_at + age buckets) into scraped_meta + baseline_sources_cache and emit debug.fresh01_source_freshness_v1 for audit. Metric selection/diff unchanged unless an explicit tiebreak flag is enabled (default OFF).", "risk": "low"})
 except Exception:
     pass
+
+# LLM32: patch tracker overlay (freshness score in Evidence Quality panel)
+try:
+    if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "LLM32" for e in PATCH_TRACKER_V1):
+        PATCH_TRACKER_V1.insert(0, {"patch_id": "LLM32", "scope": "freshness", "summary": "Compute deterministic 0-100 data freshness score from source published_at/fetched_at and surface it in veracity_scores + Evidence Quality Scores panel (additive; no metric selection changes).", "risk": "low"})
+except Exception:
+    pass
+
 # LLM10_PATCH_TRACKER_REORDER_V1: move known patch ids to the front in descending order (best-effort)
 try:
     _order = ["LLM00", "LLM01", "LLM01H", "LLM01D", "LLM01E", "LLM01F", "LLM02", "LLM03", "LLM04H", "LLM05", "LLM06", "LLM07", "LLM08", "LLM09", "LLM10", "LLM11", "LLM12", "LLM13", "LLM14", "LLM15", "LLM16", "LLM17", "LLM18", "LLM19", "LLM20", "LLM21", "LLM22", "LLM23", "LLM24", "LLM25", "LLM26", "LLM27", "LLM28"]
