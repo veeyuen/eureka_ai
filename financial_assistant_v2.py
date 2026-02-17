@@ -167,11 +167,11 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "LLM32"
+_YUREEKA_CODE_VERSION_LOCK = "LLM33"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 # REFACTOR206: Release Candidate freeze (no pipeline behavior change).
 YUREEKA_RELEASE_CANDIDATE_V1 = False
-YUREEKA_RELEASE_TAG_V1 = "LLM32"
+YUREEKA_RELEASE_TAG_V1 = "LLM33"
 YUREEKA_FREEZE_MODE_V1 = True
 # Small default regression set (optional; used for manual triad smoke tests).
 YUREEKA_REGRESSION_QUESTIONS_V1 = [
@@ -10099,76 +10099,124 @@ def source_consensus(web_context: dict) -> float:
     return round(consensus_score, 1)
 
 def source_freshness_score_v1(sources: Any, web_context: dict) -> Optional[float]:
-    """Compute deterministic data freshness score (0-100) for the current evidence set.
+    """Compute a deterministic source freshness score (0-100) from cached metadata only.
 
-    - Uses per-source freshness_score attached in baseline_sources_cache (FRESH01).
-    - Returns median of matched source scores; falls back to median of all source scores.
-    - Returns None when no freshness scores are available.
+    Preference order (best-effort, all deterministic):
+      1) baseline_sources_cache (if present on web_context) with freshness_score.
+      2) baseline_sources_cache with freshness_age_days (+ optional freshness_date_confidence).
+      3) scraped_meta (url->meta) with the same fields.
     """
     try:
-        bsc = None
-        if isinstance(web_context, dict):
-            bsc = web_context.get("baseline_sources_cache") or web_context.get("baseline_sources") or web_context.get("sources_cache")
-        bsc_list = bsc if isinstance(bsc, list) else []
-        url2score = {}
-        all_scores = []
-        for s in bsc_list:
-            if not isinstance(s, dict):
-                continue
-            u = s.get("url") or s.get("source_url") or ""
-            try:
-                u_norm = _normalize_url(u)
-            except Exception:
-                u_norm = str(u).strip().lower()
-            sc = s.get("freshness_score")
-            try:
-                sc_f = float(sc)
-            except Exception:
-                sc_f = None
-            if u_norm:
-                if sc_f is not None:
-                    url2score[u_norm] = sc_f
-                    all_scores.append(sc_f)
+        bsc_list = []
+        # 1) baseline_sources_cache variants
+        try:
+            for k in ("baseline_sources_cache", "baseline_sources", "sources_cache"):
+                _v = (web_context or {}).get(k)
+                if isinstance(_v, list) and _v:
+                    bsc_list = list(_v)
+                    break
+        except Exception:
+            bsc_list = []
 
-        def _extract_url(txt: str) -> str:
-            if not isinstance(txt, str):
-                return ""
-            m = re.search(r"https?://\S+", txt)
-            if m:
-                return m.group(0).strip().rstrip(").,;\"'")
-            return ""
+        # 2) fallback to scraped_meta (url->meta) if baseline list missing
+        try:
+            if (not bsc_list) and isinstance(web_context, dict):
+                sm = web_context.get("scraped_meta") or {}
+                if isinstance(sm, dict) and sm:
+                    tmp = []
+                    for url, meta in sm.items():
+                        if not isinstance(meta, dict):
+                            continue
+                        e = {"url": url}
+                        for kk in ("freshness_score", "freshness_age_days", "freshness_date_confidence", "published_at"):
+                            if kk in meta:
+                                e[kk] = meta.get(kk)
+                        tmp.append(e)
+                    if tmp:
+                        bsc_list = tmp
+        except Exception:
+            pass
 
-        matched = []
-        if isinstance(sources, list):
-            for item in sources:
-                s_txt = str(item) if item is not None else ""
-                u_raw = _extract_url(s_txt) or s_txt
-                try:
-                    u_norm = _normalize_url(u_raw)
-                except Exception:
-                    u_norm = u_raw.strip().lower()
-                if not u_norm:
-                    continue
-                # exact
-                if u_norm in url2score:
-                    matched.append(url2score[u_norm])
-                    continue
-                # domain containment fallback
-                for k, v in url2score.items():
-                    if u_norm in k or k in u_norm:
-                        matched.append(v)
-                        break
-
-        use = matched if matched else all_scores
-        if not use:
+        if not isinstance(bsc_list, list) or not bsc_list:
             return None
-        use_sorted = sorted([float(x) for x in use if x is not None])
-        if not use_sorted:
+
+        # Normalize source URL set
+        src_set = set()
+        try:
+            for u in (sources or []):
+                if isinstance(u, str) and u.strip():
+                    src_set.add(_normalize_url(u))
+        except Exception:
+            src_set = set()
+
+        def _compute_score_from_entry(ent: dict) -> Optional[float]:
+            if not isinstance(ent, dict):
+                return None
+            sc = ent.get("freshness_score")
+            try:
+                return float(sc)
+            except Exception:
+                pass
+            age = ent.get("freshness_age_days")
+            try:
+                age_i = int(float(age)) if age is not None else None
+            except Exception:
+                age_i = None
+            if age_i is None:
+                return None
+            try:
+                base = _fresh01_score_from_age_days_v1(age_i)
+            except Exception:
+                base = None
+            if base is None:
+                return None
+            conf = ent.get("freshness_date_confidence")
+            try:
+                cconf = float(conf) if conf is not None else 1.0
+            except Exception:
+                cconf = 1.0
+            cconf = max(0.0, min(1.0, cconf))
+            out = float(base) * cconf
+            if out < 0.0:
+                out = 0.0
+            if out > 100.0:
+                out = 100.0
+            return out
+
+        vals = []
+        try:
+            for ent in bsc_list:
+                if not isinstance(ent, dict):
+                    continue
+                u = ent.get("url") or ent.get("source_url") or ""
+                un = _normalize_url(u) if isinstance(u, str) and u else ""
+                if src_set and un and un not in src_set:
+                    continue
+                scv = _compute_score_from_entry(ent)
+                if scv is None:
+                    continue
+                vals.append(float(scv))
+        except Exception:
+            pass
+
+        if not vals:
+            try:
+                for ent in bsc_list:
+                    scv = _compute_score_from_entry(ent)
+                    if scv is None:
+                        continue
+                    vals.append(float(scv))
+            except Exception:
+                pass
+
+        if not vals:
             return None
-        mid = len(use_sorted) // 2
-        if len(use_sorted) % 2 == 1:
-            return float(use_sorted[mid])
-        return float((use_sorted[mid - 1] + use_sorted[mid]) / 2.0)
+
+        vals.sort()
+        mid = len(vals) // 2
+        if len(vals) % 2 == 1:
+            return float(vals[mid])
+        return float((vals[mid - 1] + vals[mid]) / 2.0)
     except Exception:
         return None
 
@@ -16582,6 +16630,9 @@ def attach_source_snapshots_to_analysis(analysis: dict, web_context: dict) -> di
                 "freshness_age_days": meta.get("freshness_age_days"),
                 "freshness_bucket": meta.get("freshness_bucket") or "",
                 "freshness_method": meta.get("freshness_method") or "none",
+                "freshness_date_confidence": meta.get("freshness_date_confidence"),
+                "freshness_score": meta.get("freshness_score"),
+                "freshness_score_method": meta.get("freshness_score_method") or "none",
 
                 # REFACTOR121: store a lightweight excerpt for year-anchor backstop (avoid huge payloads)
                 "snapshot_text_excerpt": (content[:12000] if isinstance(content, str) else ""),
@@ -16962,12 +17013,25 @@ def attach_source_snapshots_to_analysis(analysis: dict, web_context: dict) -> di
         except Exception:
             pass
         analysis["baseline_sources_cache"] = baseline_sources_cache
+        # Also attach to web_context for downstream veracity scoring (additive).
+        try:
+            if isinstance(web_context, dict):
+                web_context["baseline_sources_cache"] = baseline_sources_cache
+        except Exception:
+            pass
         # FRESH01: aggregate freshness beacon (diagnostic-only; does not affect selection/diff)
         try:
             _fresh_stage = "evolution_attach" if (("metric_changes" in analysis) or ("stability_score" in analysis)) else "analysis_attach"
             analysis.setdefault("debug", {})
             if isinstance(analysis.get("debug"), dict):
                 analysis["debug"]["fresh01_source_freshness_v1"] = _fresh01_aggregate_source_freshness_v1(baseline_sources_cache, stage=_fresh_stage)
+                # FRESH02: attach freshness tie-breaker beacon (if any)
+                try:
+                    _tb = globals().get("_FRESH02_TIEBREAK_V1")
+                    if isinstance(_tb, dict):
+                        analysis["debug"]["fresh02_freshness_tiebreak_v1"] = _tb
+                except Exception:
+                    pass
         except Exception:
             pass
         analysis.setdefault("results", {})
@@ -28900,7 +28964,7 @@ def rebuild_metrics_from_snapshots_analysis_canonical_v1(prev_response: dict, ba
                 if _yureeka_llm_flag_bool_v1("ENABLE_LLM_ANOMALY_FLAGS"):
                     tie = (-hits, int(_llm04_penalty_points)) + _cand_sort_key(c)
                 else:
-                    tie = (-hits,) + _cand_sort_key(c)
+                    tie = (-hits,) + _fresh02_candidate_tie_key_v1(c) + _cand_sort_key(c)
 
             # REFACTOR135 trace: keep a compact top-N for chargers_2040
             try:
@@ -29786,6 +29850,97 @@ def _refactor28_schema_only_rebuild_authoritative_v1(
         )
 
     candidates.sort(key=_cand_sort_key)
+    # FRESH02: optional deterministic freshness tie-break (default OFF).
+    # When enabled (ENABLE_SOURCE_FRESHNESS_TIEBREAK), ties on keyword-hit score will prefer fresher sources.
+    _fresh02_enabled = False
+    _fresh02_src = "code:ENABLE_SOURCE_FRESHNESS_TIEBREAK"
+    try:
+        _fresh02_enabled, _fresh02_src = _yureeka_llm_flag_effective_v1("ENABLE_SOURCE_FRESHNESS_TIEBREAK")
+    except Exception:
+        try:
+            _fresh02_enabled = bool(globals().get("ENABLE_SOURCE_FRESHNESS_TIEBREAK"))
+        except Exception:
+            _fresh02_enabled = False
+
+    _fresh02_url2meta = {}
+    _fresh02_sources_indexed = 0
+    try:
+        for _s in (baseline_sources_cache or []):
+            if not isinstance(_s, dict):
+                continue
+            _u = _s.get("url") or _s.get("source_url") or ""
+            if not _u:
+                continue
+            try:
+                _un = _normalize_url(_u)
+            except Exception:
+                _un = str(_u).strip().lower()
+            age = _s.get("freshness_age_days")
+            conf = _s.get("freshness_date_confidence")
+            sc = _s.get("freshness_score")
+            # Compute score fallback from age+confidence if needed.
+            sc_f = None
+            try:
+                sc_f = float(sc)
+            except Exception:
+                sc_f = None
+            if sc_f is None:
+                try:
+                    age_i = int(float(age)) if age is not None else None
+                except Exception:
+                    age_i = None
+                if age_i is not None:
+                    try:
+                        base = _fresh01_score_from_age_days_v1(age_i)
+                    except Exception:
+                        base = None
+                    try:
+                        cconf = float(conf) if conf is not None else 1.0
+                    except Exception:
+                        cconf = 1.0
+                    cconf = max(0.0, min(1.0, cconf))
+                    if base is not None:
+                        sc_f = float(base) * cconf
+            try:
+                age_i2 = int(float(age)) if age is not None else None
+            except Exception:
+                age_i2 = None
+            _fresh02_url2meta[_un] = {
+                "freshness_score": sc_f,
+                "freshness_age_days": age_i2,
+                "published_at": _s.get("published_at") or _s.get("source_published_at") or "",
+                "freshness_bucket": _s.get("freshness_bucket") or "",
+                "freshness_method": _s.get("freshness_method") or "",
+            }
+            _fresh02_sources_indexed += 1
+    except Exception:
+        pass
+
+    def _fresh02_candidate_tie_key_v1(c: dict) -> tuple:
+        """Return a tuple suitable for lexicographic ascending sort (smaller is better)."""
+        if not _fresh02_enabled or not isinstance(c, dict):
+            return tuple()
+        u = str(c.get("source_url") or "").strip()
+        if not u:
+            return (9999, 999999)
+        try:
+            un = _normalize_url(u)
+        except Exception:
+            un = u.lower()
+        meta = _fresh02_url2meta.get(un) or {}
+        sc = meta.get("freshness_score")
+        age = meta.get("freshness_age_days")
+        try:
+            sc_f = float(sc)
+        except Exception:
+            sc_f = None
+        score_key = (-sc_f) if sc_f is not None else 9999
+        try:
+            age_i = int(age) if age is not None else 999999
+        except Exception:
+            age_i = 999999
+        return (score_key, age_i)
+
     # REFACTOR118: define local normalizer BEFORE using it for year-anchor indexing
     def _ref100_norm_text_v1(s: str) -> str:
         try:
@@ -30176,9 +30331,9 @@ def _refactor28_schema_only_rebuild_authoritative_v1(
                 pass
 
             if _rf129_spec_ut.upper() == "M":
-                tie = (-hits, -int(bool(_rf129_has_million_cue)), -int(bool(_rf129_has_decimal)), -int(_rf129_decimal_places)) + _cand_sort_key(c)
+                tie = (-hits, -int(bool(_rf129_has_million_cue)), -int(bool(_rf129_has_decimal)), -int(_rf129_decimal_places)) + _fresh02_candidate_tie_key_v1(c) + _cand_sort_key(c)
             else:
-                tie = (-hits,) + _cand_sort_key(c)
+                tie = (-hits,) + _fresh02_candidate_tie_key_v1(c) + _cand_sort_key(c)
 
             # REFACTOR129 beacon: collect precision candidates for chargers_2040 (compact)
             try:
@@ -30215,10 +30370,24 @@ def _refactor28_schema_only_rebuild_authoritative_v1(
                         "found_years": list(year_found),
 
                         "year_ok": bool(year_ok),
+                        "freshness_score": None,
+                        "freshness_age_days": None,
+                        "published_at": "",
+                        "freshness_bucket": "",
 
                     }
 
                     _u = str(_sum.get("url") or "").strip()
+                    try:
+                        if _fresh02_enabled and _u:
+                            _un = _normalize_url(_u)
+                            _fm = _fresh02_url2meta.get(_un) or {}
+                            _sum["freshness_score"] = _fm.get("freshness_score")
+                            _sum["freshness_age_days"] = _fm.get("freshness_age_days")
+                            _sum["published_at"] = _fm.get("published_at") or ""
+                            _sum["freshness_bucket"] = _fm.get("freshness_bucket") or ""
+                    except Exception:
+                        pass
                     _replaced = False
                     if _u:
                         for _i, (_t, _s) in enumerate(list(_ref100_top3_pairs)):
@@ -30492,6 +30661,16 @@ def rebuild_metrics_from_snapshots_schema_only_fix16(prev_response, snapshot_poo
                         pass
             except Exception:
                 pass
+    except Exception:
+        pass
+
+    # FRESH02: publish tie-breaker beacon for audit (best-effort, additive).
+    try:
+        globals()["_FRESH02_TIEBREAK_V1"] = {
+            "enabled": bool(_fresh02_enabled),
+            "source": str(_fresh02_src or ""),
+            "sources_indexed": int(_fresh02_sources_indexed or 0),
+        }
     except Exception:
         pass
 
@@ -31858,6 +32037,14 @@ except Exception:
 try:
     if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "LLM32" for e in PATCH_TRACKER_V1):
         PATCH_TRACKER_V1.insert(0, {"patch_id": "LLM32", "scope": "freshness", "summary": "Compute deterministic 0-100 data freshness score from source published_at/fetched_at and surface it in veracity_scores + Evidence Quality Scores panel (additive; no metric selection changes).", "risk": "low"})
+except Exception:
+    pass
+
+
+# LLM33: patch tracker overlay (freshness tie-breaker wiring)
+try:
+    if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "LLM33" for e in PATCH_TRACKER_V1):
+        PATCH_TRACKER_V1.insert(0, {"patch_id": "LLM33", "scope": "freshness", "summary": "Wire ENABLE_SOURCE_FRESHNESS_TIEBREAK into schema-only rebuild tie-breaking and make data_freshness compute from freshness_age_days/score (robust even when baseline_sources_cache is missing freshness_score).", "risk": "medium"})
 except Exception:
     pass
 
