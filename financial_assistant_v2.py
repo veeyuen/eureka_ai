@@ -120,6 +120,18 @@ _HYPERPARAMS_V1_DEFAULTS = {
             "stable_fallback": "url_sort_v1",
         },
     },
+
+    "nlp": {
+        "query_frame": {
+            # Enable deterministic enrichment of metric_families (proposal-only; does NOT change winners/values).
+            "enable_enrichment": True,
+            # Maximum number of boost terms shown in preview (actual boosting still gated by ENABLE_LLM_QUERY_FRAME).
+            "max_boost_terms": 8,
+            # Confidence threshold for including derived families (0..1).
+            "min_family_confidence": 0.25,
+        }
+    },
+
     "ops": {
         "sheets_read_cache_ttl_sec": 45,
         "search_cache_ttl_hours": 24,
@@ -439,7 +451,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "LLM38"
+_YUREEKA_CODE_VERSION_LOCK = "NLP01"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 # REFACTOR206: Release Candidate freeze (no pipeline behavior change).
 YUREEKA_RELEASE_CANDIDATE_V1 = False
@@ -880,7 +892,85 @@ _LLM03_ALLOWED_UNIT_PREFS_V1 = [
     "billion", "million",
 ]
 
-def _llm03__deterministic_query_frame_v1(query: str, base_signals: Optional[Dict[str, Any]] = None) -> dict:
+
+# NLP01: Deterministic query-frame enrichment (regex + expected_metric_ids)
+# - Purpose: surface metric_family hints (e.g., "market_size", "growth_forecast") in query_frame_v1
+# - Safety: proposal-only; does NOT affect metric winners/values unless downstream flags explicitly use it
+def _nlp01_derive_metric_families_v1(
+    q: str,
+    base_signals: Optional[Dict[str, Any]] = None,
+) -> Tuple[List[str], Dict[str, Any]]:
+    base_signals = base_signals if isinstance(base_signals, dict) else {}
+    q0 = (q or "").strip().lower()
+
+    max_terms = int(((HYPERPARAMS.get("nlp") or {}).get("query_frame") or {}).get("max_boost_terms", 8) or 8)
+    min_conf = float(((HYPERPARAMS.get("nlp") or {}).get("query_frame") or {}).get("min_family_confidence", 0.25) or 0.25)
+
+    mids = base_signals.get("expected_metric_ids") or []
+    if not isinstance(mids, list):
+        mids = []
+    mids_l = [str(x).lower().strip() for x in mids if str(x).strip()]
+
+    kw_hits: List[str] = []
+    fam_hits: List[str] = []
+
+    # From expected_metric_ids (category-derived)
+    def _add_fam(f: str, why: str):
+        if f and f not in fam_hits:
+            fam_hits.append(f)
+        if why and why not in kw_hits:
+            kw_hits.append(why)
+
+    for mid in mids_l:
+        if "market_size" in mid or "market value" in mid or "market_value" in mid:
+            _add_fam("market_size", f"mid:{mid}")
+        if "cagr" in mid or "growth" in mid or "forecast" in mid:
+            _add_fam("growth_forecast", f"mid:{mid}")
+        if "share" in mid or "top_players" in mid or "competitive" in mid:
+            _add_fam("competitive_landscape", f"mid:{mid}")
+        if "price" in mid or "asp" in mid or "pricing" in mid:
+            _add_fam("pricing", f"mid:{mid}")
+        if "users" in mid or "penetration" in mid or "demand" in mid:
+            _add_fam("consumer_demand", f"mid:{mid}")
+        if "capacity" in mid or "shipments" in mid or "supply" in mid:
+            _add_fam("supply_chain", f"mid:{mid}")
+        if "capex" in mid or "investment" in mid or "spend" in mid or "expenditure" in mid:
+            _add_fam("investment", f"mid:{mid}")
+        if "gdp" in mid or "inflation" in mid or "interest" in mid or "exchange" in mid:
+            _add_fam("macro_outlook", f"mid:{mid}")
+
+    # From query text (lightweight patterns)
+    if "market size" in q0 or ("market" in q0 and "size" in q0) or ("market" in q0 and "value" in q0):
+        _add_fam("market_size", "kw:market_size")
+    if "cagr" in q0 or "growth rate" in q0 or ("growth" in q0 and "forecast" in q0):
+        _add_fam("growth_forecast", "kw:growth")
+    if "market share" in q0 or ("share" in q0 and "market" in q0) or "top players" in q0:
+        _add_fam("competitive_landscape", "kw:share")
+    if "price" in q0 or "pricing" in q0 or "asp" in q0:
+        _add_fam("pricing", "kw:price")
+    if "investment" in q0 or "capex" in q0 or "spend" in q0 or "expenditure" in q0:
+        _add_fam("investment", "kw:investment")
+
+    # Simple confidence: proportion of evidence signals; deterministic and bounded
+    evidence_n = float(len(fam_hits) + len(kw_hits))
+    conf = 0.0
+    try:
+        conf = min(1.0, evidence_n / 6.0)  # saturate at ~6 evidence points
+    except Exception:
+        conf = 0.0
+
+    families_out = fam_hits if conf >= min_conf else []
+
+    dbg = {
+        "min_family_confidence": min_conf,
+        "confidence": conf,
+        "expected_metric_ids_in": mids_l,
+        "evidence": kw_hits[:max_terms],
+        "families": list(families_out),
+    }
+    return list(families_out), dbg
+
+def _llm03__deterministic_query_frame_v1(query: str, base_signals: Optional[Dict[str, Any]] = None, nlp01_families: Optional[List[str]] = None) -> dict:
     """Deterministically derive a query-frame from existing rule-based classifiers."""
     q_raw = (query or "").strip()
     q = q_raw.lower()
@@ -896,6 +986,15 @@ def _llm03__deterministic_query_frame_v1(query: str, base_signals: Optional[Dict
         s = str(it or "").strip()
         if s and s in _LLM03_ALLOWED_METRIC_FAMILIES_V1 and s not in metric_families:
             metric_families.append(s)
+
+    # NLP01 enrichment (proposal-only)
+    try:
+        for f in (nlp01_families or []):
+            ff = str(f or "").strip()
+            if ff and ff in _LLM03_ALLOWED_METRIC_FAMILIES_V1 and ff not in metric_families:
+                metric_families.append(ff)
+    except Exception:
+        pass
 
     # Geo scope
     geo_scope = "unknown"
@@ -1095,7 +1194,14 @@ def _llm03_get_query_frame_v1(query: str, base_signals: Optional[Dict[str, Any]]
 
     _qf_on, _qf_src = _yureeka_llm_flag_effective_v1("ENABLE_LLM_QUERY_FRAME")
 
-    det = _llm03__deterministic_query_frame_v1(q_raw, base_signals=base_signals)
+    nlp01_fams: List[str] = []
+    nlp01_dbg: Dict[str, Any] = {}
+    try:
+        nlp01_fams, nlp01_dbg = _nlp01_derive_metric_families_v1(q_raw, base_signals=base_signals)
+    except Exception:
+        nlp01_fams, nlp01_dbg = [], {}
+
+    det = _llm03__deterministic_query_frame_v1(q_raw, base_signals=base_signals, nlp01_families=nlp01_fams)
 
     dbg: Dict[str, Any] = {
         "v": "llm03_query_frame_v1",
@@ -1103,6 +1209,7 @@ def _llm03_get_query_frame_v1(query: str, base_signals: Optional[Dict[str, Any]]
         "flag_source": str(_qf_src)[:80],
         "provider": {},
         "deterministic_frame": det,
+        "nlp01_enrichment_v1": nlp01_dbg,
         "llm_used": False,
         "llm_cache_hit": False,
         "llm_ok": False,
@@ -25070,6 +25177,44 @@ def categorize_question_signals(query: str, qs: Optional[Dict[str, Any]] = None)
     # Deterministic signals (richer classifier)
     base = classify_question_signals(q) or {}
 
+    # NLP01: compute expected_metric_ids early so deterministic query-frame enrichment can use it (proposal-only)
+    expected_metric_ids: List[str] = []
+    try:
+        expected_metric_ids = get_expected_metric_ids_for_category(category) or []
+    except Exception:
+        expected_metric_ids = []
+
+    # Optional: enrich with intent-based suggestions (won't remove anything)
+    intent_metric_suggestions = {
+        "market_size": ["market_size", "market_size_2024", "market_size_2025"],
+        "growth_forecast": ["cagr", "market_size_2030"],
+        "competitive_landscape": ["market_share", "top_players"],
+        "pricing": ["avg_price", "asp"],
+        "consumer_demand": ["users", "penetration", "arpu"],
+        "supply_chain": ["capacity", "shipments"],
+        "investment": ["capex", "profit", "ebitda"],
+        "macro_outlook": ["gdp", "inflation", "interest_rate", "exchange_rate"],
+    }
+
+    try:
+        _base_intents = base.get("intents") or []
+        if not isinstance(_base_intents, list):
+            _base_intents = []
+        for intent in _base_intents:
+            for mid in intent_metric_suggestions.get(str(intent or "").strip(), []):
+                if mid and mid not in expected_metric_ids:
+                    expected_metric_ids.append(mid)
+    except Exception:
+        pass
+
+    # Inject expected_metric_ids into base_signals so query-frame preview can enrich metric_families deterministically.
+    try:
+        if isinstance(base, dict):
+            base = dict(base)
+            base["expected_metric_ids"] = list(expected_metric_ids)
+    except Exception:
+        pass
+
     # LLM03: query framing / intent decomposition (proposal-only; rules decide)
     _llm03_frame_eff = None
     _llm03_frame_dbg = None
@@ -25121,34 +25266,8 @@ def categorize_question_signals(query: str, qs: Optional[Dict[str, Any]] = None)
 
     signals["signals"] = [s for s in raw_hits if _signal_consistent_with_category(s, category)]
 
-    # Expected metric IDs: always determined by the final category, then lightly enriched by intents (optional)
-    expected_metric_ids: List[str] = []
-    try:
-        expected_metric_ids = get_expected_metric_ids_for_category(category) or []
-    except Exception:
-        pass
-        expected_metric_ids = []
-
-    # Optional: enrich with intent-based suggestions (won't remove anything)
-    intent_metric_suggestions = {
-        "market_size": ["market_size", "market_size_2024", "market_size_2025"],
-        "growth_forecast": ["cagr", "market_size_2030"],
-        "competitive_landscape": ["market_share", "top_players"],
-        "pricing": ["avg_price", "asp"],
-        "consumer_demand": ["users", "penetration", "arpu"],
-        "supply_chain": ["capacity", "shipments"],
-        "investment": ["capex", "profit", "ebitda"],
-        "macro_outlook": ["gdp", "inflation", "interest_rate", "exchange_rate"],
-    }
-
-    intents = signals.get("intents") or []
-    for intent in intents:
-        for mid in intent_metric_suggestions.get(intent, []):
-            if mid not in expected_metric_ids:
-                expected_metric_ids.append(mid)
-
+        # Expected metric IDs (category-derived; precomputed for NLP01 query-frame enrichment)
     signals["expected_metric_ids"] = expected_metric_ids
-
     profile: Dict[str, Any] = {
         "category": category,
         "signals": signals,
@@ -31198,7 +31317,16 @@ def _refactor28_schema_only_rebuild_authoritative_v1(
             else:
                 tie = (-hits,) + _fresh02_candidate_tie_key_v1(c) + _cand_sort_key(c)
 
-            # FRESH02: update base-winner trackers (no freshness key)
+
+            # REFACTOR100: compute year_ok/year_found before tracker updates (fix ordering for freshness beacons)
+            year_found, year_ok = ([], True)
+            try:
+                if _ref100_required_years:
+                    year_found, year_ok = _refactor100_year_anchor_scan(c, _ref100_required_years, ctx, _ref100_src_text_by_url)
+            except Exception:
+                year_found, year_ok = ([], True)
+
+# FRESH02: update base-winner trackers (no freshness key)
             try:
                 if _fresh02_enabled:
                     if _ref100_required_years:
@@ -31235,11 +31363,7 @@ def _refactor28_schema_only_rebuild_authoritative_v1(
             except Exception:
                 pass
 
-            # REFACTOR100: compute year_ok/year_found early (safe ordering)
-
-            year_found, year_ok = _refactor100_year_anchor_scan(c, _ref100_required_years, ctx, _ref100_src_text_by_url)
-
-            # Track top-3 candidates summary for year-anchored keys only (compact, deterministic)
+                        # Track top-3 candidates summary for year-anchored keys only (compact, deterministic)
 
             if _ref100_required_years:
 
@@ -31622,15 +31746,15 @@ def _refactor28_schema_only_rebuild_authoritative_v1(
                         _ftb["stable_fallback_key"] = base_n or win_n
                         _ftb["changed_winner"] = bool(base_n and win_n and (base_n != win_n))
 
-                        # competitor URL: base if winner changed, else the runner-up in top3
+                        # competitor URL: runner-up in top3 (useful even when winner changed)
+                        try:
+                            _ftb["competitor_url"] = str((_top[1] if (isinstance(_top, list) and len(_top) > 1 and isinstance(_top[1], dict)) else {}).get("url") or "")
+                        except Exception:
+                            _ftb["competitor_url"] = ""
+
                         if _ftb["changed_winner"]:
-                            _ftb["competitor_url"] = base_url
                             _ftb["reason"] = "score_tie_resolved_by_freshness"
                         else:
-                            try:
-                                _ftb["competitor_url"] = str((_top[1] if isinstance(_top[1], dict) else {}).get("url") or "")
-                            except Exception:
-                                _ftb["competitor_url"] = ""
                             # More specific reason when freshness is missing/equal
                             try:
                                 a0 = _top[0] if isinstance(_top[0], dict) else {}
@@ -33212,6 +33336,24 @@ try:
     })
 except Exception:
     pass
+
+# NLP01: patch tracker entry
+try:
+    PATCH_TRACKER_V1.insert(0, {
+        "patch_id": "NLP01",
+        "date": "2026-02-17",
+        "title": "NLP01 query-frame enrichment + freshness beacon fix",
+        "summary": [
+            "NLP01: deterministically enrich query_frame_v1.metric_families using expected_metric_ids + lightweight keyword rules (proposal-only; no winner/value changes).",
+            "Expose nlp01_enrichment_v1 in debug_query_frame_v1 for auditability and future modularisation.",
+            "Fix ordering bug in REFACTOR100 year-anchor scan so FRESH02 base-winner trackers use the current candidate's year_ok/year_found (fresh_tiebreak_v1 beacons now match top3 reality).",
+            "Make fresh_tiebreak_v1.competitor_url reflect the runner-up candidate (avoids base_url duplication in changed-winner cases).",
+        ],
+        "risk": "low",
+    })
+except Exception:
+    pass
+
 
 
 
