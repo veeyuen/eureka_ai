@@ -166,11 +166,11 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "LLM28"
+_YUREEKA_CODE_VERSION_LOCK = "LLM29"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 # REFACTOR206: Release Candidate freeze (no pipeline behavior change).
 YUREEKA_RELEASE_CANDIDATE_V1 = False
-YUREEKA_RELEASE_TAG_V1 = "LLM28"
+YUREEKA_RELEASE_TAG_V1 = "LLM29"
 YUREEKA_FREEZE_MODE_V1 = True
 # Small default regression set (optional; used for manual triad smoke tests).
 YUREEKA_REGRESSION_QUESTIONS_V1 = [
@@ -198,8 +198,10 @@ ENABLE_LLM_ANOMALY_FLAGS = False
 
 # LLM12: Optional diagnostics/testing toggles (default OFF)
 # - LLM_BYPASS_CACHE: ignore disk/mem cache to verify live calls (may change snippet ranking output).
+# - LLM_FORCE_REFRESH_ONCE: bypass cache for the first eligible call only (forces ≥1 live call; rest of run stays cache-first).
 # - ENABLE_LLM_SMOKE_TEST: run a one-shot provider connectivity check and attach non-sensitive diag.
 LLM_BYPASS_CACHE = False
+LLM_FORCE_REFRESH_ONCE = False
 ENABLE_LLM_SMOKE_TEST = False
 
 
@@ -372,6 +374,7 @@ def _yureeka_llm_flags_snapshot_v1() -> dict:
         "ENABLE_LLM_ANOMALY_FLAGS",
         "ENABLE_LLM_DATASET_LOGGING",
         "LLM_BYPASS_CACHE",
+        "LLM_FORCE_REFRESH_ONCE",
         "ENABLE_LLM_SMOKE_TEST",
     ):
         try:
@@ -385,6 +388,25 @@ def _yureeka_llm_flags_snapshot_v1() -> dict:
         out["cache_bypass"] = {"enabled": bool(_bypass), "source": str(_src)[:80]}
     except Exception:
         pass
+
+    # LLM29: surface one-shot force-refresh state (non-sensitive).
+    try:
+        _fr, _src = _yureeka_llm_flag_effective_v1("LLM_FORCE_REFRESH_ONCE")
+        _stt = globals().get("_YUREEKA_LLM_CACHE_FORCE_REFRESH_ONCE_STATUS_V1")
+        if isinstance(_stt, dict):
+            out["force_refresh_once"] = {
+                "enabled": bool(_fr),
+                "source": str(_src)[:80],
+                "consumed": bool(_stt.get("consumed")),
+                "key": str(_stt.get("key") or "")[:80],
+                "consumed_at": float(_stt.get("consumed_at") or 0.0),
+                "backup_done": bool(_stt.get("backup_done")),
+            }
+        else:
+            out["force_refresh_once"] = {"enabled": bool(_fr), "source": str(_src)[:80], "consumed": False}
+    except Exception:
+        pass
+
 
     return out
 
@@ -1046,6 +1068,42 @@ def get_cached_llm_response(key: str) -> Any:
     except Exception:
         pass
 
+    # LLM29: one-shot live-call proof — bypass cache for the first key that already has cache.
+    # This keeps cache-first determinism for the rest of the run while allowing >=1 live HTTP call.
+    try:
+        _fr_once, _src = _yureeka_llm_flag_effective_v1("LLM_FORCE_REFRESH_ONCE")
+        if bool(_fr_once):
+            _stt = globals().get("_YUREEKA_LLM_CACHE_FORCE_REFRESH_ONCE_STATUS_V1")
+            if not isinstance(_stt, dict):
+                _stt = {"enabled": True, "source": str(_src)[:80], "consumed": False, "key": "", "consumed_at": 0.0}
+            if not bool(_stt.get("consumed")):
+                _has = False
+                try:
+                    if key in _LLM_CACHE_MEM_V1:
+                        _has = True
+                except Exception:
+                    _has = False
+                if not _has:
+                    try:
+                        _p = _llm_cache_path_v1(key)
+                        if _p and os.path.exists(_p):
+                            _has = True
+                    except Exception:
+                        _has = False
+                if _has:
+                    try:
+                        _stt.update({"enabled": True, "source": str(_src)[:80], "consumed": True, "key": str(key), "consumed_at": time.time()})
+                        globals()["_YUREEKA_LLM_CACHE_FORCE_REFRESH_ONCE_STATUS_V1"] = _stt
+                    except Exception:
+                        pass
+                    return None
+            try:
+                globals()["_YUREEKA_LLM_CACHE_FORCE_REFRESH_ONCE_STATUS_V1"] = _stt
+            except Exception:
+                pass
+    except Exception:
+        pass
+
     try:
         if key in _LLM_CACHE_MEM_V1:
             _llm_cache__mem_touch_v1(key)
@@ -1091,6 +1149,22 @@ def cache_llm_response(key: str, payload: Any) -> bool:
     except Exception:
         # disk cache is optional
         return False
+
+    # LLM29: if this write corresponds to the one-shot force-refresh key, preserve the prior cache file as a .bak snapshot.
+    try:
+        _stt = globals().get("_YUREEKA_LLM_CACHE_FORCE_REFRESH_ONCE_STATUS_V1")
+        if isinstance(_stt, dict) and bool(_stt.get("consumed")) and str(_stt.get("key") or "") == str(key):
+            if path and os.path.exists(path) and not bool(_stt.get("backup_done")):
+                _bak = f"{path}.bak.{int(time.time())}"
+                try:
+                    os.replace(path, _bak)
+                    _stt["backup_done"] = True
+                    _stt["backup_path"] = str(_bak)
+                    globals()["_YUREEKA_LLM_CACHE_FORCE_REFRESH_ONCE_STATUS_V1"] = _stt
+                except Exception:
+                    pass
+    except Exception:
+        pass
 
     try:
         tmp = f"{path}.tmp.{os.getpid()}"
@@ -2348,6 +2422,31 @@ def _yureeka_llm_health_snapshot_v1(stage: str = "") -> dict:
             }
     except Exception:
         pass
+    # LLM12/LLM29: surface cache bypass / one-shot refresh state (non-sensitive).
+    try:
+        _stt = globals().get("_YUREEKA_LLM_CACHE_BYPASS_STATUS_V1")
+        if isinstance(_stt, dict):
+            out["cache_bypass"] = dict(_stt)
+    except Exception:
+        pass
+    try:
+        _stt = globals().get("_YUREEKA_LLM_CACHE_FORCE_REFRESH_ONCE_STATUS_V1")
+        if isinstance(_stt, dict):
+            out["force_refresh_once"] = {
+                "enabled": bool(_stt.get("enabled")),
+                "source": str(_stt.get("source") or "")[:80],
+                "consumed": bool(_stt.get("consumed")),
+                "key": str(_stt.get("key") or "")[:80],
+                "consumed_at": float(_stt.get("consumed_at") or 0.0),
+                "backup_done": bool(_stt.get("backup_done")),
+            }
+        else:
+            _fr, _src = _yureeka_llm_flag_effective_v1("LLM_FORCE_REFRESH_ONCE")
+            if bool(_fr):
+                out["force_refresh_once"] = {"enabled": True, "source": str(_src)[:80], "consumed": False}
+    except Exception:
+        pass
+
     return out
 
 
@@ -3446,6 +3545,7 @@ def _llm01_hotfix_apply_evidence_snippets_final_v1(wrapper: dict, *, stage: str 
 
                         "skipped": int(agg.get("skipped") or 0),
                         "cache_hits": int(agg.get("cache_hits") or 0),
+                        "live_calls": max(0, int(agg.get("llm_calls") or 0) - int(agg.get("cache_hits") or 0)),
                         "pmc_metric_count_total": int(agg.get("pmc_metric_count_total") or 0),
                         "pmc_metric_keys_unique": int(len(_pmc_metric_keys_unique) if isinstance(_pmc_metric_keys_unique, set) else 0),
                         "pmc_dicts_with_work": int(agg.get("pmc_dicts_with_work") or 0),
@@ -25244,6 +25344,7 @@ def main():
 
             st.markdown("**Diagnostics**")
             _llm_ui_checkbox("ENABLE_LLM_SMOKE_TEST", "Run LLM smoke test (connectivity)", default=False, help="Records non-sensitive status in the JSON debug.")
+            _llm_ui_checkbox("LLM_FORCE_REFRESH_ONCE", "Force 1 live LLM call (once)", default=False, help="Bypasses cache for the first eligible call only, then reverts to cache-first. Use to prove live_calls>0 without enabling full bypass.")
             _llm_ui_checkbox("LLM_BYPASS_CACHE", "Bypass LLM cache (debug)", default=False, help="Forces live calls; turn OFF for cached/replayable runs.")
 
         # ✅ REFACTOR99: Evolution baseline MUST be an Analysis payload (exclude evolution reports) and default to latest.
@@ -31064,6 +31165,14 @@ try:
 except Exception:
     pass
 
+
+
+# LLM29: patch tracker overlay (one-shot live-call proof while keeping cache-first determinism).
+try:
+    if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "LLM29" for e in PATCH_TRACKER_V1):
+        PATCH_TRACKER_V1.insert(0, {"patch_id": "LLM29", "scope": "llm-sidecar", "summary": "Add LLM_FORCE_REFRESH_ONCE (default OFF) to bypass disk/mem cache for the first eligible cached key only, forcing >=1 live HTTP call while keeping cache-first replayability for the rest of the run. Surface non-sensitive force-refresh state in llm_flags_snapshot_v1 and llm_sidecar_health_v1; optionally preserve prior cache file as .bak for audit. No metric winner/value changes.", "risk": "low"})
+except Exception:
+    pass
 
 # LLM12: patch tracker overlay (cache bypass + smoke-test diagnostics).
 try:
