@@ -439,7 +439,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "LLM37"
+_YUREEKA_CODE_VERSION_LOCK = "LLM38"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 # REFACTOR206: Release Candidate freeze (no pipeline behavior change).
 YUREEKA_RELEASE_CANDIDATE_V1 = False
@@ -8346,8 +8346,21 @@ def _refactor116_apply_effective_timing_and_row_deltas_v1(evo_obj: Any, previous
                 else:
                     gating["rows_with_source_url"] += 1
 
-                # REFACTOR132: run-level injection delta blanking. If injection is active, blank Δt for ALL rows.
-                if (inj_urls or inj_set):
+                # LLM38: row-level injection delta blanking.
+                # Only blank Δt when the *row* is actually sourced from an injected URL.
+                _is_injected_row = False
+                try:
+                    if su:
+                        try:
+                            _su_n = _fix2af_norm_url(su)
+                        except Exception:
+                            _su_n = str(su).strip()
+                        if _su_n and (_su_n in inj_set):
+                            _is_injected_row = True
+                except Exception:
+                    _is_injected_row = False
+
+                if _is_injected_row:
                     gating["injected_rows_total"] += 1
                     r["analysis_evolution_delta_human"] = ""
                     r["analysis_evolution_delta_seconds"] = None
@@ -28780,6 +28793,111 @@ def _analysis_canonical_final_selector_v1(
     except Exception:
         return out, meta
 
+
+# =============================================================================
+# LLM38: FRESH02 tie-key helper (module-level fallback)
+#
+# Why: rebuild_metrics_from_snapshots_analysis_canonical_v1 uses _fresh02_candidate_tie_key_v1
+# for deterministic freshness tie-breaking when ENABLE_SOURCE_FRESHNESS_TIEBREAK is enabled.
+# In LLM37, the only implementation lived inside the schema-only rebuild, causing a NameError
+# when the analysis-canonical rebuild path executed (e.g., FIX41AFC19 in injection evolution).
+#
+# Design: cache-free, deterministic, best-effort. Uses candidate-attached freshness fields
+# (freshness_score / freshness_age_days / freshness_date_confidence) and falls back to
+# age->score curve when score is missing. Returns an empty tuple when tie-break is disabled.
+# =============================================================================
+def _fresh02_candidate_tie_key_v1(c: dict) -> tuple:
+    """Return a tuple suitable for lexicographic ascending sort (smaller is better)."""
+    try:
+        # Only active when the explicit flag is enabled.
+        enabled = False
+        try:
+            fn = globals().get("_yureeka_llm_flag_effective_v1")
+            if callable(fn):
+                enabled = bool(fn("ENABLE_SOURCE_FRESHNESS_TIEBREAK")[0])
+            else:
+                enabled = bool(globals().get("ENABLE_SOURCE_FRESHNESS_TIEBREAK"))
+        except Exception:
+            enabled = bool(globals().get("ENABLE_SOURCE_FRESHNESS_TIEBREAK"))
+        if not enabled or not isinstance(c, dict):
+            return tuple()
+
+        sc = c.get("freshness_score")
+        if sc is None:
+            sc = c.get("source_freshness_score")
+        age = c.get("freshness_age_days")
+        if age is None:
+            age = c.get("source_freshness_age_days")
+        conf = c.get("freshness_date_confidence")
+        if conf is None:
+            conf = c.get("source_freshness_date_confidence")
+
+        sc_f = None
+        try:
+            sc_f = float(sc)
+        except Exception:
+            sc_f = None
+
+        age_i = None
+        try:
+            age_i = int(float(age)) if age is not None else None
+        except Exception:
+            age_i = None
+
+        # Compute score from age+confidence when needed.
+        if sc_f is None and age_i is not None:
+            base = None
+            try:
+                fn_base = globals().get("_fresh01_score_from_age_days_v1")
+                if callable(fn_base):
+                    base = fn_base(age_i)
+            except Exception:
+                base = None
+            if base is not None:
+                cconf = 1.0
+                try:
+                    cconf = float(conf) if conf is not None else 1.0
+                except Exception:
+                    cconf = 1.0
+                cconf = max(0.0, min(1.0, cconf))
+                try:
+                    sc_f = float(base) * cconf
+                except Exception:
+                    sc_f = None
+
+        # Optional quantization: treat near-equal freshness scores as equal.
+        sc_eff = sc_f
+        try:
+            md = float(globals().get("_yureeka_hp_get_v1", lambda *_a, **_k: 0.0)("freshness.tiebreak.min_score_delta", 0.0) or 0.0)
+        except Exception:
+            md = 0.0
+        if (sc_eff is not None) and (md is not None) and (md > 0.0):
+            try:
+                sc_eff = float(int(float(sc_eff) // float(md)) * float(md))
+            except Exception:
+                sc_eff = sc_f
+
+        missing = 0 if sc_eff is not None else 1
+        score_key = (-sc_eff) if sc_eff is not None else 9999
+        age_key = int(age_i) if age_i is not None else 999999
+
+        # Stable fallback ordering by (normalized) source_url.
+        su = str(c.get("source_url") or "").strip()
+        if not su:
+            stable = ""
+        else:
+            try:
+                nf = globals().get("_fix2af_norm_url")
+                stable = nf(su) if callable(nf) else su.strip().lower()
+            except Exception:
+                stable = su.strip().lower()
+
+        return (missing, score_key, age_key, stable)
+    except Exception:
+        return tuple()
+
+
+
 def rebuild_metrics_from_snapshots_analysis_canonical_v1(prev_response: dict, baseline_sources_cache, web_context=None) -> dict:
     """Batch rebuild using the extracted canonical selector (pure, deterministic)."""
     if not isinstance(prev_response, dict):
@@ -33057,7 +33175,7 @@ except Exception:
 # [MOD:PATCH_TRACKER]
 # LLM37: patch tracker entry
 try:
-    PATCH_TRACKER_V1.append({
+    PATCH_TRACKER_V1.insert(0, {
         "patch_id": "LLM37",
         "date": "2026-02-17",
         "title": "Hyperparameter block v1",
@@ -33078,6 +33196,23 @@ try:
     })
 except Exception:
     pass
+
+# LLM38: patch tracker entry
+try:
+    PATCH_TRACKER_V1.insert(0, {
+        "patch_id": "LLM38",
+        "date": "2026-02-17",
+        "title": "Freshness scope + injected-row Δt gating",
+        "summary": [
+            "Fix NameError in rebuild_metrics_from_snapshots_analysis_canonical_v1 by adding a module-level _fresh02_candidate_tie_key_v1 fallback (uses candidate-attached freshness fields; no cache; deterministic).",
+            "Refine evolution row delta stamping: blank Δt only for rows whose source_url is an injected URL (instead of blanking all rows whenever injection is present).",
+            "Patch hygiene: bump _YUREEKA_CODE_VERSION_LOCK; keep cache-first determinism; no winner/value changes unless freshness tie-break flag is explicitly enabled.",
+        ],
+        "risk": "low",
+    })
+except Exception:
+    pass
+
 
 
 
