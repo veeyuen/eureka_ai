@@ -203,7 +203,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "LLM34"
+_YUREEKA_CODE_VERSION_LOCK = "LLM35"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 # REFACTOR206: Release Candidate freeze (no pipeline behavior change).
 YUREEKA_RELEASE_CANDIDATE_V1 = False
@@ -14307,30 +14307,55 @@ def _fresh01_compute_source_freshness_v2(text: str, fetched_at: str = "") -> dic
 # Backward-compatible name (LLM31 used v1)
 _fresh01_compute_source_freshness_v1 = _fresh01_compute_source_freshness_v2
 def _fresh01_aggregate_source_freshness_v1(baseline_sources_cache: Any, stage: str = "") -> dict:
-    """Aggregate freshness beacons across sources (diagnostic-only)."""
+    """Aggregate freshness beacons across sources (diagnostic-only).
+
+    Notes:
+    - `sources_with_published_at` counts sources with a non-empty `published_at` OR a valid `freshness_age_days`
+      (age implies an extracted date, even if published_at string is missing in older caches).
+    - This function is diagnostic-only; it must not affect selection/diff outcomes.
+    """
     bsc = baseline_sources_cache if isinstance(baseline_sources_cache, list) else []
-    ages = []
-    bucket_counts = {}
-    samples = []
+    ages: list = []
+    bucket_counts: dict = {}
+    samples: list = []
+    pub_count = 0
+    age_count = 0
+
     for s in bsc:
         if not isinstance(s, dict):
             continue
+
+        pub = str(s.get("published_at") or "").strip()
         age = s.get("freshness_age_days")
+
+        # published_at presence
+        if pub:
+            pub_count += 1
+
+        # age parsing
         try:
             age_i = int(age) if age is not None else None
         except Exception:
             age_i = None
+
         if isinstance(age_i, int) and age_i >= 0:
             ages.append(age_i)
+            age_count += 1
+            # age implies we have (or had) a published_at candidate
+            if not pub:
+                pub_count += 1
+
             b = str(s.get("freshness_bucket") or "")
             if b:
                 bucket_counts[b] = int(bucket_counts.get(b, 0)) + 1
+
         samples.append({
             "url": str(s.get("url") or s.get("source_url") or "")[:240],
-            "published_at": str(s.get("published_at") or ""),
+            "published_at": pub,
             "age_days": age_i,
         })
 
+    # median/min/max over ages when available
     ages_sorted = sorted(ages)
     median_age = None
     try:
@@ -14348,7 +14373,8 @@ def _fresh01_aggregate_source_freshness_v1(baseline_sources_cache: Any, stage: s
     return {
         "stage": str(stage or ""),
         "sources_total": int(len(bsc)),
-        "sources_with_published_at": int(len(ages)),
+        "sources_with_published_at": int(pub_count),
+        "sources_with_age_days": int(age_count),
         "median_age_days": median_age,
         "min_age_days": (min(ages) if ages else None),
         "max_age_days": (max(ages) if ages else None),
@@ -14356,6 +14382,62 @@ def _fresh01_aggregate_source_freshness_v1(baseline_sources_cache: Any, stage: s
         "sample_oldest": oldest,
         "sample_newest": newest,
     }
+
+
+def _fresh01_backfill_freshness_scores_v1(baseline_sources_cache: Any) -> Any:
+    """In-place additive backfill for caches missing derived freshness fields.
+
+    - If `freshness_score` is missing but `freshness_age_days` exists, compute:
+        - freshness_bucket (if missing)
+        - freshness_score (0-100) using bucket_v1_conf_v1 semantics when confidence exists.
+    - Safe/no-op when input is not list-like.
+    """
+    bsc = baseline_sources_cache if isinstance(baseline_sources_cache, list) else None
+    if not isinstance(bsc, list):
+        return baseline_sources_cache
+
+    for s in bsc:
+        if not isinstance(s, dict):
+            continue
+
+        # bucket from age_days
+        age = s.get("freshness_age_days")
+        try:
+            age_i = int(age) if age is not None else None
+        except Exception:
+            age_i = None
+
+        if isinstance(age_i, int) and age_i >= 0:
+            if not str(s.get("freshness_bucket") or "").strip():
+                if age_i <= 30:
+                    s["freshness_bucket"] = "≤30d"
+                elif age_i <= 180:
+                    s["freshness_bucket"] = "≤6mo"
+                elif age_i <= 365:
+                    s["freshness_bucket"] = "≤1y"
+                elif age_i <= 730:
+                    s["freshness_bucket"] = "≤2y"
+                else:
+                    s["freshness_bucket"] = ">2y"
+
+        # score from age_days (and optional confidence)
+        sc = s.get("freshness_score")
+        if sc is None or sc == "":
+            base = _fresh01_score_from_age_days_v1(age_i) if isinstance(age_i, int) else None
+            if base is not None:
+                conf = s.get("freshness_date_confidence")
+                try:
+                    conf_f = float(conf) if conf is not None else 1.0
+                except Exception:
+                    conf_f = 1.0
+                try:
+                    s["freshness_score"] = round(float(base) * float(conf_f), 1)
+                    if not str(s.get("freshness_score_method") or "").strip():
+                        s["freshness_score_method"] = "bucket_v1_conf_v1"
+                except Exception:
+                    pass
+
+    return baseline_sources_cache
 
 # REFACTOR26: Centralized source_url attribution helpers (schema-preserving)
 # - Goal: ensure row-level injection gating can reliably attribute a current metric
@@ -17102,7 +17184,67 @@ def attach_source_snapshots_to_analysis(analysis: dict, web_context: dict) -> di
             _fresh_stage = "evolution_attach" if (("metric_changes" in analysis) or ("stability_score" in analysis)) else "analysis_attach"
             analysis.setdefault("debug", {})
             if isinstance(analysis.get("debug"), dict):
-                analysis["debug"]["fresh01_source_freshness_v1"] = _fresh01_aggregate_source_freshness_v1(baseline_sources_cache, stage=_fresh_stage)
+
+                # LLM35: ensure freshness aggregate reflects the same pool used by selection/provenance.
+                _pool = baseline_sources_cache
+                _pool_key = "baseline_sources_cache"
+                try:
+                    if str(_fresh_stage).startswith("evolution"):
+                        for _k in ["baseline_sources_cache_current", "current_baseline_sources_cache"]:
+                            _v = None
+                            try:
+                                _v = analysis.get(_k) if isinstance(analysis, dict) else None
+                            except Exception:
+                                _v = None
+                            if not (isinstance(_v, list) and _v):
+                                try:
+                                    _v = web_context.get(_k) if isinstance(web_context, dict) else None
+                                except Exception:
+                                    _v = None
+                            if isinstance(_v, list) and _v:
+                                _pool = _v
+                                _pool_key = _k
+                                break
+                except Exception:
+                    pass
+
+                try:
+                    _fresh01_backfill_freshness_scores_v1(_pool)
+                except Exception:
+                    pass
+
+                _f01 = _fresh01_aggregate_source_freshness_v1(_pool, stage=_fresh_stage)
+                try:
+                    if isinstance(_f01, dict):
+                        _f01["pool_key"] = str(_pool_key or "")
+                except Exception:
+                    pass
+                analysis["debug"]["fresh01_source_freshness_v1"] = _f01
+
+                # LLM35-A: wire deterministic freshness score into veracity_scores.data_freshness (0-100)
+                try:
+                    _vs = analysis.get("veracity_scores") if isinstance(analysis, dict) else None
+                    if isinstance(_vs, dict) and (_vs.get("data_freshness") in (None, "")):
+                        _fs = None
+                        try:
+                            _fs = source_freshness_score_v1(None, {"baseline_sources_cache": baseline_sources_cache})
+                        except Exception:
+                            _fs = None
+                        if _fs is not None:
+                            _vs["data_freshness"] = round(float(_fs), 1)
+
+                    # Best-effort mirror into nested primary_response.veracity_scores if present
+                    try:
+                        _pr = analysis.get("primary_response") if isinstance(analysis, dict) else None
+                        if isinstance(_pr, dict):
+                            _pvs = _pr.get("veracity_scores")
+                            if isinstance(_pvs, dict) and (_pvs.get("data_freshness") in (None, "")):
+                                if isinstance(_vs, dict) and (_vs.get("data_freshness") is not None):
+                                    _pvs["data_freshness"] = _vs.get("data_freshness")
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
                 # FRESH02: attach freshness tie-breaker beacon (if any)
                 try:
                     _tb = globals().get("_FRESH02_TIEBREAK_V1")
@@ -24761,7 +24903,36 @@ def _yureeka_render_evidence_quality_scores_panel_v1(
         except Exception:
             cols[i].metric(label, "—")
             continue
+
         cols[i].metric(label, f"{val_f:.0f}%")
+
+    # LLM35: optional freshness context (median age + bucket counts)
+    try:
+        if isinstance(_vs, dict) and (_vs.get("data_freshness") not in (None, "", "—")):
+            dbg = wrapper.get("debug") if isinstance(wrapper, dict) else None
+            f01 = dbg.get("fresh01_source_freshness_v1") if isinstance(dbg, dict) else None
+            if isinstance(f01, dict):
+                med = f01.get("median_age_days")
+                bcnt = f01.get("bucket_counts") if isinstance(f01.get("bucket_counts"), dict) else {}
+                pool_key = str(f01.get("pool_key") or "")
+                parts = []
+                try:
+                    if med is not None:
+                        parts.append(f"median age {int(med)}d")
+                except Exception:
+                    pass
+                try:
+                    if bcnt:
+                        items = sorted(((str(k), int(v)) for k, v in bcnt.items()), key=lambda kv: kv[0])
+                        parts.append("buckets " + ", ".join([f"{k}:{v}" for k, v in items[:6]]))
+                except Exception:
+                    pass
+                if pool_key:
+                    parts.append(f"pool {pool_key}")
+                if parts:
+                    st.caption("Freshness context: " + " · ".join(parts))
+    except Exception:
+        pass
 def _yureeka_render_data_visualization_panel_v1(data: Any) -> None:
     """Render Data Visualization panel (optional dependency on Plotly)."""
     st.subheader("📊 Data Visualization")
@@ -30782,6 +30953,110 @@ def _refactor28_schema_only_rebuild_authoritative_v1(
                     "used_fallback_weak": bool(_ref100_used_fallback_weak),
                     "top3": list(top3 or []),
                 }
+
+                # LLM35-B: explicit per-metric freshness tie-break beacon (deterministic; flag-gated)
+                try:
+                    _ftb = {
+                        "used": False,
+                        "reason": "",
+                        "flag_enabled": bool(_fresh02_enabled),
+                        "changed_winner": False,
+                        "a_score": None,
+                        "b_score": None,
+                        "a_freshness": None,
+                        "b_freshness": None,
+                        "a_age_days": None,
+                        "b_age_days": None,
+                        "a_url": "",
+                        "b_url": "",
+                        "stable_fallback_key": "",
+                    }
+
+                    _top = list(top3 or [])
+                    _tie = False
+                    if len(_top) >= 2:
+                        a0 = _top[0] if isinstance(_top[0], dict) else {}
+                        b0 = _top[1] if isinstance(_top[1], dict) else {}
+                        a_score = a0.get("score")
+                        b_score = b0.get("score")
+                        if (a0.get("year_ok") is True) and (b0.get("year_ok") is True) and (a_score not in (None, "")) and (b_score not in (None, "")):
+                            try:
+                                _tie = float(a_score) == float(b_score)
+                            except Exception:
+                                _tie = (a_score == b_score)
+
+                    if not _tie:
+                        _ftb["used"] = False
+                        _ftb["reason"] = "no_score_tie"
+                    elif not bool(_fresh02_enabled):
+                        _ftb["used"] = False
+                        _ftb["reason"] = "flag_disabled"
+                    else:
+                        _ftb["used"] = True
+
+                        # winner url from metric (schema-preserving fields)
+                        win_url = str(metric.get("source_url") or metric.get("url") or metric.get("source") or "")
+                        base_url = ""
+                        try:
+                            base_best = None
+                            if bool(_ref100_required_years):
+                                if isinstance(_fresh02_base_best_strong, dict):
+                                    base_best = _fresh02_base_best_strong
+                                elif isinstance(_fresh02_base_best_weak, dict):
+                                    base_best = _fresh02_base_best_weak
+                            else:
+                                if isinstance(_fresh02_base_best, dict):
+                                    base_best = _fresh02_base_best
+                            if isinstance(base_best, dict):
+                                base_url = str(base_best.get("source_url") or base_best.get("url") or "")
+                        except Exception:
+                            base_url = ""
+
+                        try:
+                            win_n = _normalize_url(win_url) if win_url else ""
+                        except Exception:
+                            win_n = (win_url or "").strip().lower()
+                        try:
+                            base_n = _normalize_url(base_url) if base_url else ""
+                        except Exception:
+                            base_n = (base_url or "").strip().lower()
+
+                        _ftb["stable_fallback_key"] = base_n or win_n
+
+                        if base_n and win_n and (base_n != win_n):
+                            _ftb["reason"] = "score_tie_resolved_by_freshness"
+                            _ftb["changed_winner"] = True
+                            _ftb["a_url"] = win_url
+                            _ftb["b_url"] = base_url
+                        else:
+                            _ftb["reason"] = "score_tie_freshness_not_decisive"
+                            _ftb["changed_winner"] = False
+                            _ftb["a_url"] = win_url
+                            try:
+                                _ftb["b_url"] = str((_top[1] or {}).get("url") or "")
+                            except Exception:
+                                _ftb["b_url"] = ""
+
+                        # Attach top-2 score/freshness context (as seen in selection_year_anchor_v1.top3)
+                        try:
+                            a0 = _top[0] if isinstance(_top[0], dict) else {}
+                            b0 = _top[1] if isinstance(_top[1], dict) else {}
+                            _ftb["a_score"] = a0.get("score")
+                            _ftb["b_score"] = b0.get("score")
+                            _ftb["a_freshness"] = a0.get("freshness_score")
+                            _ftb["b_freshness"] = b0.get("freshness_score")
+                            _ftb["a_age_days"] = a0.get("freshness_age_days")
+                            _ftb["b_age_days"] = b0.get("freshness_age_days")
+                        except Exception:
+                            pass
+                except Exception:
+                    _ftb = {"used": False, "reason": "error", "flag_enabled": bool(_fresh02_enabled)}
+                try:
+                    metric.setdefault("provenance", {})
+                    if isinstance(metric.get("provenance"), dict):
+                        metric["provenance"]["fresh_tiebreak_v1"] = _ftb
+                except Exception:
+                    pass
         except Exception:
             pass
 
@@ -32265,6 +32540,13 @@ try:
         pass
     for _pid in _order:
         _yureeka_patch_tracker_ensure_head_v1(_pid, {})
+except Exception:
+    pass
+
+# LLM35: patch tracker overlay (freshness score wiring + per-metric tiebreak beacons + beacon pool fix)
+try:
+    if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "LLM35" for e in PATCH_TRACKER_V1):
+        PATCH_TRACKER_V1.insert(0, {"patch_id": "LLM35", "scope": "freshness", "summary": "Wire deterministic freshness score into veracity_scores.data_freshness and surface it in Evidence Quality Scores; add per-metric fresh_tiebreak_v1 beacon (used/reason/stable fallback); and fix fresh01_source_freshness_v1 to aggregate from the same (current) source pool used by selection in evolution.", "risk": "low"})
 except Exception:
     pass
 
