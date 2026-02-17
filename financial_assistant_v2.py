@@ -166,11 +166,11 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "LLM29"
+_YUREEKA_CODE_VERSION_LOCK = "LLM30"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 # REFACTOR206: Release Candidate freeze (no pipeline behavior change).
 YUREEKA_RELEASE_CANDIDATE_V1 = False
-YUREEKA_RELEASE_TAG_V1 = "LLM29"
+YUREEKA_RELEASE_TAG_V1 = "LLM30"
 YUREEKA_FREEZE_MODE_V1 = True
 # Small default regression set (optional; used for manual triad smoke tests).
 YUREEKA_REGRESSION_QUESTIONS_V1 = [
@@ -198,11 +198,15 @@ ENABLE_LLM_ANOMALY_FLAGS = False
 
 # LLM12: Optional diagnostics/testing toggles (default OFF)
 # - LLM_BYPASS_CACHE: ignore disk/mem cache to verify live calls (may change snippet ranking output).
-# - LLM_FORCE_REFRESH_ONCE: bypass cache for the first eligible call only (forces ≥1 live call; rest of run stays cache-first).
 # - ENABLE_LLM_SMOKE_TEST: run a one-shot provider connectivity check and attach non-sensitive diag.
 LLM_BYPASS_CACHE = False
-LLM_FORCE_REFRESH_ONCE = False
 ENABLE_LLM_SMOKE_TEST = False
+
+# LLM29/LLM30: One-run-only cache refresh (default OFF)
+# - If enabled, bypass cache for the FIRST eligible cached key only, then self-consume.
+# - LLM30 safety: if the key already exists on disk, do NOT overwrite the disk cache file.
+LLM_FORCE_REFRESH_ONCE = False
+
 
 
 # LLM18: Evidence snippet assist acceptance policy (deterministic rules decide)
@@ -374,8 +378,8 @@ def _yureeka_llm_flags_snapshot_v1() -> dict:
         "ENABLE_LLM_ANOMALY_FLAGS",
         "ENABLE_LLM_DATASET_LOGGING",
         "LLM_BYPASS_CACHE",
-        "LLM_FORCE_REFRESH_ONCE",
         "ENABLE_LLM_SMOKE_TEST",
+        "LLM_FORCE_REFRESH_ONCE",
     ):
         try:
             v, src = _yureeka_llm_flag_effective_v1(k)
@@ -388,25 +392,6 @@ def _yureeka_llm_flags_snapshot_v1() -> dict:
         out["cache_bypass"] = {"enabled": bool(_bypass), "source": str(_src)[:80]}
     except Exception:
         pass
-
-    # LLM29: surface one-shot force-refresh state (non-sensitive).
-    try:
-        _fr, _src = _yureeka_llm_flag_effective_v1("LLM_FORCE_REFRESH_ONCE")
-        _stt = globals().get("_YUREEKA_LLM_CACHE_FORCE_REFRESH_ONCE_STATUS_V1")
-        if isinstance(_stt, dict):
-            out["force_refresh_once"] = {
-                "enabled": bool(_fr),
-                "source": str(_src)[:80],
-                "consumed": bool(_stt.get("consumed")),
-                "key": str(_stt.get("key") or "")[:80],
-                "consumed_at": float(_stt.get("consumed_at") or 0.0),
-                "backup_done": bool(_stt.get("backup_done")),
-            }
-        else:
-            out["force_refresh_once"] = {"enabled": bool(_fr), "source": str(_src)[:80], "consumed": False}
-    except Exception:
-        pass
-
 
     return out
 
@@ -1051,6 +1036,76 @@ def _llm_cache__mem_touch_v1(key: str):
         return
 
 
+# LLM29/LLM30: One-run-only cache refresh state (non-sensitive).
+def _yureeka_llm_force_refresh_once_state_v1() -> dict:
+    """Return mutable state for LLM_FORCE_REFRESH_ONCE (non-sensitive)."""
+    try:
+        st = globals().get("_YUREEKA_LLM_FORCE_REFRESH_ONCE_STATE_V1")
+        if not isinstance(st, dict):
+            st = {
+                "enabled": False,
+                "source": "",
+                "consumed": False,
+                "key": "",
+                "consumed_at": 0.0,
+                "disk_existed": False,
+                "disk_write_skipped": False,
+                "backup_done": False,
+            }
+            globals()["_YUREEKA_LLM_FORCE_REFRESH_ONCE_STATE_V1"] = st
+        try:
+            on, src = _yureeka_llm_flag_effective_v1("LLM_FORCE_REFRESH_ONCE")
+            st["enabled"] = bool(on)
+            st["source"] = str(src)[:80]
+        except Exception:
+            pass
+        return st
+    except Exception:
+        return {"enabled": False, "source": "error", "consumed": False, "key": "", "consumed_at": 0.0, "disk_existed": False, "disk_write_skipped": False, "backup_done": False}
+
+
+def _yureeka_llm_force_refresh_once_should_bypass_v1(key: str) -> bool:
+    """Return True if we should bypass cache for this key (and consume the one-shot)."""
+    try:
+        st = _yureeka_llm_force_refresh_once_state_v1()
+        if not bool(st.get("enabled")) or bool(st.get("consumed")):
+            return False
+        if not key:
+            return False
+
+        mem_hit = False
+        try:
+            mem_hit = bool(key in _LLM_CACHE_MEM_V1)
+        except Exception:
+            mem_hit = False
+
+        disk_hit = False
+        try:
+            path = _llm_cache_path_v1(key)
+            disk_hit = bool(path) and os.path.exists(path)
+        except Exception:
+            disk_hit = False
+
+        # Only consume when we would have served from cache (guarantees ≥1 live call).
+        if not (mem_hit or disk_hit):
+            return False
+
+        st["consumed"] = True
+        st["key"] = str(key)
+        try:
+            st["consumed_at"] = float(time.time())
+        except Exception:
+            st["consumed_at"] = 0.0
+
+        st["disk_existed"] = bool(disk_hit)
+
+        # LLM30 safety: if disk cache already exists, do NOT overwrite it on this forced refresh.
+        st["disk_write_skipped"] = bool(disk_hit)
+        st["backup_done"] = False
+        return True
+    except Exception:
+        return False
+
 def get_cached_llm_response(key: str) -> Any:
     """Return cached LLM payload for key, or None if missing/unreadable."""
     if not key:
@@ -1068,39 +1123,10 @@ def get_cached_llm_response(key: str) -> Any:
     except Exception:
         pass
 
-    # LLM29: one-shot live-call proof — bypass cache for the first key that already has cache.
-    # This keeps cache-first determinism for the rest of the run while allowing >=1 live HTTP call.
+    # LLM29/LLM30: one-run-only force refresh (consume once on first eligible cache-hit key).
     try:
-        _fr_once, _src = _yureeka_llm_flag_effective_v1("LLM_FORCE_REFRESH_ONCE")
-        if bool(_fr_once):
-            _stt = globals().get("_YUREEKA_LLM_CACHE_FORCE_REFRESH_ONCE_STATUS_V1")
-            if not isinstance(_stt, dict):
-                _stt = {"enabled": True, "source": str(_src)[:80], "consumed": False, "key": "", "consumed_at": 0.0}
-            if not bool(_stt.get("consumed")):
-                _has = False
-                try:
-                    if key in _LLM_CACHE_MEM_V1:
-                        _has = True
-                except Exception:
-                    _has = False
-                if not _has:
-                    try:
-                        _p = _llm_cache_path_v1(key)
-                        if _p and os.path.exists(_p):
-                            _has = True
-                    except Exception:
-                        _has = False
-                if _has:
-                    try:
-                        _stt.update({"enabled": True, "source": str(_src)[:80], "consumed": True, "key": str(key), "consumed_at": time.time()})
-                        globals()["_YUREEKA_LLM_CACHE_FORCE_REFRESH_ONCE_STATUS_V1"] = _stt
-                    except Exception:
-                        pass
-                    return None
-            try:
-                globals()["_YUREEKA_LLM_CACHE_FORCE_REFRESH_ONCE_STATUS_V1"] = _stt
-            except Exception:
-                pass
+        if _yureeka_llm_force_refresh_once_should_bypass_v1(key):
+            return None
     except Exception:
         pass
 
@@ -1129,7 +1155,6 @@ def get_cached_llm_response(key: str) -> Any:
     except Exception:
         return None
 
-
 def cache_llm_response(key: str, payload: Any) -> bool:
     """Persist payload to cache. Best-effort; returns True on success."""
     if not key:
@@ -1141,6 +1166,15 @@ def cache_llm_response(key: str, payload: Any) -> bool:
     except Exception:
         pass
 
+    # LLM30: If LLM_FORCE_REFRESH_ONCE consumed a key that already existed on disk,
+    # do NOT overwrite the disk cache file (preserves replay determinism/auditability).
+    try:
+        st = globals().get("_YUREEKA_LLM_FORCE_REFRESH_ONCE_STATE_V1")
+        if isinstance(st, dict) and bool(st.get("disk_write_skipped")) and str(st.get("key") or "") == str(key or ""):
+            return True
+    except Exception:
+        pass
+
     path = _llm_cache_path_v1(key)
     try:
         d = os.path.dirname(path)
@@ -1149,22 +1183,6 @@ def cache_llm_response(key: str, payload: Any) -> bool:
     except Exception:
         # disk cache is optional
         return False
-
-    # LLM29: if this write corresponds to the one-shot force-refresh key, preserve the prior cache file as a .bak snapshot.
-    try:
-        _stt = globals().get("_YUREEKA_LLM_CACHE_FORCE_REFRESH_ONCE_STATUS_V1")
-        if isinstance(_stt, dict) and bool(_stt.get("consumed")) and str(_stt.get("key") or "") == str(key):
-            if path and os.path.exists(path) and not bool(_stt.get("backup_done")):
-                _bak = f"{path}.bak.{int(time.time())}"
-                try:
-                    os.replace(path, _bak)
-                    _stt["backup_done"] = True
-                    _stt["backup_path"] = str(_bak)
-                    globals()["_YUREEKA_LLM_CACHE_FORCE_REFRESH_ONCE_STATUS_V1"] = _stt
-                except Exception:
-                    pass
-    except Exception:
-        pass
 
     try:
         tmp = f"{path}.tmp.{os.getpid()}"
@@ -1180,7 +1198,6 @@ def cache_llm_response(key: str, payload: Any) -> bool:
         except Exception:
             pass
         return False
-
 
 def _yureeka_llm_text_hash_v1(text: str) -> str:
     """Stable short hash for large text (do NOT store raw text in logs)."""
@@ -2422,34 +2439,14 @@ def _yureeka_llm_health_snapshot_v1(stage: str = "") -> dict:
             }
     except Exception:
         pass
-    # LLM12/LLM29: surface cache bypass / one-shot refresh state (non-sensitive).
+
+    # LLM29/LLM30: include one-shot refresh state (non-sensitive).
     try:
-        _stt = globals().get("_YUREEKA_LLM_CACHE_BYPASS_STATUS_V1")
-        if isinstance(_stt, dict):
-            out["cache_bypass"] = dict(_stt)
-    except Exception:
-        pass
-    try:
-        _stt = globals().get("_YUREEKA_LLM_CACHE_FORCE_REFRESH_ONCE_STATUS_V1")
-        if isinstance(_stt, dict):
-            out["force_refresh_once"] = {
-                "enabled": bool(_stt.get("enabled")),
-                "source": str(_stt.get("source") or "")[:80],
-                "consumed": bool(_stt.get("consumed")),
-                "key": str(_stt.get("key") or "")[:80],
-                "consumed_at": float(_stt.get("consumed_at") or 0.0),
-                "backup_done": bool(_stt.get("backup_done")),
-            }
-        else:
-            _fr, _src = _yureeka_llm_flag_effective_v1("LLM_FORCE_REFRESH_ONCE")
-            if bool(_fr):
-                out["force_refresh_once"] = {"enabled": True, "source": str(_src)[:80], "consumed": False}
+        out["force_refresh_once"] = _yureeka_llm_force_refresh_once_state_v1()
     except Exception:
         pass
 
     return out
-
-
 
 def _yureeka_llm_smoke_test_v1(stage: str = "") -> dict:
     """One-shot provider connectivity check (non-sensitive; does not store prompts/outputs).
@@ -2899,6 +2896,63 @@ def _llm01_llm_rank_windows_v1(
     return (best_index, conf, diag)
 
 
+def _llm01_pmc_numeric_signature_v1(pmc: Any) -> dict:
+    """Return a stable signature map for PMC numeric identity (used for safety beacons).
+
+    The signature intentionally ignores additive evidence-snippet fields; it focuses on the
+    metric winner/value identity so we can assert 'no numeric deltas' when LLM01 runs.
+    Returns: {"sig": <hex>, "per_key": {ckey: <shorthex>}}
+    """
+    out = {"sig": "", "per_key": {}}
+    if not isinstance(pmc, dict) or not pmc:
+        return out
+    try:
+        per = {}
+        rows = []
+        for ckey in sorted([str(k) for k in pmc.keys()]):
+            metric = pmc.get(ckey)
+            if not isinstance(metric, dict):
+                continue
+            rec = {"ckey": str(ckey)}
+            # Core numeric identity fields (winner/value should not change).
+            for f in ("value", "year", "unit", "value_range", "value_min", "value_max"):
+                if f in metric:
+                    rec[f] = metric.get(f)
+            # Shallow provenance (winner url/raw) if present.
+            try:
+                if metric.get("source_url") is not None:
+                    rec["source_url"] = metric.get("source_url")
+            except Exception:
+                pass
+            prov = metric.get("provenance") if isinstance(metric.get("provenance"), dict) else None
+            if isinstance(prov, dict):
+                bc = prov.get("best_candidate") if isinstance(prov.get("best_candidate"), dict) else None
+                if isinstance(bc, dict):
+                    rec["best_url"] = bc.get("source_url") or bc.get("url")
+                    if bc.get("raw") is not None:
+                        rec["best_raw"] = str(bc.get("raw"))[:120]
+            # Evolution wrappers may only have evidence list.
+            ev = metric.get("evidence")
+            if isinstance(ev, list) and ev and isinstance(ev[0], dict):
+                rec["ev0_url"] = ev[0].get("source_url") or ev[0].get("url")
+                if ev[0].get("raw") is not None:
+                    rec["ev0_raw"] = str(ev[0].get("raw"))[:120]
+            rows.append(rec)
+            try:
+                s = _yureeka__stable_json_dumps_v1(rec)
+                per[str(ckey)] = hashlib.sha256((s or "").encode("utf-8", errors="ignore")).hexdigest()[:16]
+            except Exception:
+                per[str(ckey)] = ""
+        out["per_key"] = per
+        try:
+            s_all = _yureeka__stable_json_dumps_v1(rows)
+            out["sig"] = hashlib.sha256((s_all or "").encode("utf-8", errors="ignore")).hexdigest()
+        except Exception:
+            out["sig"] = ""
+    except Exception:
+        return {"sig": "", "per_key": {}}
+    return out
+
 def _llm01_attach_evidence_snippets_to_pmc_v1(
     *,
     pmc: Any,
@@ -2909,6 +2963,10 @@ def _llm01_attach_evidence_snippets_to_pmc_v1(
     out_debug: Optional[dict] = None,
 ) -> dict:
     """Mutate pmc entries to add evidence_best_snippet + evidence_offsets (additive only)."""
+    try:
+        _sig_before_map = _llm01_pmc_numeric_signature_v1(pmc)
+    except Exception:
+        _sig_before_map = {"sig": "", "per_key": {}}
     if not isinstance(pmc, dict) or not pmc:
         return {"applied": 0, "llm_used": 0, "skipped": 0, "cache_hits": 0, "llm_calls": 0, "llm_accepts": 0, "llm_agrees": 0, "llm_rejects": 0}
     pool_llm01 = baseline_sources_cache if isinstance(baseline_sources_cache, list) else []
@@ -3308,6 +3366,31 @@ def _llm01_attach_evidence_snippets_to_pmc_v1(
     except Exception:
         pass
 
+
+    # LLM30: Safety beacon — assert evidence-snippet assist did NOT change metric numeric identity.
+    try:
+        _sig_after_map = _llm01_pmc_numeric_signature_v1(pmc)
+        ok_sig = bool((_sig_before_map or {}).get("sig")) and ((_sig_before_map.get("sig") == (_sig_after_map or {}).get("sig")))
+        diff_n = 0
+        try:
+            bpk = (_sig_before_map or {}).get("per_key") or {}
+            apk = (_sig_after_map or {}).get("per_key") or {}
+            if isinstance(bpk, dict) and isinstance(apk, dict):
+                keys = set(bpk.keys()).union(set(apk.keys()))
+                diff_n = sum(1 for k in keys if str(bpk.get(k) or "") != str(apk.get(k) or ""))
+        except Exception:
+            diff_n = 0
+        if isinstance(out_debug, dict):
+            out_debug["llm01_evidence_snippets_safety_v1"] = {
+                "v": "llm01_evidence_snippets_safety_v1",
+                "stage": str(stage or "")[:40],
+                "ok": bool(ok_sig),
+                "sig_before": str((_sig_before_map or {}).get("sig") or "")[:16],
+                "sig_after": str((_sig_after_map or {}).get("sig") or "")[:16],
+                "diff_metric_keys": int(diff_n),
+            }
+    except Exception:
+        pass
     return {
         "applied": int(applied),
         "llm_used": int(llm_used),
@@ -3545,7 +3628,6 @@ def _llm01_hotfix_apply_evidence_snippets_final_v1(wrapper: dict, *, stage: str 
 
                         "skipped": int(agg.get("skipped") or 0),
                         "cache_hits": int(agg.get("cache_hits") or 0),
-                        "live_calls": max(0, int(agg.get("llm_calls") or 0) - int(agg.get("cache_hits") or 0)),
                         "pmc_metric_count_total": int(agg.get("pmc_metric_count_total") or 0),
                         "pmc_metric_keys_unique": int(len(_pmc_metric_keys_unique) if isinstance(_pmc_metric_keys_unique, set) else 0),
                         "pmc_dicts_with_work": int(agg.get("pmc_dicts_with_work") or 0),
@@ -25344,7 +25426,6 @@ def main():
 
             st.markdown("**Diagnostics**")
             _llm_ui_checkbox("ENABLE_LLM_SMOKE_TEST", "Run LLM smoke test (connectivity)", default=False, help="Records non-sensitive status in the JSON debug.")
-            _llm_ui_checkbox("LLM_FORCE_REFRESH_ONCE", "Force 1 live LLM call (once)", default=False, help="Bypasses cache for the first eligible call only, then reverts to cache-first. Use to prove live_calls>0 without enabling full bypass.")
             _llm_ui_checkbox("LLM_BYPASS_CACHE", "Bypass LLM cache (debug)", default=False, help="Forces live calls; turn OFF for cached/replayable runs.")
 
         # ✅ REFACTOR99: Evolution baseline MUST be an Analysis payload (exclude evolution reports) and default to latest.
@@ -31166,14 +31247,6 @@ except Exception:
     pass
 
 
-
-# LLM29: patch tracker overlay (one-shot live-call proof while keeping cache-first determinism).
-try:
-    if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "LLM29" for e in PATCH_TRACKER_V1):
-        PATCH_TRACKER_V1.insert(0, {"patch_id": "LLM29", "scope": "llm-sidecar", "summary": "Add LLM_FORCE_REFRESH_ONCE (default OFF) to bypass disk/mem cache for the first eligible cached key only, forcing >=1 live HTTP call while keeping cache-first replayability for the rest of the run. Surface non-sensitive force-refresh state in llm_flags_snapshot_v1 and llm_sidecar_health_v1; optionally preserve prior cache file as .bak for audit. No metric winner/value changes.", "risk": "low"})
-except Exception:
-    pass
-
 # LLM12: patch tracker overlay (cache bypass + smoke-test diagnostics).
 try:
     if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "LLM12" for e in PATCH_TRACKER_V1):
@@ -31300,15 +31373,12 @@ try:
         PATCH_TRACKER_V1.insert(0, {"patch_id": "LLM27", "scope": "llm-sidecar", "summary": "Fix LLM flag effective resolution to work with Streamlit SessionStateProxy (ui overrides now apply). Add sidebar controls for LLM01 evidence assist policy (confidence threshold, tie delta, force-call). Defaults remain OFF / conservative; no winner/value changes unless user explicitly enables.", "risk": "low"})
     if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "LLM28" for e in PATCH_TRACKER_V1):
         PATCH_TRACKER_V1.insert(0, {"patch_id": "LLM28", "scope": "llm-sidecar", "summary": "Fix Streamlit secrets flag/policy resolution to accept mapping-like sections (e.g., st.secrets[general]) and not require plain dicts; ENABLE_LLM_EVIDENCE_SNIPPETS in secrets now takes effect. No behavior changes unless flags enabled.", "risk": "low"})
-
+    if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "LLM29" for e in PATCH_TRACKER_V1):
+        PATCH_TRACKER_V1.insert(0, {"patch_id": "LLM29", "scope": "llm-sidecar", "summary": "Add LLM_FORCE_REFRESH_ONCE (one-run-only cache bypass for first eligible cached key) + live_calls beacons to prove a true live HTTP call without breaking cache-first determinism.", "risk": "low"})
+    if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "LLM30" for e in PATCH_TRACKER_V1):
+        PATCH_TRACKER_V1.insert(0, {"patch_id": "LLM30", "scope": "llm-triad-safety", "summary": "Triad safety hardening: do not overwrite existing disk cache on forced refresh; add llm01_evidence_snippets_safety_v1 signature beacon to assert evidence-snippet assist makes no numeric/winner changes.", "risk": "low"})
 except Exception:
     pass
-
-
-
-
-
-
 # LLM10_PATCH_TRACKER_REORDER_V1: move known patch ids to the front in descending order (best-effort)
 try:
     _order = ["LLM00", "LLM01", "LLM01H", "LLM01D", "LLM01E", "LLM01F", "LLM02", "LLM03", "LLM04H", "LLM05", "LLM06", "LLM07", "LLM08", "LLM09", "LLM10", "LLM11", "LLM12", "LLM13", "LLM14", "LLM15", "LLM16", "LLM17", "LLM18", "LLM19", "LLM20", "LLM21", "LLM22", "LLM23", "LLM24", "LLM25", "LLM26", "LLM27", "LLM28"]
