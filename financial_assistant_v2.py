@@ -455,7 +455,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "NLP03"
+_YUREEKA_CODE_VERSION_LOCK = "NLP04"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 # REFACTOR206: Release Candidate freeze (no pipeline behavior change).
 YUREEKA_RELEASE_CANDIDATE_V1 = False
@@ -31374,6 +31374,8 @@ def _refactor28_schema_only_rebuild_authoritative_v1(
                 tie_base = (-hits, -int(bool(_rf129_has_million_cue)), -int(bool(_rf129_has_decimal)), -int(_rf129_decimal_places)) + _cand_sort_key(c)
 
             else:
+                # FRESH02: base tie (no freshness) for diagnostics (avoid stale tie_base leakage across schema keys)
+                tie_base = (-hits,) + _cand_sort_key(c)
                 tie = (-hits,) + _fresh02_candidate_tie_key_v1(c) + _cand_sort_key(c)
 
 
@@ -33428,6 +33430,23 @@ try:
     })
 except Exception:
     pass
+
+# NLP04: patch tracker entry
+try:
+    PATCH_TRACKER_V1.insert(0, {
+        "patch_id": "NLP04",
+        "date": "2026-02-18",
+        "title": "NLP04 freshness tiebreak base-tracker fix",
+        "summary": [
+            "Fix FRESH02 base-winner tracking for non-'M' schema keys by defining tie_base deterministically on every candidate (prevents stale tie_base leakage across canonical keys).",
+            "As a result, fresh_tiebreak_v1.base_url / changed_winner / reason now reflect the true pre-freshness winner for percent/currency keys (audit beacons match selection_year_anchor_v1.top3 reality).",
+            "Purely diagnostic + auditability fix: winner/value selection logic is unchanged; cache-first determinism preserved; ENABLE_SOURCE_FRESHNESS_TIEBREAK remains OFF by default.",
+        ],
+        "risk": "low",
+    })
+except Exception:
+    pass
+
 
 # NLP02: patch tracker entry
 try:
