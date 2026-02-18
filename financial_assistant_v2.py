@@ -455,7 +455,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "NLP07"
+_YUREEKA_CODE_VERSION_LOCK = "NLP08"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 # REFACTOR206: Release Candidate freeze (no pipeline behavior change).
 YUREEKA_RELEASE_CANDIDATE_V1 = False
@@ -8593,6 +8593,7 @@ def _refactor116_apply_effective_timing_and_row_deltas_v1(evo_obj: Any, previous
             "inj_urls_sample": list(list(inj_set)[:3]),
             "rows_total": 0,
             "injected_rows_total": 0,
+            "injected_rows_with_delta": 0,
             "injected_rows_blank_delta": 0,
             "production_rows_total": 0,
             "production_rows_with_delta": 0,
@@ -8631,10 +8632,12 @@ def _refactor116_apply_effective_timing_and_row_deltas_v1(evo_obj: Any, previous
 
                 if _is_injected_row:
                     gating["injected_rows_total"] += 1
-                    r["analysis_evolution_delta_human"] = ""
-                    r["analysis_evolution_delta_seconds"] = None
-                    gating["injected_rows_blank_delta"] += 1
-                    gating["injection_run_force_blank_rows"] += 1
+                    r["analysis_evolution_delta_human"] = delta_human or ""
+                    r["analysis_evolution_delta_seconds"] = delta_seconds
+                    if (delta_human or delta_seconds is not None):
+                        gating["injected_rows_with_delta"] += 1
+                    else:
+                        gating["injected_rows_blank_delta"] += 1
                     continue
 
                 gating["production_rows_total"] += 1
@@ -33731,6 +33734,24 @@ try:
                 "Per-metric provenance.fresh_tiebreak_v1 contains both a_age_days/b_age_days and a_freshness_age_days/b_freshness_age_days when available.",
             ],
             "risk": "low",
+        })
+except Exception:
+    pass
+
+
+# NLP08: patch tracker entry
+try:
+    if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "NLP08" for e in PATCH_TRACKER_V1):
+        PATCH_TRACKER_V1.insert(0, {
+            "patch_id": "NLP08",
+            "date": "2026-02-18",
+            "title": "NLP08 injection run-delta parity + row-delta gating cleanup",
+            "summary": [
+                "Populate analysis→evolution run-delta fields (analysis_evolution_delta_seconds / analysis_evolution_delta_human) for injected rows too, so prod and injection evolutions show consistent timing context.",
+                "Preserve injection identification in debug row_delta_gating_v4 while removing the forced-blank behavior (injection_run_force_blank_rows now remains 0).",
+                "No changes to deterministic metric winner/value selection; REFACTOR206 behavior remains identical when assist flags are OFF."
+            ],
+            "risk": "low"
         })
 except Exception:
     pass
