@@ -125,11 +125,15 @@ _HYPERPARAMS_V1_DEFAULTS = {
         "query_frame": {
             # Enable deterministic enrichment of metric_families (proposal-only; does NOT change winners/values).
             "enable_enrichment": True,
-            # Maximum number of boost terms shown in preview (actual boosting still gated by ENABLE_LLM_QUERY_FRAME).
+            # Maximum number of boost terms shown in preview (actual boosting gated by ENABLE_LLM_QUERY_FRAME and/or ENABLE_NLP_QUERY_BOOST).
             "max_boost_terms": 8,
             # Confidence threshold for including derived families (0..1).
             "min_family_confidence": 0.25,
-        }
+        },
+        "query_boost": {
+            "max_terms": 10,
+            "max_chars": 500
+        },
     },
 
     "ops": {
@@ -451,7 +455,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "NLP02"
+_YUREEKA_CODE_VERSION_LOCK = "NLP03"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 # REFACTOR206: Release Candidate freeze (no pipeline behavior change).
 YUREEKA_RELEASE_CANDIDATE_V1 = False
@@ -478,7 +482,8 @@ ENABLE_LLM_QUERY_FRAME = False
 ENABLE_LLM_QUERY_STRUCTURE_FALLBACK = False
 ENABLE_LLM_ANOMALY_FLAGS = False
 
-
+# NLP03: Deterministic NLP assist flags (default OFF; determinism preserved)
+ENABLE_NLP_QUERY_BOOST = False
 
 
 # LLM12: Optional diagnostics/testing toggles (default OFF)
@@ -660,6 +665,7 @@ def _yureeka_llm_flags_snapshot_v1() -> dict:
         "ENABLE_LLM_SOURCE_CLUSTERING",
         "ENABLE_LLM_QUERY_FRAME",
         "ENABLE_LLM_QUERY_STRUCTURE_FALLBACK",
+        "ENABLE_NLP_QUERY_BOOST",
         "ENABLE_LLM_ANOMALY_FLAGS",
         "ENABLE_LLM_DATASET_LOGGING",
         "LLM_BYPASS_CACHE",
@@ -1131,7 +1137,14 @@ def _llm03__validate_query_frame_v1(frame: Any) -> Tuple[bool, str]:
     return (True, "ok")
 
 def _llm03_build_boost_terms_v1(query: str, frame: Optional[dict]) -> List[str]:
-    """Deterministic term expansion based on query frame. Used only when ENABLE_LLM_QUERY_FRAME is True."""
+    """Deterministic term expansion based on query frame.
+
+    Used by:
+      - LLM query framing when ENABLE_LLM_QUERY_FRAME is enabled
+      - NLP03 deterministic query boosting when ENABLE_NLP_QUERY_BOOST is enabled
+
+    Determinism: stable ordering + stable truncation (hyperparam-capped).
+    """
     q = (query or "").lower()
     terms: List[str] = []
     if not isinstance(frame, dict):
@@ -1169,13 +1182,39 @@ def _llm03_build_boost_terms_v1(query: str, frame: Optional[dict]) -> List[str]:
     except Exception:
         pass
 
-    return terms[:10]
+    _lim = 10
+    try:
+        _lim = int(_yureeka_hp_get_v1("nlp.query_boost.max_terms", 10) or 10)
+    except Exception:
+        _lim = 10
+    if _lim < 0:
+        _lim = 0
+    if _lim > 50:
+        _lim = 50
+    return terms[:_lim]
 
 def _llm03_boost_web_query_v1(query: str, frame: Optional[dict], *, _force: bool = False) -> str:
-    """Return boosted web-search query string when ENABLE_LLM_QUERY_FRAME is True; otherwise original query."""
+    """Return boosted web-search query string when enabled; otherwise original query.
+
+    Enabled when:
+      - ENABLE_LLM_QUERY_FRAME is True, OR
+      - NLP03: ENABLE_NLP_QUERY_BOOST is True (deterministic; no LLM call)
+
+    Determinism: stable term selection + stable truncation.
+    """
     q_raw = (query or "")
-    _qf_on, _qf_src = _yureeka_llm_flag_effective_v1("ENABLE_LLM_QUERY_FRAME")
-    if not _force and not bool(_qf_on):
+
+    try:
+        _qf_on, _qf_src = _yureeka_llm_flag_effective_v1("ENABLE_LLM_QUERY_FRAME")
+    except Exception:
+        _qf_on, _qf_src = (bool(globals().get("ENABLE_LLM_QUERY_FRAME")), "code:ENABLE_LLM_QUERY_FRAME")
+
+    try:
+        _nb_on, _nb_src = _yureeka_llm_flag_effective_v1("ENABLE_NLP_QUERY_BOOST")
+    except Exception:
+        _nb_on, _nb_src = (bool(globals().get("ENABLE_NLP_QUERY_BOOST")), "code:ENABLE_NLP_QUERY_BOOST")
+
+    if not _force and not (bool(_qf_on) or bool(_nb_on)):
         return q_raw
     if not isinstance(frame, dict):
         return q_raw
@@ -1185,9 +1224,19 @@ def _llm03_boost_web_query_v1(query: str, frame: Optional[dict], *, _force: bool
         if not terms:
             return q_raw
         out = (q_raw.strip() + " " + " ".join([t.strip() for t in terms if str(t).strip()])).strip()
-        return out[:500]
+        _maxc = 500
+        try:
+            _maxc = int(_yureeka_hp_get_v1("nlp.query_boost.max_chars", 500) or 500)
+        except Exception:
+            _maxc = 500
+        if _maxc < 50:
+            _maxc = 50
+        if _maxc > 2000:
+            _maxc = 2000
+        return out[:_maxc]
     except Exception:
         return q_raw
+
 def _llm03_get_query_frame_v1(query: str, base_signals: Optional[Dict[str, Any]] = None) -> Tuple[dict, dict]:
     """Return (effective_frame, debug). LLM output is proposal-only and must pass strict validation."""
     q_raw = (query or "").strip()
@@ -1220,6 +1269,15 @@ def _llm03_get_query_frame_v1(query: str, base_signals: Optional[Dict[str, Any]]
         "boost_preview_terms": [],
         "boosted_query_preview": "",
     }
+
+    # NLP03: report deterministic query-boost flag state (even when LLM query framing is OFF).
+    try:
+        _nb_on, _nb_src = _yureeka_llm_flag_effective_v1("ENABLE_NLP_QUERY_BOOST")
+    except Exception:
+        _nb_on, _nb_src = (bool(globals().get("ENABLE_NLP_QUERY_BOOST")), "code:ENABLE_NLP_QUERY_BOOST")
+    dbg["flag_enable_nlp_query_boost"] = bool(_nb_on)
+    dbg["flag_source_nlp_query_boost"] = str(_nb_src)[:80]
+    dbg["boost_effective_enabled"] = bool(bool(_qf_on) or bool(_nb_on))
 
     # Preview boosted query (deterministic)
     try:
@@ -26778,7 +26836,8 @@ def main():
                 )
 
                 _llm_ui_checkbox("ENABLE_LLM_SOURCE_CLUSTERING", "Enable LLM source clustering", default=False, help="Experimental.")
-                _llm_ui_checkbox("ENABLE_LLM_QUERY_FRAME", "Enable LLM query framing", default=False, help="Experimental; may change search terms.")
+                _llm_ui_checkbox("ENABLE_NLP_QUERY_FRAME", "Enable LLM query framing", default=False, help="Experimental; may change search terms.")
+                _llm_ui_checkbox("ENABLE_NLP_QUERY_BOOST", "Enable deterministic NLP query boosting", default=False, help="Deterministic: appends stable keywords from query_frame (no LLM call). May change retrieval terms.")
                 _llm_ui_checkbox("ENABLE_LLM_QUERY_STRUCTURE_FALLBACK", "Enable LLM query-structure fallback (legacy)", default=False, help="OFF by default. When ON, low-confidence query structure may be refined by the sidecar (confidence-gated); may change retrieval terms.")
                 _llm_ui_checkbox("ENABLE_LLM_ANOMALY_FLAGS", "Enable LLM anomaly flags", default=False, help="Experimental.")
                 _llm_ui_checkbox("ENABLE_LLM_DATASET_LOGGING", "Enable LLM dataset logging", default=False, help="Experimental; may write small local logs.")
@@ -33348,6 +33407,22 @@ try:
             "Expose nlp01_enrichment_v1 in debug_query_frame_v1 for auditability and future modularisation.",
             "Fix ordering bug in REFACTOR100 year-anchor scan so FRESH02 base-winner trackers use the current candidate's year_ok/year_found (fresh_tiebreak_v1 beacons now match top3 reality).",
             "Make fresh_tiebreak_v1.competitor_url reflect the runner-up candidate (avoids base_url duplication in changed-winner cases).",
+        ],
+        "risk": "low",
+    })
+except Exception:
+    pass
+
+# NLP03: patch tracker entry
+try:
+    PATCH_TRACKER_V1.insert(0, {
+        "patch_id": "NLP03",
+        "date": "2026-02-17",
+        "title": "NLP03 deterministic query boost flag + audit beacons",
+        "summary": [
+            "Add ENABLE_NLP_QUERY_BOOST (default OFF) to apply deterministic query boosting using query_frame_v1 boost terms without invoking the LLM.",
+            "Extend query-frame debug beacons to report whether boosting is effectively enabled via LLM query framing vs NLP query boost, with explicit flag sources.",
+            "Parameterise query-boost limits via hyperparams (nlp.query_boost.max_terms / max_chars) and keep stable ordering/truncation.",
         ],
         "risk": "low",
     })
