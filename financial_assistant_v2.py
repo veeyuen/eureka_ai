@@ -455,7 +455,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "NLP06"
+_YUREEKA_CODE_VERSION_LOCK = "NLP07"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 # REFACTOR206: Release Candidate freeze (no pipeline behavior change).
 YUREEKA_RELEASE_CANDIDATE_V1 = False
@@ -4627,6 +4627,103 @@ def _yureeka_get_debug_bucket_v1(wrapper: dict, default_path: str = "analysis") 
     return {}
 
 
+
+
+def _fresh02_summarize_tiebreaks_from_pmc_v1(pmc: dict) -> dict:
+    """Summarize per-metric fresh_tiebreak_v1 beacons into a run-scope block.
+
+    NLP07: Some wrapper shapes / persistence paths can drop the earlier run-scope beacon attachment.
+    This helper derives a stable summary directly from the authoritative PMC (additive; no behavior changes).
+    """
+    if not isinstance(pmc, dict):
+        return {}
+    total = 0
+    used = 0
+    changed = 0
+    flag_any = False
+    changed_keys = []
+    examples = []
+    try:
+        for ckey, m in pmc.items():
+            if not isinstance(ckey, str) or not ckey:
+                continue
+            if not isinstance(m, dict):
+                continue
+            prov = m.get("provenance")
+            if not isinstance(prov, dict):
+                continue
+            ft = prov.get("fresh_tiebreak_v1")
+            if not isinstance(ft, dict):
+                continue
+            total += 1
+            try:
+                if bool(ft.get("flag_enabled")):
+                    flag_any = True
+            except Exception:
+                pass
+            if ft.get("used") is True:
+                used += 1
+            if ft.get("changed_winner") is True:
+                changed += 1
+                changed_keys.append(ckey)
+                if len(examples) < 6:
+                    examples.append({
+                        "canonical_key": ckey,
+                        "winner_url": str(ft.get("winner_url") or ""),
+                        "base_url": str(ft.get("base_url") or ""),
+                        "a_score": ft.get("a_score"),
+                        "b_score": ft.get("b_score"),
+                        # Both legacy + current field names are tolerated
+                        "a_age_days": ft.get("a_age_days") if ft.get("a_age_days") is not None else ft.get("a_freshness_age_days"),
+                        "b_age_days": ft.get("b_age_days") if ft.get("b_age_days") is not None else ft.get("b_freshness_age_days"),
+                        "a_freshness": ft.get("a_freshness"),
+                        "b_freshness": ft.get("b_freshness"),
+                        "reason": str(ft.get("reason") or ""),
+                    })
+    except Exception:
+        return {}
+
+    return {
+        "metrics_with_beacon_count": int(total),
+        "used_count": int(used),
+        "changed_winner_count": int(changed),
+        "changed_winner_keys": list(changed_keys[:24]),
+        "flag_enabled_any": bool(flag_any),
+        "examples": list(examples),
+        "derived_from": "primary_metrics_canonical.provenance.fresh_tiebreak_v1",
+    }
+
+
+def _fresh02_attach_run_tiebreak_summary_v1(wrapper: dict, default_path: str = "analysis") -> None:
+    """Attach run-scope FRESH02 summary into the durable debug bucket (analysis/evolution)."""
+    try:
+        if not isinstance(wrapper, dict):
+            return
+        pmc = _yureeka_get_pmc_v1(wrapper)
+        if not isinstance(pmc, dict) or not pmc:
+            return
+        summary = _fresh02_summarize_tiebreaks_from_pmc_v1(pmc)
+        if not isinstance(summary, dict) or not summary:
+            return
+        dbg = _yureeka_get_debug_bucket_v1(wrapper, default_path=default_path)
+        if not isinstance(dbg, dict):
+            return
+
+        # Only overwrite if missing/non-dict (additive + stable)
+        if not isinstance(dbg.get("fresh02_freshness_tiebreak_summary_v1"), dict):
+            dbg["fresh02_freshness_tiebreak_summary_v1"] = summary
+        if not isinstance(dbg.get("fresh02_freshness_tiebreak_v1"), dict):
+            dbg["fresh02_freshness_tiebreak_v1"] = {
+                "enabled": bool(summary.get("flag_enabled_any")),
+                "metrics_with_beacon_count": int(summary.get("metrics_with_beacon_count") or 0),
+                "used_count": int(summary.get("used_count") or 0),
+                "changed_winner_count": int(summary.get("changed_winner_count") or 0),
+                "note": "derived_from_primary_metrics_canonical",
+            }
+    except Exception:
+        return
+
+
 def _yureeka_endstate_check_v1(stage: str, analysis_wrapper: dict = None, evolution_wrapper: dict = None, injected_url: str = "") -> dict:
     """Build a compact, machine-readable end-state invariants check block.
 
@@ -5610,6 +5707,13 @@ def add_to_history(analysis: dict) -> bool:
             }
     except Exception:
         pass
+
+    # NLP07: ensure run-scope FRESH02 tiebreak summary lands in the durable analysis debug bucket
+    try:
+        _fresh02_attach_run_tiebreak_summary_v1(analysis, default_path="analysis")
+    except Exception:
+        pass
+
 
     # Why:
     # - Drift=0 depends on analysis and evolution sharing the SAME anchor IDs.
@@ -31920,6 +32024,15 @@ def _refactor28_schema_only_rebuild_authoritative_v1(
                             _ftb["b_freshness"] = b0.get("freshness_score")
                             _ftb["a_age_days"] = a0.get("freshness_age_days")
                             _ftb["b_age_days"] = b0.get("freshness_age_days")
+
+                            # NLP07: alias age-days fields for grep/compat (keep existing a_age_days/b_age_days)
+                            try:
+                                if _ftb.get("a_freshness_age_days") is None:
+                                    _ftb["a_freshness_age_days"] = _ftb.get("a_age_days")
+                                if _ftb.get("b_freshness_age_days") is None:
+                                    _ftb["b_freshness_age_days"] = _ftb.get("b_age_days")
+                            except Exception:
+                                pass
                             _ftb["a_published_at"] = a0.get("published_at") or ""
                             _ftb["b_published_at"] = b0.get("published_at") or ""
                             _ftb["a_bucket"] = a0.get("freshness_bucket") or ""
@@ -33181,6 +33294,12 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
             pass
 
 
+        # NLP07: attach run-scope FRESH02 tiebreak summary to evolution debug bucket
+        try:
+            _fresh02_attach_run_tiebreak_summary_v1(_res, default_path="evolution")
+        except Exception:
+            pass
+
         return _res
     except TypeError:
         # Backward-compat: some historical defs accept only previous_data
@@ -33201,6 +33320,11 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
             except Exception:
                 pass
 
+            # NLP07: attach run-scope FRESH02 tiebreak summary to evolution debug bucket
+            try:
+                _fresh02_attach_run_tiebreak_summary_v1(_res, default_path="evolution")
+            except Exception:
+                pass
 
             return _res
         except Exception as e:
@@ -33582,6 +33706,29 @@ try:
             "acceptance": [
                 "debug.harness_invariants_v1.patch_tracker_head_patch_id == code_version (NLP06).",
                 "debug.harness_invariants_v1.code_version_matches_patch_tracker_head == true in prod evolution.",
+            ],
+            "risk": "low",
+        })
+except Exception:
+    pass
+
+
+# NLP07: patch tracker entry
+try:
+    if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "NLP07" for e in PATCH_TRACKER_V1):
+        PATCH_TRACKER_V1.insert(0, {
+            "patch_id": "NLP07",
+            "date": "2026-02-18",
+            "title": "NLP07 freshness tie-break run-summary durability + alias fields",
+            "summary": [
+                "Harden FRESH02 auditability by deriving a run-scope tie-break summary directly from primary_metrics_canonical (per-metric fresh_tiebreak_v1 beacons), and attach it to the durable debug bucket for both analysis and evolution wrappers (prevents wrapper-depth/persistence drops).",
+                "Add grep-friendly alias fields a_freshness_age_days / b_freshness_age_days into per-metric fresh_tiebreak_v1 (keeps existing a_age_days/b_age_days).",
+                "Purely diagnostic + provenance hardening: no changes to deterministic winner/value selection; REFACTOR206 behavior preserved when assist flags are OFF.",
+            ],
+            "acceptance": [
+                "analysis.debug.fresh02_freshness_tiebreak_summary_v1 is present and well-formed (derived_from=primary_metrics_canonical...).",
+                "evolution.results.debug.fresh02_freshness_tiebreak_summary_v1 is present and well-formed.",
+                "Per-metric provenance.fresh_tiebreak_v1 contains both a_age_days/b_age_days and a_freshness_age_days/b_freshness_age_days when available.",
             ],
             "risk": "low",
         })
