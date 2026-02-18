@@ -455,7 +455,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "NLP10"
+_YUREEKA_CODE_VERSION_LOCK = "NLP11"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 # REFACTOR206: Release Candidate freeze (no pipeline behavior change).
 YUREEKA_RELEASE_CANDIDATE_V1 = False
@@ -4745,6 +4745,84 @@ def _fresh02_attach_run_tiebreak_summary_v1(wrapper: dict, default_path: str = "
         return
 
 
+
+
+def _fresh11_summarize_strict_tiebreaks_from_pmc_v1(pmc: dict) -> dict:
+    """Summarize per-metric fresh_tiebreak_v1 beacons with strict-mode breakdown (NLP11)."""
+    try:
+        if not isinstance(pmc, dict) or not pmc:
+            return {}
+        total = 0
+        used = 0
+        changed = 0
+        by_reason = {}
+        missing_fb = 0
+        resolved = 0
+        examples = []
+        for k, v in pmc.items():
+            if not isinstance(v, dict):
+                continue
+            prov = v.get("provenance") if isinstance(v.get("provenance"), dict) else {}
+            ftb = prov.get("fresh_tiebreak_v1") if isinstance(prov, dict) else None
+            if not isinstance(ftb, dict):
+                continue
+            total += 1
+            r = str(ftb.get("reason") or "")
+            by_reason[r] = int(by_reason.get(r) or 0) + 1
+            if bool(ftb.get("used")):
+                used += 1
+            if bool(ftb.get("changed_winner")):
+                changed += 1
+            if r == "score_tie_missing_freshness_stable_fallback":
+                missing_fb += 1
+            if r == "score_tie_resolved_by_freshness":
+                resolved += 1
+            if len(examples) < 6:
+                examples.append({
+                    "canonical_key": str(k),
+                    "reason": r,
+                    "changed_winner": bool(ftb.get("changed_winner")),
+                    "winner_url": str(ftb.get("winner_url") or ""),
+                    "base_url": str(ftb.get("base_url") or ""),
+                    "a_age_days": ftb.get("a_age_days"),
+                    "b_age_days": ftb.get("b_age_days"),
+                })
+        return {
+            "metrics_with_beacon_count": int(total),
+            "used_count": int(used),
+            "changed_winner_count": int(changed),
+            "resolved_by_freshness_count": int(resolved),
+            "missing_freshness_fallback_count": int(missing_fb),
+            "reasons": dict(sorted(by_reason.items(), key=lambda kv: (-int(kv[1] or 0), str(kv[0] or "")) )) if by_reason else {},
+            "examples": list(examples),
+            "derived_from": "primary_metrics_canonical.provenance.fresh_tiebreak_v1",
+            "strict_mode": "require_all_tied_have_freshness",
+        }
+    except Exception:
+        return {}
+
+
+def _fresh11_attach_run_strict_tiebreak_summary_v1(wrapper: dict, default_path: str = "analysis") -> None:
+    """Attach NLP11 strict tiebreak summary into the durable debug bucket (analysis/evolution)."""
+    try:
+        if not isinstance(wrapper, dict):
+            return
+        pmc = _yureeka_get_pmc_v1(wrapper)
+        if not isinstance(pmc, dict) or not pmc:
+            return
+        summary = _fresh11_summarize_strict_tiebreaks_from_pmc_v1(pmc)
+        if not isinstance(summary, dict) or not summary:
+            return
+        dbg = _yureeka_get_debug_bucket_v1(wrapper, default_path=default_path)
+        if not isinstance(dbg, dict):
+            return
+        if not isinstance(dbg.get("fresh11_strict_tiebreak_summary_v1"), dict):
+            dbg["fresh11_strict_tiebreak_summary_v1"] = summary
+    except Exception:
+        return
+
+
+
 def _yureeka_endstate_check_v1(stage: str, analysis_wrapper: dict = None, evolution_wrapper: dict = None, injected_url: str = "") -> dict:
     """Build a compact, machine-readable end-state invariants check block.
 
@@ -5732,6 +5810,7 @@ def add_to_history(analysis: dict) -> bool:
     # NLP07: ensure run-scope FRESH02 tiebreak summary lands in the durable analysis debug bucket
     try:
         _fresh02_attach_run_tiebreak_summary_v1(analysis, default_path="analysis")
+        _fresh11_attach_run_strict_tiebreak_summary_v1(analysis, default_path="analysis")
     except Exception:
         pass
 
@@ -26160,6 +26239,101 @@ def _yureeka_render_evidence_quality_scores_panel_v1(
                     st.caption("Freshness context: " + " · ".join(parts))
     except Exception:
         pass
+
+def _yureeka_render_freshness_tiebreak_diagnostics_panel_v1(data: Any, label: str = "") -> None:
+    """Optional UI surfacing for freshness + tie-break diagnostics (NLP11)."""
+    try:
+        title = "🕒 Freshness & Tie-break Diagnostics"
+        if label:
+            title = f"{title} {label}"
+        st.subheader(title)
+
+        wrapper, primary = _yureeka_payload_views_v1(data)
+        dbg = {}
+        try:
+            if isinstance(wrapper, dict) and isinstance(wrapper.get("debug"), dict):
+                dbg = wrapper.get("debug") or {}
+            if (not dbg) and isinstance(primary, dict) and isinstance(primary.get("debug"), dict):
+                dbg = primary.get("debug") or {}
+        except Exception:
+            dbg = {}
+
+        s11 = dbg.get("fresh11_strict_tiebreak_summary_v1") if isinstance(dbg, dict) else None
+        s02 = dbg.get("fresh02_freshness_tiebreak_summary_v1") if isinstance(dbg, dict) else None
+        summary = s11 if isinstance(s11, dict) else (s02 if isinstance(s02, dict) else None)
+
+        if not isinstance(summary, dict) or not summary:
+            st.info("No freshness/tie-break diagnostics found in this payload.")
+            return
+
+        cols = st.columns(4)
+        def _m(col, label, val):
+            try:
+                col.metric(label, str(val))
+            except Exception:
+                pass
+
+        _m(cols[0], "Metrics w/ beacon", int(summary.get("metrics_with_beacon_count") or 0))
+        _m(cols[1], "Used", int(summary.get("used_count") or 0))
+        _m(cols[2], "Changed winner", int(summary.get("changed_winner_count") or 0))
+        _m(cols[3], "Missing freshness fallbacks", int(summary.get("missing_freshness_fallback_count") or 0))
+
+        with st.expander("Summary details", expanded=False):
+            st.json(summary, expanded=False)
+
+        # Per-metric table
+        pmc = {}
+        try:
+            pmc = _yureeka_get_pmc_v1(wrapper if isinstance(wrapper, dict) else primary)
+        except Exception:
+            pmc = {}
+
+        rows = []
+        if isinstance(pmc, dict):
+            for ck, mv in pmc.items():
+                try:
+                    if not isinstance(mv, dict):
+                        continue
+                    prov = mv.get("provenance") if isinstance(mv.get("provenance"), dict) else {}
+                    ftb = prov.get("fresh_tiebreak_v1") if isinstance(prov, dict) else None
+                    if not isinstance(ftb, dict):
+                        continue
+                    if not (bool(ftb.get("used")) or bool(ftb.get("strict_used"))):
+                        continue
+                    rows.append({
+                        "canonical_key": str(ck),
+                        "reason": str(ftb.get("reason") or ""),
+                        "changed_winner": bool(ftb.get("changed_winner")),
+                        "strict_applied": bool(ftb.get("strict_applied")),
+                        "tie_count": ftb.get("tie_count"),
+                        "winner_url": str(ftb.get("winner_url") or ""),
+                        "base_url": str(ftb.get("base_url") or ""),
+                        "competitor_url": str(ftb.get("competitor_url") or ""),
+                        "a_age_days": ftb.get("a_age_days"),
+                        "b_age_days": ftb.get("b_age_days"),
+                        "a_published_at": str(ftb.get("a_published_at") or ""),
+                        "b_published_at": str(ftb.get("b_published_at") or ""),
+                        "a_freshness": ftb.get("a_freshness"),
+                        "b_freshness": ftb.get("b_freshness"),
+                    })
+                except Exception:
+                    continue
+
+        if rows:
+            try:
+                import pandas as _pd
+                df = _pd.DataFrame(rows)
+                st.dataframe(df, use_container_width=True, hide_index=True)
+            except Exception:
+                with st.expander("Beacons (raw)", expanded=False):
+                    st.json(rows[:50], expanded=False)
+        else:
+            st.info("No per-metric tie-break beacons marked as used.")
+    except Exception:
+        pass
+
+
+
 def _yureeka_render_data_visualization_panel_v1(data: Any) -> None:
     """Render Data Visualization panel (optional dependency on Plotly)."""
     st.subheader("📊 Data Visualization")
@@ -26656,9 +26830,20 @@ def render_dashboard(
     # Sources, reliability, and evidence traces are now displayed through the canonical Sources & Reliability panel below.
 
     # REFACTOR137: Restored UI panels from FIX2D88 (render-only).
+    show_freshness_diag = st.checkbox(
+        "🕒 Show Freshness & Tie-break diagnostics",
+        value=False,
+        help="Optional NLP11 diagnostics; UI-only and does not affect extraction/diffs.",
+    )
     try:
         _yureeka_render_sources_reliability_panel_v1(data, web_context=web_context, source_reliability=source_reliability)
         _yureeka_render_evidence_quality_scores_panel_v1(data, veracity_scores=veracity_scores)
+        try:
+            if bool(show_freshness_diag):
+                _payload_fd = wrapper_output if isinstance(wrapper_output, dict) else data
+                _yureeka_render_freshness_tiebreak_diagnostics_panel_v1(_payload_fd, label='')
+        except Exception:
+            pass
         st.markdown("---")
         _yureeka_render_data_visualization_panel_v1(data)
     except Exception:
@@ -30546,7 +30731,7 @@ def rebuild_metrics_from_snapshots_analysis_canonical_v1(prev_response: dict, ba
                 if _yureeka_llm_flag_bool_v1("ENABLE_LLM_ANOMALY_FLAGS"):
                     tie = (-hits, int(_llm04_penalty_points)) + _cand_sort_key(c)
                 else:
-                    tie = (-hits,) + _fresh02_candidate_tie_key_v1(c) + _cand_sort_key(c)
+                    tie = (-hits,) + _cand_sort_key(c)  # NLP11: base ordering; freshness applied post-pass (strict)
 
             # FRESH02: base tie (no freshness) for diagnostics
             tie_base = (-hits,) + _cand_sort_key(c)
@@ -31703,6 +31888,15 @@ def _refactor28_schema_only_rebuild_authoritative_v1(
 
         best_weak_years = []
 
+        # NLP11: strict freshness tie-break runtime state (logic + UI surfacing)
+        # - Base ordering remains deterministic.
+        # - Freshness only reorders within a true score-tie group when ALL tied candidates have freshness metadata.
+        best_pre = None
+        best_strong_pre = None
+        _fresh11_ftb_override = None  # set when strict tiebreak evaluates a tie group
+        _fresh11_pool = []  # bounded top-K pool (runtime only)
+        _fresh11_pool_max = 8
+
         _ref100_required_years = _refactor100_required_year_tokens_from_key(canonical_key)
 
         _ref100_top3_pairs = []  # (tie, summary_dict)
@@ -31963,14 +32157,14 @@ def _refactor28_schema_only_rebuild_authoritative_v1(
                 pass
 
             if _rf129_spec_ut.upper() == "M":
-                tie = (-hits, -int(bool(_rf129_has_million_cue)), -int(bool(_rf129_has_decimal)), -int(_rf129_decimal_places)) + _fresh02_candidate_tie_key_v1(c) + _cand_sort_key(c)
+                tie = (-hits, -int(bool(_rf129_has_million_cue)), -int(bool(_rf129_has_decimal)), -int(_rf129_decimal_places)) + _cand_sort_key(c)  # NLP11: base ordering; freshness applied post-pass (strict)
                 # FRESH02: base tie (no freshness) for diagnostics
                 tie_base = (-hits, -int(bool(_rf129_has_million_cue)), -int(bool(_rf129_has_decimal)), -int(_rf129_decimal_places)) + _cand_sort_key(c)
 
             else:
                 # FRESH02: base tie (no freshness) for diagnostics (avoid stale tie_base leakage across schema keys)
                 tie_base = (-hits,) + _cand_sort_key(c)
-                tie = (-hits,) + _fresh02_candidate_tie_key_v1(c) + _cand_sort_key(c)
+                tie = (-hits,) + _cand_sort_key(c)  # NLP11: base ordering; freshness applied post-pass (strict)
 
 
             # REFACTOR100: compute year_ok/year_found before tracker updates (fix ordering for freshness beacons)
@@ -31980,6 +32174,44 @@ def _refactor28_schema_only_rebuild_authoritative_v1(
                     year_found, year_ok = _refactor100_year_anchor_scan(c, _ref100_required_years, ctx, _ref100_src_text_by_url)
             except Exception:
                 year_found, year_ok = ([], True)
+
+            # NLP11: derive a 'tie group signature' (pre-freshness) for strict freshness tie-break grouping.
+            try:
+                _fresh11_tie_pre = tuple(tie[:4]) if str(_rf129_spec_ut or '').upper() == 'M' else tuple(tie[:1])
+            except Exception:
+                try:
+                    _fresh11_tie_pre = tuple(tie[:1]) if isinstance(tie, tuple) else tuple()
+                except Exception:
+                    _fresh11_tie_pre = tuple()
+
+            # NLP11: keep a bounded top-K pool (by base tie) for strict tie-break evaluation (runtime only).
+            try:
+                _u11 = str(c.get('source_url') or c.get('url') or '').strip()
+                _meta11 = {}
+                if _u11:
+                    try:
+                        _un11 = _normalize_url(_u11)
+                    except Exception:
+                        _un11 = _u11.lower()
+                    _meta11 = _fresh02_url2meta.get(_un11) or {}
+                _fresh11_pool.append({
+                    'tie': tie,
+                    'tie_pre': _fresh11_tie_pre,
+                    'year_ok': bool(year_ok),
+                    'years': list(year_found or []),
+                    'url': _u11,
+                    'cand': c,
+                    'freshness_score': _meta11.get('freshness_score'),
+                    'freshness_age_days': _meta11.get('freshness_age_days'),
+                    'published_at': _meta11.get('published_at') or '',
+                    'freshness_bucket': _meta11.get('freshness_bucket') or '',
+                    'freshness_method': _meta11.get('freshness_method') or '',
+                })
+                _fresh11_pool.sort(key=lambda _p: _p.get('tie'))
+                if len(_fresh11_pool) > int(_fresh11_pool_max or 8):
+                    _fresh11_pool = _fresh11_pool[: int(_fresh11_pool_max or 8)]
+            except Exception:
+                pass
 
 # FRESH02: update base-winner trackers (no freshness key)
             try:
@@ -32068,9 +32300,9 @@ def _refactor28_schema_only_rebuild_authoritative_v1(
 
                     _ref100_top3_pairs.sort(key=lambda p: p[0])
 
-                    if len(_ref100_top3_pairs) > 3:
+                    if len(_ref100_top3_pairs) > 6:  # NLP11: keep a slightly wider top-k for strict tie grouping
 
-                        _ref100_top3_pairs = _ref100_top3_pairs[:3]
+                        _ref100_top3_pairs = _ref100_top3_pairs[:6]
 
                 except Exception:
 
@@ -32088,6 +32320,8 @@ def _refactor28_schema_only_rebuild_authoritative_v1(
 
                         best_strong_years = list(year_found)
 
+                        best_strong_pre = _fresh11_tie_pre
+
                 else:
 
                     if best_weak is None or tie < best_weak_key:
@@ -32098,6 +32332,9 @@ def _refactor28_schema_only_rebuild_authoritative_v1(
 
                         best_weak_years = list(year_found)
 
+                        # NLP11: keep tie signature for completeness (weak cannot win in strict year-anchor mode)
+                        # best_weak_pre = _fresh11_tie_pre
+
             else:
 
                 if best is None or tie < best_key:
@@ -32105,6 +32342,8 @@ def _refactor28_schema_only_rebuild_authoritative_v1(
                     best = c
 
                     best_key = tie
+
+                    best_pre = _fresh11_tie_pre
 
         # REFACTOR113: hard year-anchor enforcement for year-stamped schema keys (no weak fallback).
 
@@ -32150,6 +32389,131 @@ def _refactor28_schema_only_rebuild_authoritative_v1(
         if _ref100_required_years and not isinstance(best, dict):
 
             best = {}
+
+        # NLP11: strict freshness tie-break (post-pass, deterministic)
+        # Only reorders within an exact tie group (tie_pre) when ALL tied candidates have freshness metadata.
+        # Prevents "missing freshness" from causing winner drift.
+        try:
+            _fresh11_ftb_override = {"used": False, "reason": "not_applicable", "changed_winner": False, "applied": False}
+            if _fresh02_enabled and isinstance(best, dict) and best:
+                _base_url = str(best.get("source_url") or best.get("url") or "").strip()
+                _base_pre = best_strong_pre if _ref100_required_years else best_pre
+
+                if _base_pre and isinstance(_fresh11_pool, list) and _fresh11_pool:
+                    _grp = []
+                    for _p in list(_fresh11_pool):
+                        try:
+                            if not isinstance(_p, dict):
+                                continue
+                            if _p.get("tie_pre") != _base_pre:
+                                continue
+                            if _ref100_required_years and not bool(_p.get("year_ok")):
+                                continue
+                            _grp.append(_p)
+                        except Exception:
+                            continue
+
+                    if len(_grp) > 1:
+                        _ages = []
+                        for _p in _grp:
+                            try:
+                                _ages.append(_p.get("freshness_age_days"))
+                            except Exception:
+                                _ages.append(None)
+                        _all_have = all(a is not None for a in _ages)
+
+                        if not _all_have:
+                            _fresh11_ftb_override = {
+                                "used": True,
+                                "applied": False,
+                                "all_tied_have_freshness": False,
+                                "tie_count": int(len(_grp)),
+                                "reason": "score_tie_missing_freshness_stable_fallback",
+                                "changed_winner": False,
+                                "winner_url": _base_url,
+                                "base_url": _base_url,
+                            }
+                        else:
+                            def _fresh11_quant_score(_sc):
+                                try:
+                                    _sf = float(_sc)
+                                except Exception:
+                                    _sf = None
+                                if _sf is None:
+                                    return None
+                                try:
+                                    md = float(_fresh02_min_score_delta or 0.0)
+                                except Exception:
+                                    md = 0.0
+                                if md and md > 0.0:
+                                    try:
+                                        return float(int(float(_sf) // float(md)) * float(md))
+                                    except Exception:
+                                        return _sf
+                                return _sf
+
+                            def _fresh11_sort_key(_p):
+                                scq = _fresh11_quant_score(_p.get("freshness_score"))
+                                try:
+                                    agei = int(_p.get("freshness_age_days"))
+                                except Exception:
+                                    agei = 999999
+                                # Higher score is better; smaller age is better; tie is stable fallback
+                                return (-(scq if scq is not None else 0.0), agei, _p.get("tie"))
+
+                            _grp_sorted = sorted(_grp, key=_fresh11_sort_key)
+                            _winp = _grp_sorted[0] if _grp_sorted else None
+                            _win_c = (_winp or {}).get("cand") if isinstance(_winp, dict) else None
+                            _win_url = str((_winp or {}).get("url") or "").strip()
+
+                            _changed = False
+                            try:
+                                if _base_url and _win_url:
+                                    _changed = (_normalize_url(_base_url) != _normalize_url(_win_url))
+                            except Exception:
+                                _changed = bool(_base_url and _win_url and (_base_url.strip().lower() != _win_url.strip().lower()))
+
+                            if _changed and isinstance(_win_c, dict):
+                                best = _win_c
+                                if _ref100_required_years:
+                                    try:
+                                        _ref100_winner_years = list((_winp or {}).get("years") or [])
+                                        _ref100_winner_has_all_years = True
+                                    except Exception:
+                                        pass
+
+                            _fresh11_ftb_override = {
+                                "used": True,
+                                "applied": bool(_changed),
+                                "all_tied_have_freshness": True,
+                                "tie_count": int(len(_grp)),
+                                "reason": "score_tie_resolved_by_freshness" if bool(_changed) else "score_tie_winner_unchanged",
+                                "changed_winner": bool(_changed),
+                                "winner_url": _win_url or _base_url,
+                                "base_url": _base_url,
+                            }
+
+                            # Update run-level beacon (global) for auditability
+                            try:
+                                if isinstance(_FRESH02_TIEBREAK_V1, dict):
+                                    _FRESH02_TIEBREAK_V1["applied_count"] = int(_FRESH02_TIEBREAK_V1.get("applied_count") or 0) + 1
+                                    if _fresh11_ftb_override.get("changed_winner"):
+                                        _FRESH02_TIEBREAK_V1.setdefault("applied_keys", [])
+                                        if str(canonical_key or "") and str(canonical_key or "") not in _FRESH02_TIEBREAK_V1["applied_keys"]:
+                                            _FRESH02_TIEBREAK_V1["applied_keys"].append(str(canonical_key or ""))
+                                    if isinstance(_FRESH02_TIEBREAK_V1.get("examples"), list) and len(_FRESH02_TIEBREAK_V1["examples"]) < 6:
+                                        _FRESH02_TIEBREAK_V1["examples"].append({
+                                            "canonical_key": str(canonical_key or ""),
+                                            "reason": str(_fresh11_ftb_override.get("reason") or ""),
+                                            "base_url": str(_base_url or ""),
+                                            "winner_url": str(_fresh11_ftb_override.get("winner_url") or ""),
+                                            "tie_count": int(_fresh11_ftb_override.get("tie_count") or 0),
+                                        })
+                            except Exception:
+                                pass
+        except Exception:
+            pass
+
 
         # REFACTOR129 beacon: precision tiebreak trace for chargers_2040
         try:
@@ -32425,6 +32789,19 @@ def _refactor28_schema_only_rebuild_authoritative_v1(
                                         _ftb["reason"] = "score_tie_winner_unchanged"
                             except Exception:
                                 _ftb["reason"] = "score_tie_winner_unchanged"
+
+                        # NLP11: strict tie-break override (prevents missing-freshness drift)
+                        try:
+                            if isinstance(_fresh11_ftb_override, dict) and bool(_fresh11_ftb_override.get("used")):
+                                _ftb["strict_mode"] = "require_all_tied_have_freshness"
+                                _ftb["strict_used"] = True
+                                _ftb["strict_applied"] = bool(_fresh11_ftb_override.get("applied"))
+                                _ftb["all_tied_have_freshness"] = bool(_fresh11_ftb_override.get("all_tied_have_freshness"))
+                                _ftb["tie_count"] = int(_fresh11_ftb_override.get("tie_count") or 0)
+                                _ftb["changed_winner"] = bool(_fresh11_ftb_override.get("changed_winner"))
+                                _ftb["reason"] = str(_fresh11_ftb_override.get("reason") or _ftb.get("reason") or "")
+                        except Exception:
+                            pass
 
                         # Attach top-2 score/freshness context (as seen in selection_year_anchor_v1.top3)
                         try:
@@ -33709,6 +34086,7 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
         # NLP07: attach run-scope FRESH02 tiebreak summary to evolution debug bucket
         try:
             _fresh02_attach_run_tiebreak_summary_v1(_res, default_path="evolution")
+            _fresh11_attach_run_strict_tiebreak_summary_v1(_res, default_path="evolution")
         except Exception:
             pass
 
@@ -33735,6 +34113,7 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
             # NLP07: attach run-scope FRESH02 tiebreak summary to evolution debug bucket
             try:
                 _fresh02_attach_run_tiebreak_summary_v1(_res, default_path="evolution")
+                _fresh11_attach_run_strict_tiebreak_summary_v1(_res, default_path="evolution")
             except Exception:
                 pass
 
@@ -34202,6 +34581,29 @@ try:
             "acceptance": [
                 "Prod evolution remains 100% stable; determinism preserved when assist flags are OFF.",
                 "Freshness fields (published_at/freshness_age_days/freshness_score) are populated for more sources; fewer missing_freshness fallbacks in fresh_tiebreak_v1.",
+            ],
+            "risk": "low",
+        })
+except Exception:
+    pass
+
+# NLP11: patch tracker entry
+try:
+    if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "NLP11" for e in PATCH_TRACKER_V1):
+        PATCH_TRACKER_V1.insert(0, {
+            "patch_id": "NLP11",
+            "date": "2026-02-18",
+            "title": "NLP11 strict freshness tie-break + UI surfacing (hideable)",
+            "summary": [
+                "Make the freshness tie-break STRICT: only change a winner inside an exact score-tie group when ALL tied candidates have freshness metadata; otherwise keep deterministic base ordering (prevents missing-freshness drift).",
+                "Attach debug.fresh11_strict_tiebreak_summary_v1 (analysis + evolution) derived from per-metric provenance beacons for auditability.",
+                "Add an optional Streamlit panel ('Freshness & Tie-break Diagnostics') gated behind a checkbox so the UI surfacing can be hidden by default.",
+                "Slightly widen the year-anchor top-k diagnostics list (top3 -> top6) to make tie-group inspection more practical without affecting winner selection.",
+            ],
+            "acceptance": [
+                "When all NLP/LLM assist flags are OFF, deterministic winners/values match baseline behavior.",
+                "When ENABLE_SOURCE_FRESHNESS_TIEBREAK is ON but freshness is missing for any tied candidate, winner does NOT change and fresh_tiebreak_v1.reason reports score_tie_missing_freshness_stable_fallback.",
+                "UI diagnostics are hidden by default and do not affect extraction/diff logic.",
             ],
             "risk": "low",
         })
