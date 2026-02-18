@@ -455,7 +455,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "NLP11"
+_YUREEKA_CODE_VERSION_LOCK = "NLP12"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 # REFACTOR206: Release Candidate freeze (no pipeline behavior change).
 YUREEKA_RELEASE_CANDIDATE_V1 = False
@@ -4938,14 +4938,72 @@ def _yureeka_endstate_check_v1(stage: str, analysis_wrapper: dict = None, evolut
             checks["delta_present_ratio"] = ((present / denom) if denom else None)
 
             inj = str(injected_url or "").strip()
-            checks["injected_url_hint_present"] = bool(inj)
-            _ratio = checks.get("delta_present_ratio")
-            assumed_injected = (bool(inj) if denom == 0 else (bool(inj) or ((isinstance(_ratio, (int, float)) and _ratio < 0.5))))
+            inj_norm = _normalize_url(inj) if inj else ""
+            # NLP12: determine injected-mode from multiple signals (hint, source_urls, debug),
+            # not from delta blank ratio (which may legitimately be present in injection runs).
+            inj_target = inj_norm
+            try:
+                if not inj_target:
+                    _g_inj = str(globals().get("INJECTED_URL") or "").strip()
+                    inj_target = _normalize_url(_g_inj) if _g_inj else ""
+            except Exception:
+                inj_target = inj_norm
+
+            inj_hits = 0
+            try:
+                if inj_target and urls:
+                    inj_hits = sum(1 for u in urls if _normalize_url(u) == inj_target)
+            except Exception:
+                inj_hits = 0
+
+            dbg_inj = None
+            dbg_suppress = None
+            try:
+                _dbg = (ew or {}).get("debug")
+                if not isinstance(_dbg, dict):
+                    rr = (ew or {}).get("results")
+                    _dbg = rr.get("debug") if isinstance(rr, dict) else None
+                if isinstance(_dbg, dict):
+                    # injection present
+                    try:
+                        rt = _dbg.get("run_timing_v1")
+                        if isinstance(rt, dict) and rt.get("injection_present_v3") is not None:
+                            dbg_inj = bool(rt.get("injection_present_v3"))
+                        if isinstance(rt, dict) and rt.get("suppressed_by_injection") is not None:
+                            dbg_suppress = bool(rt.get("suppressed_by_injection"))
+                    except Exception:
+                        pass
+                    try:
+                        fg = _dbg.get("fastpath_gate_v2")
+                        if isinstance(fg, dict) and fg.get("injection_mode") is not None:
+                            dbg_inj = bool(fg.get("injection_mode"))
+                    except Exception:
+                        pass
+                    try:
+                        rdg = _dbg.get("row_delta_gating_v4") or _dbg.get("row_delta_gating_v2")
+                        if isinstance(rdg, dict) and rdg.get("injection_run") is not None:
+                            dbg_inj = bool(rdg.get("injection_run"))
+                        if isinstance(rdg, dict) and rdg.get("injection_run_force_blank_rows") is not None:
+                            dbg_suppress = bool(int(rdg.get("injection_run_force_blank_rows") or 0) > 0)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
+            checks["injected_url_hint_present"] = bool(inj_norm)
+            checks["injected_url_target_norm"] = inj_target or ""
+            checks["injected_url_detected_hits"] = int(inj_hits)
+            checks["injected_url_detected_ratio"] = (inj_hits / len(urls)) if urls else 0.0
+            checks["injection_detected_by_source_urls"] = bool(inj_hits > 0)
+            checks["injection_detected_by_debug"] = (dbg_inj if dbg_inj is not None else None)
+
+            assumed_injected = bool((inj_hits > 0) or bool(inj_norm) or (dbg_inj is True))
             checks["assumed_injected_mode"] = assumed_injected
 
-            # Expected gating by mode (soft-check; never fails if denom==0)
+            # Expected gating by policy (informational; tolerate both behaviors unless policy says suppress)
+            _expect_blank = bool(assumed_injected and (dbg_suppress is True))
             if denom:
-                if assumed_injected:
+                if _expect_blank:
                     checks["delta_gating_expected"] = "blank"
                     checks["delta_gating_ok"] = bool(present == 0)
                 else:
@@ -4955,11 +5013,10 @@ def _yureeka_endstate_check_v1(stage: str, analysis_wrapper: dict = None, evolut
                 checks["delta_gating_expected"] = "unknown"
                 checks["delta_gating_ok"] = None
 
-            # If we have an injected_url hint, verify winners are from it (informational)
-            if inj:
-                inj_hits = sum(1 for u in urls if u == inj)
-                checks["injected_url"] = inj
-                checks["injected_url_hit_count"] = inj_hits
+            # If we have an injected_url target, report hit stats (informational)
+            if inj_target:
+                checks["injected_url"] = (inj if inj else (globals().get("INJECTED_URL") or ""))
+                checks["injected_url_hit_count"] = int(inj_hits)
                 checks["injected_url_hit_ratio"] = (inj_hits / len(urls)) if urls else 0.0
 
             # Stability (if present)
@@ -15096,9 +15153,14 @@ def _fresh01_extract_pub_hint_from_html_v1(html: str, max_chars: int = 250000) -
         try:
             meta_props = {
                 "article:published_time": 80,
+                "article:created_time": 75,
                 "article:modified_time": 90,
-                "og:updated_time": 70,
+                "article:updated_time": 90,
                 "og:published_time": 60,
+                "og:updated_time": 70,
+                "og:modified_time": 75,
+                "rnews:datepublished": 80,
+                "rnews:datemodified": 85,
             }
             meta_names = {
                 "pubdate": 70,
@@ -15113,13 +15175,30 @@ def _fresh01_extract_pub_hint_from_html_v1(html: str, max_chars: int = 250000) -
                 "dcterms.modified": 80,
                 "datepublished": 70,
                 "datemodified": 80,
+                "last-modified": 80,
+                "lastmodified": 80,
+                "modified": 70,
+                "updated": 70,
+                "parsely-pub-date": 85,
+                "parsely-pub-date-original": 80,
+                "sailthru.date": 75,
+                "sailthru.date_modified": 80,
+                "article:published_time": 80,
+                "article:modified_time": 90,
+            }
+            meta_itemprops = {
+                "datepublished": 80,
+                "datemodified": 85,
+                "datecreated": 75,
             }
             for tag in soup.find_all("meta"):
+
                 try:
                     if not hasattr(tag, "get"):
                         continue
                     prop = (tag.get("property") or "").strip().lower()
                     name = (tag.get("name") or "").strip().lower()
+                    itemprop = (tag.get("itemprop") or "").strip().lower()
                     content = (tag.get("content") or "").strip()
                     if not content:
                         continue
@@ -15127,6 +15206,8 @@ def _fresh01_extract_pub_hint_from_html_v1(html: str, max_chars: int = 250000) -
                         _add(f"meta:{prop}", content, meta_props[prop], "meta")
                     if name in meta_names:
                         _add(f"meta:{name}", content, meta_names[name], "meta")
+                    if itemprop in meta_itemprops:
+                        _add(f"meta:itemprop:{itemprop}", content, meta_itemprops[itemprop], "meta")
                 except Exception:
                     continue
         except Exception:
@@ -15153,7 +15234,7 @@ def _fresh01_extract_pub_hint_from_html_v1(html: str, max_chars: int = 250000) -
                     t = (s_tag.get("type") or "").strip().lower()
                     if "ld+json" not in t:
                         continue
-                    raw_json = (s_tag.string or "").strip()
+                    raw_json = (s_tag.string or s_tag.get_text() or "").strip()
                     if not raw_json:
                         continue
                     # Some pages include multiple JSON objects concatenated; best-effort parse.
@@ -17991,11 +18072,36 @@ def attach_source_snapshots_to_analysis(analysis: dict, web_context: dict) -> di
             try:
                 _fa = meta.get("fetched_at") or _yureeka_now_iso_v1()
                 meta["fetched_at"] = _fa
-                _fresh = _fresh01_compute_source_freshness_v1(content, fetched_at=_fa)
+
+                # NLP12: preserve any existing freshness fields (e.g., from scrape_url hint extraction),
+                # and only backfill missing ones. Always pass url + pub_hint so HTML/JSON-LD hints
+                # captured during scraping can be re-used deterministically during BSC construction.
+                _pub_hint = meta.get("published_at_hint") or meta.get("published_at") or None
+                _fresh = _fresh01_compute_source_freshness_v1(
+                    (content or ""),
+                    fetched_at=str(_fa or ""),
+                    url=str(url or ""),
+                    pub_hint=(_pub_hint if _pub_hint not in (None, "", [], {}) else None),
+                )
                 if isinstance(_fresh, dict):
-                    for _k in ("published_at", "freshness_age_days", "freshness_bucket", "freshness_method", "freshness_date_confidence", "freshness_score", "freshness_score_method"):
-                        if _k in _fresh:
-                            meta[_k] = _fresh.get(_k)
+                    for _k in (
+                        "published_at",
+                        "freshness_age_days",
+                        "freshness_bucket",
+                        "freshness_method",
+                        "freshness_hint_kind",
+                        "freshness_date_confidence",
+                        "freshness_score",
+                        "freshness_score_method",
+                    ):
+                        try:
+                            # Do not overwrite non-empty existing values.
+                            if meta.get(_k) not in (None, "", [], {}):
+                                continue
+                            if _k in _fresh and _fresh.get(_k) not in (None, "", [], {}):
+                                meta[_k] = _fresh.get(_k)
+                        except Exception:
+                            continue
             except Exception:
                 pass
 
@@ -18008,10 +18114,14 @@ def attach_source_snapshots_to_analysis(analysis: dict, web_context: dict) -> di
                 "fingerprint": meta.get("fingerprint") or _fingerprint(content),
 
                 # FRESH01: deterministic published/updated date extraction (diagnostic-only)
+                "published_at_hint": meta.get("published_at_hint") or "",
+                "published_at_hint_kind": meta.get("published_at_hint_kind") or "",
+                "published_at_hint_raw": meta.get("published_at_hint_raw") or "",
                 "published_at": meta.get("published_at") or "",
                 "freshness_age_days": meta.get("freshness_age_days"),
                 "freshness_bucket": meta.get("freshness_bucket") or "",
                 "freshness_method": meta.get("freshness_method") or "none",
+                "freshness_hint_kind": meta.get("freshness_hint_kind") or "",
                 "freshness_date_confidence": meta.get("freshness_date_confidence"),
                 "freshness_score": meta.get("freshness_score"),
                 "freshness_score_method": meta.get("freshness_score_method") or "none",
@@ -26280,6 +26390,60 @@ def _yureeka_render_freshness_tiebreak_diagnostics_panel_v1(data: Any, label: st
 
         with st.expander("Summary details", expanded=False):
             st.json(summary, expanded=False)
+
+        # Source-level freshness coverage
+        try:
+            with st.expander("Source freshness coverage", expanded=False):
+                bsc = None
+                try:
+                    if isinstance(wrapper, dict) and isinstance(wrapper.get("baseline_sources_cache"), list):
+                        bsc = wrapper.get("baseline_sources_cache")
+                    if (not bsc) and isinstance(primary, dict) and isinstance(primary.get("baseline_sources_cache"), list):
+                        bsc = primary.get("baseline_sources_cache")
+                    if (not bsc) and isinstance(wrapper, dict) and isinstance(wrapper.get("results"), dict) and isinstance(wrapper["results"].get("baseline_sources_cache"), list):
+                        bsc = wrapper["results"].get("baseline_sources_cache")
+                except Exception:
+                    bsc = None
+
+                if not isinstance(bsc, list) or not bsc:
+                    st.info("No baseline_sources_cache available for source freshness coverage.")
+                else:
+                    srows = []
+                    for s in bsc[:200]:
+                        try:
+                            if not isinstance(s, dict):
+                                continue
+                            srows.append({
+                                "url": str(s.get("url") or ""),
+                                "status": str(s.get("status") or ""),
+                                "published_at": str(s.get("published_at") or ""),
+                                "published_at_hint": str(s.get("published_at_hint") or ""),
+                                "hint_kind": str(s.get("published_at_hint_kind") or ""),
+                                "age_days": s.get("freshness_age_days"),
+                                "method": str(s.get("freshness_method") or ""),
+                                "hint_used": str(s.get("freshness_hint_kind") or ""),
+                                "confidence": s.get("freshness_date_confidence"),
+                                "score": s.get("freshness_score"),
+                            })
+                        except Exception:
+                            continue
+                    try:
+                        import pandas as _pd
+                        df2 = _pd.DataFrame(srows)
+                        # show missing publish dates first, then newest
+                        try:
+                            df2["_missing"] = df2["published_at"].apply(lambda x: 1 if not str(x or "").strip() else 0)
+                            df2["_age"] = df2["age_days"].apply(lambda x: 999999 if x is None else float(x))
+                            df2 = df2.sort_values(by=["_missing", "_age", "url"], ascending=[False, True, True])
+                            df2 = df2.drop(columns=["_missing", "_age"], errors="ignore")
+                        except Exception:
+                            pass
+                        st.dataframe(df2, use_container_width=True, hide_index=True)
+                    except Exception:
+                        st.json(srows, expanded=False)
+        except Exception:
+            pass
+
 
         # Per-metric table
         pmc = {}
@@ -34609,6 +34773,30 @@ try:
         })
 except Exception:
     pass
+
+
+# NLP12: patch tracker entry
+try:
+    if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "NLP12" for e in PATCH_TRACKER_V1):
+        PATCH_TRACKER_V1.insert(0, {
+            "patch_id": "NLP12",
+            "date": "2026-02-18",
+            "title": "NLP12 freshness hint preservation + injection-mode endstate alignment",
+            "summary": [
+                "Preserve/propagate HTML meta/JSON-LD publish-date hints into baseline_sources_cache by avoiding overwrite of existing freshness fields during BSC construction, and by passing url + pub_hint when computing freshness backfills.",
+                "Expose published_at_hint (+ kind/raw) and freshness_hint_kind in baseline_sources_cache for auditability, and surface a hideable 'Source freshness coverage' table inside the Freshness diagnostics panel.",
+                "Harden endstate_check_v1 injection-mode detection: infer from injected URL presence in source_url rows and/or debug beacons, instead of relying on delta blank ratio (which can be validly present in injection runs).",
+            ],
+            "acceptance": [
+                "When ENABLE_SOURCE_FRESHNESS_TIEBREAK is ON, missing-freshness fallback events should reduce when publish hints exist; strict tie-break behavior remains unchanged.",
+                "endstate_check_v1 reports assumed_injected_mode consistently with injection_present_v3 / admitted injected URLs, and delta_gating_expected follows suppression policy rather than assuming blanks.",
+                "Default behavior unchanged when assist flags are OFF.",
+            ],
+            "risk": "low",
+        })
+except Exception:
+    pass
+
 
 # Governance hardening: enforce patch tracker head == stamped code version (after all overlays)
 try:
