@@ -455,7 +455,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "NLP12"
+_YUREEKA_CODE_VERSION_LOCK = "NLP13"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 # REFACTOR206: Release Candidate freeze (no pipeline behavior change).
 YUREEKA_RELEASE_CANDIDATE_V1 = False
@@ -15306,8 +15306,8 @@ def _fresh01_extract_date_candidates_v1(text: str, max_scan: int = 5200) -> list
         except Exception:
             return ""
 
-    # ISO-ish: 2025-07-01 or 2025/07/01
-    for m in re.finditer(r"\b(20\d{2})[-/](\d{1,2})[-/](\d{1,2})\b", t):
+    # ISO-ish: 2025-07-01 or 2025/07/01 or 2025.07.01
+    for m in re.finditer(r"\b(20\d{2})[-/.](\d{1,2})[-/.](\d{1,2})\b", t):
         yy = _fresh01__safe_int_v1(m.group(1))
         mm = _fresh01__safe_int_v1(m.group(2))
         dd = _fresh01__safe_int_v1(m.group(3))
@@ -15319,6 +15319,31 @@ def _fresh01_extract_date_candidates_v1(text: str, max_scan: int = 5200) -> list
         if not dt:
             continue
         out.append({"dt": dt, "pos": int(m.start()), "raw": m.group(0), "kind": "iso", "ctx": _ctx(m.start(), m.end())})
+
+    # Numeric D/M/Y or M/D/Y (only when unambiguous: one side > 12)
+    for m in re.finditer(r"\b(\d{1,2})[./-](\d{1,2})[./-](20\d{2})\b", t):
+        a = _fresh01__safe_int_v1(m.group(1))
+        b = _fresh01__safe_int_v1(m.group(2))
+        yy = _fresh01__safe_int_v1(m.group(3))
+        if not yy or not a or not b:
+            continue
+        dd = None
+        mm = None
+        kind = ""
+        # D/M/Y
+        if a > 12 and b <= 12:
+            dd, mm, kind = a, b, "dmy_num"
+        # M/D/Y
+        elif b > 12 and a <= 12:
+            mm, dd, kind = a, b, "mdy_num"
+        else:
+            continue
+        if mm < 1 or mm > 12 or dd < 1 or dd > 31:
+            continue
+        dt = _fresh01__make_dt_v1(yy, mm, dd)
+        if not dt:
+            continue
+        out.append({"dt": dt, "pos": int(m.start()), "raw": m.group(0), "kind": kind, "ctx": _ctx(m.start(), m.end())})
 
     # Month day, year: July 1, 2025 / Jul 1 2025
     mon_re = r"Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t|tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?"
@@ -15336,8 +15361,8 @@ def _fresh01_extract_date_candidates_v1(text: str, max_scan: int = 5200) -> list
             continue
         out.append({"dt": dt, "pos": int(m.start()), "raw": m.group(0), "kind": "mdy", "ctx": _ctx(m.start(), m.end())})
 
-    # Day Month year: 1 July 2025
-    for m in re.finditer(rf"\b(\d{{1,2}})(?:st|nd|rd|th)?\s+({mon_re})\s+(20\d{{2}})\b", t, flags=re.I):
+    # Day Month year: 1 July 2025 / 1 Jul, 2025
+    for m in re.finditer(rf"\b(\d{{1,2}})(?:st|nd|rd|th)?\s+({mon_re})\s*,?\s*(20\d{{2}})\b", t, flags=re.I):
         dd = _fresh01__safe_int_v1(m.group(1))
         mon_s = (m.group(2) or "").lower()
         yy = _fresh01__safe_int_v1(m.group(3))
@@ -15351,7 +15376,34 @@ def _fresh01_extract_date_candidates_v1(text: str, max_scan: int = 5200) -> list
             continue
         out.append({"dt": dt, "pos": int(m.start()), "raw": m.group(0), "kind": "dmy", "ctx": _ctx(m.start(), m.end())})
 
-    return out[:24]
+    return out[:32]
+
+
+def _fresh01_extract_url_date_candidates_v1(url: str) -> list:
+    """Extract publish-date candidates from URL paths when meta/text dates are missing.
+
+    Deterministic and conservative: only returns full YYYY/MM/DD or YYYY-MM-DD patterns.
+    """
+    if not isinstance(url, str) or not url.strip():
+        return []
+    u = url.strip()
+    out = []
+    try:
+        for m in re.finditer(r"(20\d{2})[-/](\d{1,2})[-/](\d{1,2})", u):
+            yy = _fresh01__safe_int_v1(m.group(1))
+            mm = _fresh01__safe_int_v1(m.group(2))
+            dd = _fresh01__safe_int_v1(m.group(3))
+            if not yy or not mm or not dd:
+                continue
+            if mm < 1 or mm > 12 or dd < 1 or dd > 31:
+                continue
+            dt = _fresh01__make_dt_v1(yy, mm, dd)
+            if not dt:
+                continue
+            out.append({"dt": dt, "pos": 0, "raw": m.group(0), "kind": "url", "ctx": "url"})
+    except Exception:
+        return out
+    return out[:6]
 
 def _fresh01_pick_best_candidate_v1(cands: list, fetched_at: str = "") -> Optional[dict]:
     """Pick the best candidate date dict using deterministic heuristics + fetched_at sanity bounds.
@@ -15515,7 +15567,16 @@ def _fresh01_compute_source_freshness_v2(text: str, fetched_at: str = "", url: s
         "freshness_score_method": "none",   # bucket_v1_conf_v1 / none
     }
     try:
-        cands = _fresh01_extract_date_candidates_v1(text)
+        # Two-pass scan: prefer header-area dates; widen scan only when none found.
+        cands = _fresh01_extract_date_candidates_v1(text, max_scan=5200)
+        if not cands:
+            cands = _fresh01_extract_date_candidates_v1(text, max_scan=20000)
+        # URL fallback (full YYYY/MM/DD patterns only)
+        if url:
+            try:
+                cands = list(cands or []) + list(_fresh01_extract_url_date_candidates_v1(url) or [])
+            except Exception:
+                pass
         best_regex = _fresh01_pick_best_candidate_v1(cands, fetched_at=fetched_at)
 
         # NLP10: incorporate publish-date hints captured from fetched HTML (meta/<time>/JSON-LD) when available.
@@ -34791,6 +34852,30 @@ try:
                 "When ENABLE_SOURCE_FRESHNESS_TIEBREAK is ON, missing-freshness fallback events should reduce when publish hints exist; strict tie-break behavior remains unchanged.",
                 "endstate_check_v1 reports assumed_injected_mode consistently with injection_present_v3 / admitted injected URLs, and delta_gating_expected follows suppression policy rather than assuming blanks.",
                 "Default behavior unchanged when assist flags are OFF.",
+            ],
+            "risk": "low",
+        })
+except Exception:
+    pass
+
+
+# NLP13: patch tracker entry
+try:
+    if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "NLP13" for e in PATCH_TRACKER_V1):
+        PATCH_TRACKER_V1.insert(0, {
+            "patch_id": "NLP13",
+            "date": "2026-02-18",
+            "title": "NLP13 freshness extraction broadened (text + URL patterns)",
+            "summary": [
+                "Broaden deterministic publish-date extraction to cover common real-world formats (e.g., '26 Sep, 2025', '18.08.2025', '2025.08.18') without relying on LLM or new web calls.",
+                "Add a conservative URL date fallback (YYYY/MM/DD or YYYY-MM-DD only) for sources where publish dates are present in the path but missing in meta/text.",
+                "Use a two-pass scan window (header-first, then wider) to reduce false positives while improving coverage on pages where publish/update dates appear outside the header.",
+                "No change to deterministic winners/values unless ENABLE_SOURCE_FRESHNESS_TIEBREAK is explicitly enabled (freshness remains diagnostic otherwise).",
+            ],
+            "acceptance": [
+                "analysis.debug.fresh01_source_freshness_v1.sources_with_published_at increases for previously-missing sources where a date is present in text (e.g., Published/Updated lines).",
+                "When ENABLE_SOURCE_FRESHNESS_TIEBREAK is ON, strict tie-break applies more often (fewer score_tie_missing_freshness_stable_fallback events) without changing base ordering outside exact tie groups.",
+                "Prod evolution stability remains 100% for the regression question when assist flags are OFF.",
             ],
             "risk": "low",
         })
