@@ -455,7 +455,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "NLP09"
+_YUREEKA_CODE_VERSION_LOCK = "NLP10"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 # REFACTOR206: Release Candidate freeze (no pipeline behavior change).
 YUREEKA_RELEASE_CANDIDATE_V1 = False
@@ -9369,8 +9369,18 @@ def scrape_url(url: str) -> Optional[str]:
     if not url_s:
         return None
 
+    pub_hint = {}
+
     def _clean_html_to_text(html: str) -> str:
+        nonlocal pub_hint
         try:
+            # NLP10: capture publish/updated date hints from HTML meta/JSON-LD before stripping.
+            try:
+                _ph = _fresh01_extract_pub_hint_from_html_v1(html or "")
+                if isinstance(_ph, dict) and str(_ph.get("published_at") or "").strip():
+                    pub_hint = _ph
+            except Exception:
+                pass
             soup = BeautifulSoup(html or "", "html.parser")
             for tag in soup(["script", "style", "nav", "footer", "header", "aside", "noscript", "form"]):
                 try:
@@ -9420,6 +9430,14 @@ def scrape_url(url: str) -> Optional[str]:
                 return None
 
             cleaned = _clean_html_to_text(resp.text or "")
+
+            # NLP10: store publish-date hint (if found) into global cache for later freshness scoring.
+            try:
+                _cache = globals().get("_FRESH01_PUB_HINT_CACHE_V1")
+                if isinstance(_cache, dict) and isinstance(pub_hint, dict) and str(pub_hint.get("published_at") or "").strip():
+                    _cache[_normalize_url(u) or str(u or "").strip()] = dict(pub_hint)
+            except Exception:
+                pass
             cleaned = cleaned.strip()
             if not cleaned:
                 return None
@@ -9434,6 +9452,14 @@ def scrape_url(url: str) -> Optional[str]:
             resp = requests.get("https://api.scrapingdog.com/scrape", params=params, timeout=15)
             if resp.status_code < 400:
                 cleaned = _clean_html_to_text(resp.text or "").strip()
+
+                # NLP10: store publish-date hint (if found) into global cache for later freshness scoring.
+                try:
+                    _cache = globals().get("_FRESH01_PUB_HINT_CACHE_V1")
+                    if isinstance(_cache, dict) and isinstance(pub_hint, dict) and str(pub_hint.get("published_at") or "").strip():
+                        _cache[_normalize_url(url_s) or str(url_s or "").strip()] = dict(pub_hint)
+                except Exception:
+                    pass
                 if cleaned:
                     return cleaned[:3000]
         except Exception:
@@ -10026,6 +10052,52 @@ def fetch_web_context(
                         meta["content_len"] = len(meta.get("content") or "")
                         meta["clean_text_len"] = len(meta.get("clean_text") or "")
 
+                        # NLP10: preserve freshness fields from reused snapshot (avoid drift on fallback reuse).
+                        try:
+                            for kk in (
+                                "published_at_hint",
+                                "published_at_hint_kind",
+                                "published_at_hint_raw",
+                                "published_at",
+                                "freshness_age_days",
+                                "freshness_bucket",
+                                "freshness_method",
+                                "freshness_date_confidence",
+                                "freshness_score",
+                                "freshness_score_method",
+                                "freshness_hint_kind",
+                            ):
+                                if isinstance(_prev, dict) and kk in _prev and _prev.get(kk) not in (None, "", []):
+                                    meta[kk] = _prev.get(kk)
+                        except Exception:
+                            pass
+                        try:
+                            need = (meta.get("freshness_age_days") is None) or (meta.get("published_at") in (None, ""))
+                            if need:
+                                _ref_fetched_at = meta.get("fallback_snapshot_fetched_at") or (_prev.get("fetched_at") if isinstance(_prev, dict) else "") or ""
+                                _ct = meta.get("clean_text") or meta.get("content") or ""
+                                fres = _fresh01_compute_source_freshness_v2(
+                                    _ct or "",
+                                    fetched_at=str(_ref_fetched_at or ""),
+                                    url=str(url or ""),
+                                    pub_hint=(meta.get("published_at_hint") or None),
+                                )
+                                if isinstance(fres, dict) and fres:
+                                    for kk in (
+                                        "published_at",
+                                        "freshness_age_days",
+                                        "freshness_bucket",
+                                        "freshness_method",
+                                        "freshness_date_confidence",
+                                        "freshness_score",
+                                        "freshness_score_method",
+                                        "freshness_hint_kind",
+                                    ):
+                                        if kk in fres:
+                                            meta[kk] = fres.get(kk)
+                        except Exception:
+                            pass
+
                         out["scraped_meta"][url] = meta
                         out["scraped_content"][url] = meta.get("clean_text") or meta.get("content") or ""
 
@@ -10050,6 +10122,40 @@ def fetch_web_context(
                 meta["clean_text"] = cleaned
                 meta["content_len"] = len(cleaned)
                 meta["clean_text_len"] = len(cleaned)
+
+                # NLP10: attach publish-date hint (from HTML meta/JSON-LD) and compute additive freshness fields.
+                try:
+                    _ph_cache = globals().get("_FRESH01_PUB_HINT_CACHE_V1")
+                    _ph = (_ph_cache.get(_normalize_url(url)) if isinstance(_ph_cache, dict) else None)
+                    if isinstance(_ph, dict) and str(_ph.get("published_at") or "").strip():
+                        meta["published_at_hint"] = str(_ph.get("published_at") or "").strip()
+                        meta["published_at_hint_kind"] = str(_ph.get("kind") or _ph.get("source") or "").strip()
+                        meta["published_at_hint_raw"] = str(_ph.get("raw") or "")[:220]
+                        meta["status_detail"] = f"success;pub={meta.get('published_at_hint')};pubm={meta.get('published_at_hint_kind') or 'hint'}"
+                except Exception:
+                    pass
+                try:
+                    fres = _fresh01_compute_source_freshness_v2(
+                        cleaned or "",
+                        fetched_at=str(meta.get("fetched_at") or ""),
+                        url=str(url or ""),
+                        pub_hint=(meta.get("published_at_hint") or None),
+                    )
+                    if isinstance(fres, dict) and fres:
+                        for kk in (
+                            "published_at",
+                            "freshness_age_days",
+                            "freshness_bucket",
+                            "freshness_method",
+                            "freshness_date_confidence",
+                            "freshness_score",
+                            "freshness_score_method",
+                            "freshness_hint_kind",
+                        ):
+                            if kk in fres:
+                                meta[kk] = fres.get(kk)
+                except Exception:
+                    pass
 
                 # fingerprint
                 try:
@@ -10930,7 +11036,7 @@ def source_freshness_score_v1(sources: Any, web_context: dict) -> Optional[float
                                 except Exception:
                                     content = ""
                                 fetched_at = meta.get("fetched_at") or meta.get("fetched_at_iso") or ""
-                                fres = _fresh01_compute_source_freshness_v2(content or "", fetched_at=str(fetched_at or ""), url=str(url or ""))
+                                fres = _fresh01_compute_source_freshness_v2(content or "", fetched_at=str(fetched_at or ""), url=str(url or ""), pub_hint=(meta.get("published_at_hint") or None))
                                 if isinstance(fres, dict) and fres:
                                     for kk in (
                                         "published_at",
@@ -14826,6 +14932,205 @@ def _fresh01__norm_iso_date_v1(dt: Optional[datetime]) -> str:
         return ""
 
 
+
+# NLP10: in-memory publish-hint cache populated during scraping (url -> hint dict).
+# This is best-effort runtime-only; persisted hints also flow into scraped_meta for replay.
+_FRESH01_PUB_HINT_CACHE_V1 = {}
+
+def _fresh01_parse_any_date_str_v1(s: str) -> Optional[datetime]:
+    """Parse common publish-date strings into a timezone-aware UTC datetime (deterministic, best-effort)."""
+    try:
+        if not isinstance(s, str):
+            return None
+        t = s.strip()
+        if not t:
+            return None
+        # Normalize common ISO forms
+        t0 = t.replace("Z", "+00:00")
+        # Note: keep fractional seconds as-is; fromisoformat handles microseconds best-effort.
+
+        # Try full ISO datetime first
+        try:
+            dt = datetime.fromisoformat(t0)
+            if isinstance(dt, datetime):
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                return dt.astimezone(timezone.utc)
+        except Exception:
+            pass
+
+        # Try ISO date only
+        m = re.match(r"^\s*(20\d{2})[-/](\d{1,2})[-/](\d{1,2})\s*$", t)
+        if m:
+            yy = _fresh01__safe_int_v1(m.group(1))
+            mm = _fresh01__safe_int_v1(m.group(2))
+            dd = _fresh01__safe_int_v1(m.group(3))
+            if yy and mm and dd:
+                return _fresh01__make_dt_v1(yy, mm, dd)
+
+        # Try RFC3339-ish without seconds
+        m = re.match(r"^\s*(20\d{2})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})(?::(\d{2}))?", t0)
+        if m:
+            yy = _fresh01__safe_int_v1(m.group(1))
+            mm = _fresh01__safe_int_v1(m.group(2))
+            dd = _fresh01__safe_int_v1(m.group(3))
+            hh = _fresh01__safe_int_v1(m.group(4), 0)
+            mi = _fresh01__safe_int_v1(m.group(5), 0)
+            ss = _fresh01__safe_int_v1(m.group(6), 0)
+            if yy and mm and dd:
+                try:
+                    return datetime(int(yy), int(mm), int(dd), int(hh or 0), int(mi or 0), int(ss or 0), tzinfo=timezone.utc)
+                except Exception:
+                    return _fresh01__make_dt_v1(yy, mm, dd)
+    except Exception:
+        return None
+    return None
+
+def _fresh01_extract_pub_hint_from_html_v1(html: str, max_chars: int = 250000) -> dict:
+    """Extract publish/updated date hints from fetched HTML (meta tags, <time>, JSON-LD).
+
+    Returns a dict with keys:
+      - published_at: ISO date (YYYY-MM-DD)
+      - kind: e.g., meta:article:published_time | meta:article:modified_time | time:datetime | ldjson:datePublished | ldjson:dateModified
+      - raw: original string (truncated)
+      - source: high-level source (meta|time|ldjson)
+    """
+    out = {"published_at": "", "kind": "", "raw": "", "source": ""}
+    try:
+        if not isinstance(html, str) or not html.strip():
+            return out
+        h = html[: int(max_chars or 250000)]
+        soup = BeautifulSoup(h, "html.parser")
+
+        cands = []  # list of dict(dt, weight, kind, raw, source)
+
+        def _add(kind: str, raw: str, weight: int, source: str):
+            try:
+                dt = _fresh01_parse_any_date_str_v1(raw or "")
+                if not isinstance(dt, datetime):
+                    return
+                cands.append({"dt": dt.astimezone(timezone.utc), "w": int(weight), "kind": str(kind or ""), "raw": str(raw or "")[:240], "source": str(source or "")})
+            except Exception:
+                pass
+
+        # 1) Meta tags
+        try:
+            meta_props = {
+                "article:published_time": 80,
+                "article:modified_time": 90,
+                "og:updated_time": 70,
+                "og:published_time": 60,
+            }
+            meta_names = {
+                "pubdate": 70,
+                "publishdate": 70,
+                "publish_date": 70,
+                "date": 40,
+                "dc.date": 60,
+                "dc.date.issued": 70,
+                "dc.date.created": 70,
+                "dc.date.modified": 80,
+                "dcterms.created": 70,
+                "dcterms.modified": 80,
+                "datepublished": 70,
+                "datemodified": 80,
+            }
+            for tag in soup.find_all("meta"):
+                try:
+                    if not hasattr(tag, "get"):
+                        continue
+                    prop = (tag.get("property") or "").strip().lower()
+                    name = (tag.get("name") or "").strip().lower()
+                    content = (tag.get("content") or "").strip()
+                    if not content:
+                        continue
+                    if prop in meta_props:
+                        _add(f"meta:{prop}", content, meta_props[prop], "meta")
+                    if name in meta_names:
+                        _add(f"meta:{name}", content, meta_names[name], "meta")
+                except Exception:
+                    continue
+        except Exception:
+            pass
+
+        # 2) <time datetime="...">
+        try:
+            for ttag in soup.find_all("time"):
+                try:
+                    raw = (ttag.get("datetime") or "").strip() if hasattr(ttag, "get") else ""
+                    if raw:
+                        _add("time:datetime", raw, 55, "time")
+                except Exception:
+                    continue
+        except Exception:
+            pass
+
+        # 3) JSON-LD datePublished/dateModified
+        try:
+            for s_tag in soup.find_all("script"):
+                try:
+                    if not hasattr(s_tag, "get"):
+                        continue
+                    t = (s_tag.get("type") or "").strip().lower()
+                    if "ld+json" not in t:
+                        continue
+                    raw_json = (s_tag.string or "").strip()
+                    if not raw_json:
+                        continue
+                    # Some pages include multiple JSON objects concatenated; best-effort parse.
+                    try:
+                        obj = json.loads(raw_json)
+                    except Exception:
+                        # try to salvage first {...} block
+                        m = re.search(r"\{.*\}", raw_json, flags=re.S)
+                        if not m:
+                            continue
+                        try:
+                            obj = json.loads(m.group(0))
+                        except Exception:
+                            continue
+
+                    stack = [obj]
+                    while stack:
+                        cur = stack.pop()
+                        if isinstance(cur, dict):
+                            for k, v in list(cur.items()):
+                                kl = str(k or "")
+                                if kl in ("datePublished", "dateModified"):
+                                    if isinstance(v, str) and v.strip():
+                                        _add(f"ldjson:{kl}", v.strip(), 65 if kl == "datePublished" else 85, "ldjson")
+                                if isinstance(v, (dict, list)):
+                                    stack.append(v)
+                        elif isinstance(cur, list):
+                            for it in cur:
+                                if isinstance(it, (dict, list)):
+                                    stack.append(it)
+                except Exception:
+                    continue
+        except Exception:
+            pass
+
+        if not cands:
+            return out
+
+        # Choose best candidate: highest weight, then most recent date.
+        cands.sort(key=lambda r: (int(r.get("w") or 0), r.get("dt")), reverse=True)
+        best = cands[0]
+        dt = best.get("dt")
+        if isinstance(dt, datetime):
+            out["published_at"] = _fresh01__norm_iso_date_v1(dt)
+        out["kind"] = str(best.get("kind") or "")
+        out["raw"] = str(best.get("raw") or "")[:240]
+        out["source"] = str(best.get("source") or "")
+        return out
+    except Exception:
+        return out
+
+
+
+
+
+
 def _fresh01_extract_date_candidates_v1(text: str, max_scan: int = 5200) -> list:
     """Return candidate dates from text with rough priority hints (deterministic regex-only)."""
     if not isinstance(text, str) or not text.strip():
@@ -15032,7 +15337,7 @@ def _fresh01_confidence_from_heur_v1(heur: int) -> float:
         return 0.75   # header-only
     return 0.70       # generic date
 
-def _fresh01_compute_source_freshness_v2(text: str, fetched_at: str = "") -> dict:
+def _fresh01_compute_source_freshness_v2(text: str, fetched_at: str = "", url: str = "", pub_hint: Any = None, **_ignored) -> dict:
     """Return additive freshness fields for a source snapshot (includes 0-100 score).
 
     Determinism rules:
@@ -15043,19 +15348,82 @@ def _fresh01_compute_source_freshness_v2(text: str, fetched_at: str = "") -> dic
         "published_at": "",                 # ISO date (YYYY-MM-DD)
         "freshness_age_days": None,         # int days (>=0) or None
         "freshness_bucket": "",             # categorical bucket
-        "freshness_method": "none",         # regex_v1 / none
+        "freshness_method": "none",         # regex_v1 / html_hint_v1 / none
+        "freshness_hint_kind": "",        # when freshness_method == html_hint_v1 (diagnostic)
         "freshness_date_confidence": None,  # float in [0,1] or None
         "freshness_score": None,            # float 0-100 or None
         "freshness_score_method": "none",   # bucket_v1_conf_v1 / none
     }
     try:
         cands = _fresh01_extract_date_candidates_v1(text)
-        best = _fresh01_pick_best_candidate_v1(cands, fetched_at=fetched_at)
+        best_regex = _fresh01_pick_best_candidate_v1(cands, fetched_at=fetched_at)
+
+        # NLP10: incorporate publish-date hints captured from fetched HTML (meta/<time>/JSON-LD) when available.
+        best_hint = None
+        try:
+            _hint = pub_hint
+            if _hint is None and url:
+                _cache = globals().get("_FRESH01_PUB_HINT_CACHE_V1")
+                if isinstance(_cache, dict):
+                    _hint = _cache.get(_normalize_url(url) or str(url or "").strip())
+
+            hint_kind = ""
+            hint_raw = ""
+            hint_date = ""
+            if isinstance(_hint, dict):
+                hint_kind = str(_hint.get("kind") or _hint.get("source") or "")
+                hint_raw = str(_hint.get("raw") or _hint.get("published_at") or "")
+                hint_date = str(_hint.get("published_at") or "")
+            elif isinstance(_hint, str):
+                hint_date = _hint
+                hint_raw = _hint
+
+            dt_hint = _fresh01_parse_any_date_str_v1(hint_date or hint_raw)
+            if isinstance(dt_hint, datetime):
+                # Bound against fetched_at if available (avoid future-dated meta/JSON-LD)
+                fdt = _parse_iso_dt(fetched_at) if fetched_at else None
+                if isinstance(fdt, datetime) and dt_hint.date() > (fdt + timedelta(days=7)).date():
+                    dt_hint = None
+
+            if isinstance(dt_hint, datetime):
+                ctx = (hint_kind or "").lower()
+                heur = 5
+                if ("modified" in ctx) or ("updated" in ctx) or ("datemodified" in ctx):
+                    heur = 7
+                elif ("published" in ctx) or ("datepublished" in ctx):
+                    heur = 5
+                best_hint = {
+                    "dt": dt_hint.astimezone(timezone.utc),
+                    "pos": 0,
+                    "raw": (hint_raw or hint_date or "")[:80],
+                    "kind": "hint",
+                    "ctx": ("updated" if heur >= 7 else "published"),
+                    "_heur": int(heur),
+                    "_hint_kind": hint_kind,
+                }
+        except Exception:
+            best_hint = None
+
+        # Compare hint vs regex candidate using the same ordering as _fresh01_pick_best_candidate_v1: (heur, dt, -pos)
+        best = None
+        best_key = None
+        for cand in (best_regex, best_hint):
+            if not (isinstance(cand, dict) and isinstance(cand.get("dt"), datetime)):
+                continue
+            dtc = cand["dt"].astimezone(timezone.utc)
+            heur = int(cand.get("_heur") or 0)
+            pos = int(cand.get("pos") or 0)
+            key = (heur, dtc, -pos)
+            if (best_key is None) or (key > best_key):
+                best_key = key
+                best = cand
+
         if not (isinstance(best, dict) and isinstance(best.get("dt"), datetime)):
             return out
         dt = best["dt"].astimezone(timezone.utc)
         out["published_at"] = _fresh01__norm_iso_date_v1(dt)
-        out["freshness_method"] = "regex_v1"
+        out["freshness_method"] = "html_hint_v1" if (best is best_hint) else "regex_v1"
+        out["freshness_hint_kind"] = str(best.get("_hint_kind") or "") if (best is best_hint) else ""
 
         # confidence from heuristics used in deterministic selection
         heur = int(best.get("_heur") or 0)
@@ -33814,6 +34182,30 @@ try:
         })
 except Exception:
     pass
+    pass
+
+
+
+# NLP10: patch tracker entry
+try:
+    if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "NLP10" for e in PATCH_TRACKER_V1):
+        PATCH_TRACKER_V1.insert(0, {
+            "patch_id": "NLP10",
+            "date": "2026-02-18",
+            "title": "NLP10 freshness upgrade: HTML meta/JSON-LD publish hints + scorer bugfix",
+            "summary": [
+                "Fix source_freshness_score_v1 bug where _fresh01_compute_source_freshness_v2 was called with an unsupported url kwarg, causing missing freshness backfill under try/except.",
+                "Add deterministic publish-date hint extraction from fetched HTML (meta tags, <time datetime>, JSON-LD datePublished/dateModified) and store hints as additive scraped_meta fields.",
+                "Extend _fresh01_compute_source_freshness_v2 to consider publish hints (when present) to improve freshness_age_days coverage and reduce score_tie_missing_freshness_stable_fallback events.",
+                "Preserve/propagate freshness fields when reusing last-good snapshots to avoid drift during fallback reuse.",
+            ],
+            "acceptance": [
+                "Prod evolution remains 100% stable; determinism preserved when assist flags are OFF.",
+                "Freshness fields (published_at/freshness_age_days/freshness_score) are populated for more sources; fewer missing_freshness fallbacks in fresh_tiebreak_v1.",
+            ],
+            "risk": "low",
+        })
+except Exception:
     pass
 
 # Governance hardening: enforce patch tracker head == stamped code version (after all overlays)
