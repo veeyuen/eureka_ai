@@ -455,7 +455,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "NLP08"
+_YUREEKA_CODE_VERSION_LOCK = "NLP09"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 # REFACTOR206: Release Candidate freeze (no pipeline behavior change).
 YUREEKA_RELEASE_CANDIDATE_V1 = False
@@ -566,6 +566,16 @@ def _yureeka_llm_flag_effective_v1(flag_name: str) -> Tuple[bool, str]:
     object with a working .get(...) as eligible.
     """
     _fname = str(flag_name or '').strip()
+    # NLP09: Backward-compatible flag aliases (fix UI legacy key typo).
+    # Some builds stored the query-framing toggle under ENABLE_NLP_QUERY_FRAME.
+    _aliases = [_fname]
+    try:
+        if _fname == "ENABLE_LLM_QUERY_FRAME":
+            _aliases.append("ENABLE_NLP_QUERY_FRAME")
+        elif _fname == "ENABLE_NLP_QUERY_FRAME":
+            _aliases.append("ENABLE_LLM_QUERY_FRAME")
+    except Exception:
+        pass
     _sentinel = object()
 
     def _get_map_val(mobj: Any, key: str):
@@ -589,12 +599,13 @@ def _yureeka_llm_flag_effective_v1(flag_name: str) -> Tuple[bool, str]:
                     sub = _get_map_val(_ss0, root)
                     if sub is _sentinel:
                         continue
-                    raw = _get_map_val(sub, _fname)
-                    if raw is _sentinel:
-                        continue
-                    pv = _yureeka__parse_boolish_v1(raw)
-                    if pv is not None:
-                        return (bool(pv), f"ui:{root}.{_fname}")
+                    for _k in _aliases:
+                        raw = _get_map_val(sub, _k)
+                        if raw is _sentinel:
+                            continue
+                        pv = _yureeka__parse_boolish_v1(raw)
+                        if pv is not None:
+                            return (bool(pv), f"ui:{root}.{_k}")
                 except Exception:
                     continue
     except Exception:
@@ -611,21 +622,24 @@ def _yureeka_llm_flag_effective_v1(flag_name: str) -> Tuple[bool, str]:
                     sub = _get_map_val(_secrets, root)
                     if sub is _sentinel:
                         continue
-                    raw = _get_map_val(sub, _fname)
-                    if raw is _sentinel:
-                        continue
-                    pv = _yureeka__parse_boolish_v1(raw)
-                    if pv is not None:
-                        return (bool(pv), f"secrets:{root}.{_fname}")
+                    for _k in _aliases:
+                        raw = _get_map_val(sub, _k)
+                        if raw is _sentinel:
+                            continue
+                        pv = _yureeka__parse_boolish_v1(raw)
+                        if pv is not None:
+                            return (bool(pv), f"secrets:{root}.{_k}")
                 except Exception:
                     continue
             # Direct key
             try:
-                raw = _get_map_val(_secrets, _fname)
-                if raw is not _sentinel:
+                for _k in _aliases:
+                    raw = _get_map_val(_secrets, _k)
+                    if raw is _sentinel:
+                        continue
                     pv = _yureeka__parse_boolish_v1(raw)
                     if pv is not None:
-                        return (bool(pv), f"secrets:{_fname}")
+                        return (bool(pv), f"secrets:{_k}")
             except Exception:
                 pass
     except Exception:
@@ -633,9 +647,11 @@ def _yureeka_llm_flag_effective_v1(flag_name: str) -> Tuple[bool, str]:
 
     # 2) Env override
     try:
-        env_name = "YUREEKA_" + _fname
-        raw = os.environ.get(env_name)
-        if raw is not None:
+        for _k in _aliases:
+            env_name = "YUREEKA_" + _k
+            raw = os.environ.get(env_name)
+            if raw is None:
+                continue
             pv = _yureeka__parse_boolish_v1(raw)
             if pv is not None:
                 return (bool(pv), "env:" + env_name)
@@ -644,7 +660,12 @@ def _yureeka_llm_flag_effective_v1(flag_name: str) -> Tuple[bool, str]:
 
     # 3) Code default
     try:
-        return (bool(globals().get(_fname)), "code:" + _fname)
+        for _k in _aliases:
+            if _k:
+                val = globals().get(_k)
+                if val is not None:
+                    return (bool(val), "code:" + _k)
+        return (False, "default")
     except Exception:
         return (False, "default")
 
@@ -8707,6 +8728,26 @@ def _refactor116_apply_effective_timing_and_row_deltas_v1(evo_obj: Any, previous
                             _dbg2["injection_stability_adjust_v1"] = dbg.get("injection_stability_adjust_v1")
                 except Exception:
                     pass
+        except Exception:
+            pass
+
+
+        # NLP09: Always populate stability_score_effective/summary_effective for parity.
+        # For production runs this mirrors raw values; for injection runs NLP05 already sets "effective" values.
+        try:
+            if "stability_score_effective" not in res or res.get("stability_score_effective") is None:
+                res["stability_score_effective"] = res.get("stability_score")
+            if "summary_effective" not in res or res.get("summary_effective") is None:
+                res["summary_effective"] = res.get("summary")
+            # Mirror into nested results.debug (backward compatibility)
+            try:
+                if isinstance(res.get("results"), dict):
+                    _dbg2 = res["results"].get("debug")
+                    if isinstance(_dbg2, dict):
+                        _dbg2.setdefault("stability_score_effective", res.get("stability_score_effective"))
+                        _dbg2.setdefault("summary_effective", res.get("summary_effective"))
+            except Exception:
+                pass
         except Exception:
             pass
 
@@ -27021,7 +27062,7 @@ def main():
                 )
 
                 _llm_ui_checkbox("ENABLE_LLM_SOURCE_CLUSTERING", "Enable LLM source clustering", default=False, help="Experimental.")
-                _llm_ui_checkbox("ENABLE_NLP_QUERY_FRAME", "Enable LLM query framing", default=False, help="Experimental; may change search terms.")
+                _llm_ui_checkbox("ENABLE_LLM_QUERY_FRAME", "Enable LLM query framing", default=False, help="Experimental; may change search terms.")
                 _llm_ui_checkbox("ENABLE_NLP_QUERY_BOOST", "Enable deterministic NLP query boosting", default=False, help="Deterministic: appends stable keywords from query_frame (no LLM call). May change retrieval terms.")
                 _llm_ui_checkbox("ENABLE_LLM_QUERY_STRUCTURE_FALLBACK", "Enable LLM query-structure fallback (legacy)", default=False, help="OFF by default. When ON, low-confidence query structure may be refined by the sidecar (confidence-gated); may change retrieval terms.")
                 _llm_ui_checkbox("ENABLE_LLM_ANOMALY_FLAGS", "Enable LLM anomaly flags", default=False, help="Experimental.")
@@ -33754,6 +33795,25 @@ try:
             "risk": "low"
         })
 except Exception:
+    pass
+
+
+# NLP09: patch tracker entry
+try:
+    if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "NLP09" for e in PATCH_TRACKER_V1):
+        PATCH_TRACKER_V1.insert(0, {
+            "patch_id": "NLP09",
+            "date": "2026-02-18",
+            "title": "NLP09 query-frame flag alias fix + evolution effective stability parity",
+            "summary": [
+                "Fix UI/override flag typo by aliasing ENABLE_NLP_QUERY_FRAME → ENABLE_LLM_QUERY_FRAME (backward compatible).",
+                "Update the Streamlit LLM flags UI to toggle ENABLE_LLM_QUERY_FRAME correctly (no more no-op).",
+                "Always populate stability_score_effective and summary_effective in evolution JSONs (production mirrors raw; injection keeps adjusted effective).",
+            ],
+            "risk": "low",
+        })
+except Exception:
+    pass
     pass
 
 # Governance hardening: enforce patch tracker head == stamped code version (after all overlays)
