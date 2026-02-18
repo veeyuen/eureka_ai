@@ -455,7 +455,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "NLP05"
+_YUREEKA_CODE_VERSION_LOCK = "NLP06"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 # REFACTOR206: Release Candidate freeze (no pipeline behavior change).
 YUREEKA_RELEASE_CANDIDATE_V1 = False
@@ -33436,117 +33436,165 @@ except Exception:
     pass
 
 # [MOD:PATCH_TRACKER]
+# Patch tracker tail entries (LLM/NLP roadmap) + governance hardening.
+
 # LLM37: patch tracker entry
 try:
-    PATCH_TRACKER_V1.insert(0, {
-        "patch_id": "LLM37",
-        "date": "2026-02-17",
-        "title": "Hyperparameter block v1",
-        "summary": [
-            "Add [MOD:HYPERPARAMS_V1] at top-of-file to centralize policy knobs for deterministic + LLM/NLP layers.",
-            "Parameterize key thresholds (LLM confidence gates, freshness curve, cache salting, ops TTLs) while preserving LLM36 defaults.",
-            "Attach additive hyperparams snapshot + fingerprints into wrapper.debug for auditability (no behavior change).",
-        ],
-        "acceptance": [
-            "Defaults preserve REFACTOR206/LLM36 deterministic outcomes (no metric winner/value changes).",
-            "Hyperparameters are declared in one top section; optional overrides via YUREEKA_HYPERPARAMS_JSON.",
-            "LLM cache key salting is backward-compatible via fallback to legacy unsalted key.",
-        ],
-        "notes": [
-            "Override JSON is deep-merged and sanitized; invalid freshness curve overrides fall back to defaults.",
-            "Freshness tie-break quantization only takes effect when ENABLE_SOURCE_FRESHNESS_TIEBREAK is enabled.",
-        ],
-    })
+    if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "LLM37" for e in PATCH_TRACKER_V1):
+        PATCH_TRACKER_V1.insert(0, {
+            "patch_id": "LLM37",
+            "date": "2026-02-17",
+            "title": "Hyperparameter block v1",
+            "summary": [
+                "Add [MOD:HYPERPARAMS_V1] at top-of-file to centralize policy knobs for deterministic + LLM/NLP layers.",
+                "Parameterize key thresholds (LLM confidence gates, freshness curve, cache salting, ops TTLs) while preserving LLM36 defaults.",
+                "Attach additive hyperparams snapshot + fingerprints into wrapper.debug for auditability (no behavior change).",
+            ],
+            "acceptance": [
+                "Defaults preserve REFACTOR206/LLM36 deterministic outcomes (no metric winner/value changes).",
+                "Hyperparameters are declared in one top section; optional overrides via YUREEKA_HYPERPARAMS_JSON.",
+                "LLM cache key salting is backward-compatible via fallback to legacy unsalted key.",
+            ],
+            "notes": [
+                "Override JSON is deep-merged and sanitized; invalid freshness curve overrides fall back to defaults.",
+                "Freshness tie-break quantization only takes effect when ENABLE_SOURCE_FRESHNESS_TIEBREAK is enabled.",
+            ],
+            "risk": "low",
+        })
 except Exception:
     pass
 
 # LLM38: patch tracker entry
 try:
-    PATCH_TRACKER_V1.insert(0, {
-        "patch_id": "LLM38",
-        "date": "2026-02-17",
-        "title": "Freshness scope + injected-row Δt gating",
-        "summary": [
-            "Fix NameError in rebuild_metrics_from_snapshots_analysis_canonical_v1 by adding a module-level _fresh02_candidate_tie_key_v1 fallback (uses candidate-attached freshness fields; no cache; deterministic).",
-            "Refine evolution row delta stamping: blank Δt only for rows whose source_url is an injected URL (instead of blanking all rows whenever injection is present).",
-            "Patch hygiene: bump _YUREEKA_CODE_VERSION_LOCK; keep cache-first determinism; no winner/value changes unless freshness tie-break flag is explicitly enabled.",
-        ],
-        "risk": "low",
-    })
+    if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "LLM38" for e in PATCH_TRACKER_V1):
+        PATCH_TRACKER_V1.insert(0, {
+            "patch_id": "LLM38",
+            "date": "2026-02-17",
+            "title": "Freshness scope + injected-row Δt gating",
+            "summary": [
+                "Fix NameError in rebuild_metrics_from_snapshots_analysis_canonical_v1 by adding a module-level _fresh02_candidate_tie_key_v1 fallback (uses candidate-attached freshness fields; no cache; deterministic).",
+                "Refine evolution row delta stamping: blank Δt only for rows whose source_url is an injected URL (instead of blanking all rows whenever injection is present).",
+                "Patch hygiene: bump _YUREEKA_CODE_VERSION_LOCK; keep cache-first determinism; no winner/value changes unless freshness tie-break flag is explicitly enabled.",
+            ],
+            "risk": "low",
+        })
 except Exception:
     pass
 
 # NLP01: patch tracker entry
 try:
-    PATCH_TRACKER_V1.insert(0, {
-        "patch_id": "NLP01",
-        "date": "2026-02-17",
-        "title": "NLP01 query-frame enrichment + freshness beacon fix",
-        "summary": [
-            "NLP01: deterministically enrich query_frame_v1.metric_families using expected_metric_ids + lightweight keyword rules (proposal-only; no winner/value changes).",
-            "Expose nlp01_enrichment_v1 in debug_query_frame_v1 for auditability and future modularisation.",
-            "Fix ordering bug in REFACTOR100 year-anchor scan so FRESH02 base-winner trackers use the current candidate's year_ok/year_found (fresh_tiebreak_v1 beacons now match top3 reality).",
-            "Make fresh_tiebreak_v1.competitor_url reflect the runner-up candidate (avoids base_url duplication in changed-winner cases).",
-        ],
-        "risk": "low",
-    })
+    if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "NLP01" for e in PATCH_TRACKER_V1):
+        PATCH_TRACKER_V1.insert(0, {
+            "patch_id": "NLP01",
+            "date": "2026-02-17",
+            "title": "NLP01 query-frame enrichment + freshness beacon fix",
+            "summary": [
+                "Deterministically enrich query_frame_v1.metric_families using expected_metric_ids + lightweight keyword rules (proposal-only; no winner/value changes).",
+                "Expose nlp01_enrichment_v1 debug beacon for auditability.",
+                "Fix freshness tiebreak beacon accounting bug in REFACTOR100 year-anchor scan so FRESH02 base-winner trackers use the current candidate's year_ok/year_found (fresh_tiebreak_v1 beacons match top3 reality).",
+                "Make fresh_tiebreak_v1.competitor_url reflect the runner-up candidate (avoids base_url duplication in changed-winner cases).",
+            ],
+            "risk": "low",
+        })
+except Exception:
+    pass
+
+# NLP02: patch tracker entry
+try:
+    if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "NLP02" for e in PATCH_TRACKER_V1):
+        PATCH_TRACKER_V1.insert(0, {
+            "patch_id": "NLP02",
+            "date": "2026-02-17",
+            "title": "NLP02 hyperparams reference fix + always-on freshness attachment",
+            "summary": [
+                "Fix NLP01 NameError: _nlp01_derive_metric_families_v1 now reads hyperparams from HYPERPARAMS_V1 (so nlp01_enrichment_v1 and metric_families enrichment populate as intended).",
+                "Always attach per-source freshness fields (published_at / age_days / freshness_score / bucket) into selection_year_anchor_v1.top3 summaries, even when ENABLE_SOURCE_FRESHNESS_TIEBREAK is OFF (visibility without behavior change).",
+                "Preserve determinism: freshness tie-breaking still only affects winner selection when ENABLE_SOURCE_FRESHNESS_TIEBREAK is explicitly enabled; otherwise it remains diagnostic-only.",
+            ],
+            "risk": "low",
+        })
 except Exception:
     pass
 
 # NLP03: patch tracker entry
 try:
-    PATCH_TRACKER_V1.insert(0, {
-        "patch_id": "NLP03",
-        "date": "2026-02-17",
-        "title": "NLP03 deterministic query boost flag + audit beacons",
-        "summary": [
-            "Add ENABLE_NLP_QUERY_BOOST (default OFF) to apply deterministic query boosting using query_frame_v1 boost terms without invoking the LLM.",
-            "Extend query-frame debug beacons to report whether boosting is effectively enabled via LLM query framing vs NLP query boost, with explicit flag sources.",
-            "Parameterise query-boost limits via hyperparams (nlp.query_boost.max_terms / max_chars) and keep stable ordering/truncation.",
-        ],
-        "risk": "low",
-    })
+    if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "NLP03" for e in PATCH_TRACKER_V1):
+        PATCH_TRACKER_V1.insert(0, {
+            "patch_id": "NLP03",
+            "date": "2026-02-17",
+            "title": "NLP03 deterministic query boost flag + audit beacons",
+            "summary": [
+                "Add ENABLE_NLP_QUERY_BOOST (default OFF) to apply deterministic query boosting using query_frame_v1 boost terms without invoking the LLM.",
+                "Extend query-frame debug beacons to report whether boosting is effectively enabled via LLM query framing vs NLP query boost, with explicit flag sources.",
+                "Parameterise query-boost limits via hyperparams (nlp.query_boost.max_terms / max_chars) and keep stable ordering/truncation.",
+            ],
+            "risk": "low",
+        })
 except Exception:
     pass
 
 # NLP04: patch tracker entry
 try:
-    PATCH_TRACKER_V1.insert(0, {
-        "patch_id": "NLP04",
-        "date": "2026-02-18",
-        "title": "NLP04 freshness tiebreak base-tracker fix",
-        "summary": [
-            "Fix FRESH02 base-winner tracking for non-'M' schema keys by defining tie_base deterministically on every candidate (prevents stale tie_base leakage across canonical keys).",
-            "As a result, fresh_tiebreak_v1.base_url / changed_winner / reason now reflect the true pre-freshness winner for percent/currency keys (audit beacons match selection_year_anchor_v1.top3 reality).",
-            "Purely diagnostic + auditability fix: winner/value selection logic is unchanged; cache-first determinism preserved; ENABLE_SOURCE_FRESHNESS_TIEBREAK remains OFF by default.",
-        ],
-        "risk": "low",
-    })
+    if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "NLP04" for e in PATCH_TRACKER_V1):
+        PATCH_TRACKER_V1.insert(0, {
+            "patch_id": "NLP04",
+            "date": "2026-02-18",
+            "title": "NLP04 freshness tiebreak base-tracker fix",
+            "summary": [
+                "Fix FRESH02 base-winner tracking for non-'M' schema keys by defining tie_base deterministically on every candidate (prevents stale tie_base leakage across canonical keys).",
+                "As a result, fresh_tiebreak_v1.base_url / changed_winner / reason now reflect the true pre-freshness winner for percent/currency keys (audit beacons match selection_year_anchor_v1.top3 reality).",
+                "Purely diagnostic + auditability fix: winner/value selection logic is unchanged; cache-first determinism preserved; ENABLE_SOURCE_FRESHNESS_TIEBREAK remains OFF by default.",
+            ],
+            "risk": "low",
+        })
 except Exception:
     pass
 
-
-# NLP02: patch tracker entry
+# NLP05: patch tracker entry
 try:
-    PATCH_TRACKER_V1.insert(0, {
-        "patch_id": "NLP02",
-        "date": "2026-02-17",
-        "title": "NLP02 hyperparams reference fix + always-on freshness attachment",
-        "summary": [
-            "Fix NLP01 NameError: _nlp01_derive_metric_families_v1 now reads hyperparams from HYPERPARAMS_V1 (so nlp01_enrichment_v1 and metric_families enrichment populate as intended).",
-            "Always attach per-source freshness fields (published_at / age_days / freshness_score / bucket) into selection_year_anchor_v1.top3 summaries, even when ENABLE_SOURCE_FRESHNESS_TIEBREAK is OFF (visibility without behavior change).",
-            "Preserve determinism: freshness tie-breaking still only affects winner selection when ENABLE_SOURCE_FRESHNESS_TIEBREAK is explicitly enabled; otherwise it remains diagnostic-only.",
-        ],
-        "risk": "low",
-    })
+    if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "NLP05" for e in PATCH_TRACKER_V1):
+        PATCH_TRACKER_V1.insert(0, {
+            "patch_id": "NLP05",
+            "date": "2026-02-18",
+            "title": "NLP05 freshness scoring wired + tie-break proof beacons + query boost preview",
+            "summary": [
+                "Wire data_freshness into veracity_scores (panel-ready; populated alongside other evidence scores).",
+                "Add fresh_tiebreak_v1 audit beacon capturing when a score-tie is resolved by freshness, including per-candidate age_days and changed_winner flag.",
+                "Make NLP query boost visibly auditable via boosted_query_preview + boost_preview_terms when ENABLE_NLP_QUERY_BOOST is enabled (deterministic; no LLM call).",
+            ],
+            "risk": "low",
+        })
 except Exception:
     pass
 
+# NLP06: patch tracker entry
+try:
+    if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "NLP06" for e in PATCH_TRACKER_V1):
+        PATCH_TRACKER_V1.insert(0, {
+            "patch_id": "NLP06",
+            "date": "2026-02-18",
+            "title": "NLP06 patch tracker + governance hardening",
+            "summary": [
+                "Fix patch-tracker head drift in evolution beacons by enforcing head==code_version at import-time (post-overlays).",
+                "Add/confirm patch tracker entries for NLP03–NLP06 (including missing NLP05) with guarded inserts to avoid duplicate IDs.",
+                "No pipeline behavior changes: deterministic winners/values remain identical when NLP/LLM assist flags are OFF.",
+            ],
+            "acceptance": [
+                "debug.harness_invariants_v1.patch_tracker_head_patch_id == code_version (NLP06).",
+                "debug.harness_invariants_v1.code_version_matches_patch_tracker_head == true in prod evolution.",
+            ],
+            "risk": "low",
+        })
+except Exception:
+    pass
 
-
-
-
-
+# Governance hardening: enforce patch tracker head == stamped code version (after all overlays)
+try:
+    _cv = str(_yureeka_get_code_version() or "").strip()
+    if _cv:
+        _yureeka_patch_tracker_ensure_head_v1(_cv, {"patch_id": _cv})
+except Exception:
+    pass
 
 
 
