@@ -458,7 +458,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "NLP17"
+_YUREEKA_CODE_VERSION_LOCK = "NLP18"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 # REFACTOR206: Release Candidate freeze (no pipeline behavior change).
 YUREEKA_RELEASE_CANDIDATE_V1 = False
@@ -1959,6 +1959,7 @@ def _llm04_llm_relevance_check_v1(
     """
     diag = {"ok": False, "reason": "", "llm_used": False}
 
+
     # LLM05: run-scope circuit breaker + call budget guard (non-behavioral; only affects failing/disabled calls).
     try:
         _is_open, _cb = _yureeka_llm_circuit_is_open_v1()
@@ -2523,6 +2524,14 @@ def _yureeka_call_openai_chat_json_v1(
     """Call OpenAI Chat Completions for a strict JSON object response (best-effort)."""
     diag = {"ok": False, "status": None, "reason": "", "model": str(model or ""), "requests_present": bool(requests is not None), "api_key_present": False, "api_key_source": "", "base_url": "", "strict_mode": bool(globals().get("LLM_STRICT_MODE")), "response_format": False, "timeout_sec": int(timeout_sec or 30)}
 
+    # NLP18: replayable, hash-only diagnostics (no prompts/outputs stored)
+    try:
+        _ph_payload = {"model": str(model or ""), "system_prompt": str(system_prompt or ""), "user_payload": (user_payload or {})}
+        diag["prompt_hash_v1"] = str(_yureeka_llm_text_hash_v1(_yureeka__stable_json_dumps_v1(_ph_payload)))[:120]
+    except Exception:
+        pass
+
+
     # LLM05: run-scope circuit breaker + call budget guard (non-behavioral; only affects failing/disabled calls).
     try:
         _is_open, _cb = _yureeka_llm_circuit_is_open_v1()
@@ -2691,10 +2700,21 @@ def _yureeka_call_openai_chat_json_v1(
         if isinstance(obj, dict) and obj:
             diag["ok"] = True
             diag["reason"] = "ok"
+            # NLP18: response hash (parsed JSON object)
+            try:
+                diag["response_hash_v1"] = str(_yureeka_llm_text_hash_v1(_yureeka__stable_json_dumps_v1(obj)))[:120]
+            except Exception:
+                pass
             return (obj, diag)
 
         diag["reason"] = "parse_failed"
+        # NLP18: response hash (raw text)
+        try:
+            diag["response_text_hash_v1"] = str(_yureeka_llm_text_hash_v1(str(content or "")))[:120]
+        except Exception:
+            pass
         return (None, diag)
+
     except Exception as e:
         diag["reason"] = "exception:" + str(type(e).__name__)
         try:
@@ -2799,11 +2819,18 @@ def _yureeka_llm_reset_run_state_v1(stage: str = "") -> None:
             "reasons": {},
             "status": {},
             "last": {},
+            "ledger_events": [],
         }
     except Exception:
         pass
     try:
         globals()["_YUREEKA_LLM_CIRCUIT_V1"] = {"open_until": 0.0, "status": None, "reason": "", "hint": ""}
+    except Exception:
+        pass
+
+    # NLP18: reset per-run acceptance ledger
+    try:
+        globals()["_YUREEKA_LLM_ACCEPT_V1"] = {}
     except Exception:
         pass
 
@@ -2813,6 +2840,8 @@ def _yureeka_llm_global_agg_update_v1(feature: str, call_diag: dict, *, cache_hi
         agg = globals().get("_YUREEKA_LLM_RUN_AGG_V1")
         if not isinstance(agg, dict):
             return
+
+        # Run-scope counters
         try:
             agg["attempts"] = int(agg.get("attempts") or 0) + 1
         except Exception:
@@ -2828,6 +2857,7 @@ def _yureeka_llm_global_agg_update_v1(feature: str, call_diag: dict, *, cache_hi
             except Exception:
                 pass
 
+        # Per-feature counters
         f = str(feature or "unknown")[:80]
         try:
             fs = agg.get("features")
@@ -2857,6 +2887,7 @@ def _yureeka_llm_global_agg_update_v1(feature: str, call_diag: dict, *, cache_hi
         except Exception:
             status_s = str(status) if status is not None else ""
 
+        # Aggregate reasons/status
         try:
             rs = agg.get("reasons")
             if not isinstance(rs, dict):
@@ -2876,14 +2907,52 @@ def _yureeka_llm_global_agg_update_v1(feature: str, call_diag: dict, *, cache_hi
         except Exception:
             pass
 
+        # Last snapshot + bounded ledger (hash-only)
         try:
-            agg["last"] = {
+            _last = {
                 "feature": f,
+                "ok": bool(call_diag.get("ok")),
+                "cache_hit": bool(cache_hit),
                 "reason": reason,
                 "status": status if status is None else int(status),
                 "model": str(call_diag.get("model") or "")[:80],
+                "prompt_hash_v1": str(call_diag.get("prompt_hash_v1") or "")[:80],
+                "response_hash_v1": str(call_diag.get("response_hash_v1") or "")[:80],
                 "hint": str(call_diag.get("hint") or _yureeka_llm_hint_from_diag_v1(call_diag))[:200],
             }
+            agg["last"] = _last
+
+            # Per-feature last snapshot
+            try:
+                fs = agg.get("features")
+                if isinstance(fs, dict):
+                    fe = fs.get(f)
+                    if isinstance(fe, dict):
+                        fe["last"] = dict(_last)
+            except Exception:
+                pass
+
+            # Bounded run ledger (hash-only; replayable audit)
+            try:
+                le = agg.get("ledger_events")
+                if not isinstance(le, list):
+                    le = []
+                    agg["ledger_events"] = le
+                le.append({
+                    "ts": float(time.time()),
+                    "feature": f,
+                    "ok": bool(call_diag.get("ok")),
+                    "cache_hit": bool(cache_hit),
+                    "reason": reason,
+                    "status": status if status is None else int(status),
+                    "model": str(call_diag.get("model") or "")[:80],
+                    "prompt_hash_v1": str(call_diag.get("prompt_hash_v1") or "")[:80],
+                    "response_hash_v1": str(call_diag.get("response_hash_v1") or "")[:80],
+                })
+                if len(le) > 25:
+                    del le[:-25]
+            except Exception:
+                pass
         except Exception:
             pass
     except Exception:
@@ -2971,6 +3040,90 @@ def _yureeka_llm_health_snapshot_v1(stage: str = "") -> dict:
     except Exception:
         pass
 
+    return out
+
+def _yureeka_llm_record_acceptance_v1(feature: str, used_for: list, accepted: bool, reason: str = "") -> None:
+    """Record whether an LLM assist was accepted/used (hash-only; audit)."""
+    try:
+        f = str(feature or "unknown")[:80]
+        uf = []
+        try:
+            uf = [str(x)[:80] for x in (used_for or []) if x is not None and str(x).strip()]
+        except Exception:
+            uf = []
+        rec = {"feature": f, "used_for": uf, "accepted": bool(accepted), "reason": str(reason or "")[:160], "ts": float(time.time())}
+        acc = globals().get("_YUREEKA_LLM_ACCEPT_V1")
+        if not isinstance(acc, dict):
+            acc = {}
+            globals()["_YUREEKA_LLM_ACCEPT_V1"] = acc
+        acc[f] = rec
+    except Exception:
+        pass
+
+
+def _yureeka_llm_feature_status_v1(feature: str, stage: str = "") -> dict:
+    """Grep-friendly per-feature status beacon (non-sensitive)."""
+    out = {"v": "llm_feature_status_v1", "stage": str(stage or "")[:40], "feature": str(feature or "unknown")[:80]}
+    try:
+        agg = globals().get("_YUREEKA_LLM_RUN_AGG_V1")
+        if isinstance(agg, dict):
+            fs = agg.get("features")
+            if isinstance(fs, dict):
+                fe = fs.get(out["feature"])
+                if isinstance(fe, dict):
+                    out["attempts"] = int(fe.get("attempts") or 0)
+                    out["ok"] = int(fe.get("ok") or 0)
+                    out["cache_hits"] = int(fe.get("cache_hits") or 0)
+                    try:
+                        out["last"] = dict(fe.get("last") or {})
+                    except Exception:
+                        pass
+    except Exception:
+        pass
+    try:
+        acc = globals().get("_YUREEKA_LLM_ACCEPT_V1")
+        if isinstance(acc, dict) and out["feature"] in acc and isinstance(acc.get(out["feature"]), dict):
+            out["acceptance_v1"] = dict(acc.get(out["feature"]) or {})
+    except Exception:
+        pass
+    return out
+
+
+def _yureeka_llm00_status_v1(stage: str = "") -> dict:
+    """Compact LLM00 (query structure) status beacon (hash-only; replayable)."""
+    out = {"v": "llm00_status_v1", "stage": str(stage or "")[:40]}
+    try:
+        _on, _src = _yureeka_llm_flag_effective_v1("ENABLE_LLM_QUERY_STRUCTURE_FALLBACK")
+        out["enabled"] = bool(_on)
+        out["flag_source"] = str(_src)[:80]
+    except Exception:
+        out["enabled"] = False
+    try:
+        agg = globals().get("_YUREEKA_LLM_RUN_AGG_V1")
+        if isinstance(agg, dict):
+            fs = agg.get("features")
+            fe = (fs or {}).get("llm00_query_structure") if isinstance(fs, dict) else None
+            if isinstance(fe, dict):
+                out["attempted"] = int(fe.get("attempts") or 0) > 0
+                out["ok"] = int(fe.get("ok") or 0) > 0
+                out["cache_hit"] = int(fe.get("cache_hits") or 0) > 0
+                try:
+                    _last = fe.get("last") or {}
+                    if isinstance(_last, dict):
+                        out["reason"] = str(_last.get("reason") or "")[:120]
+                        out["status"] = _last.get("status")
+                        out["prompt_hash_v1"] = str(_last.get("prompt_hash_v1") or "")[:120]
+                        out["response_hash_v1"] = str(_last.get("response_hash_v1") or "")[:120]
+                except Exception:
+                    pass
+    except Exception:
+        pass
+    try:
+        acc = globals().get("_YUREEKA_LLM_ACCEPT_V1")
+        if isinstance(acc, dict) and isinstance(acc.get("llm00_query_structure"), dict):
+            out["llm00_acceptance_v1"] = dict(acc.get("llm00_query_structure") or {})
+    except Exception:
+        pass
     return out
 
 def _yureeka_llm_smoke_test_v1(stage: str = "") -> dict:
@@ -14495,7 +14648,7 @@ def _llm_fallback_query_structure(query: str, web_context: Optional[Dict] = None
             except Exception:
                 pass
             try:
-                _yureeka_llm_global_agg_update_v1("llm00_query_structure", {"ok": True, "status": None, "reason": "cache_hit", "model": str(model)}, cache_hit=True)
+                _yureeka_llm_global_agg_update_v1("llm00_query_structure", {"ok": True, "status": None, "reason": "cache_hit", "model": str(model), "prompt_hash_v1": str(in_hash)[:120], "response_hash_v1": str(_yureeka_llm_text_hash_v1(_yureeka__stable_json_dumps_v1(parsed)))[:120]}, cache_hit=True)
             except Exception:
                 pass
         else:
@@ -14506,6 +14659,15 @@ def _llm_fallback_query_structure(query: str, web_context: Optional[Dict] = None
                 timeout_sec=30,
                 max_tokens=250,
             )
+            # NLP18: ensure feature-level prompt/response hashes exist for live calls too
+            try:
+                if isinstance(call_diag, dict):
+                    call_diag["prompt_hash_v1"] = str(call_diag.get("prompt_hash_v1") or str(in_hash))[:120]
+                    if isinstance(parsed, dict) and parsed:
+                        call_diag.setdefault("response_hash_v1", str(_yureeka_llm_text_hash_v1(_yureeka__stable_json_dumps_v1(parsed)))[:120])
+            except Exception:
+                pass
+
             try:
                 if isinstance(out_debug, dict):
                     out_debug["llm_fallback_cache_hit"] = False
@@ -14607,6 +14769,27 @@ def _llm_fallback_query_structure(query: str, web_context: Optional[Dict] = None
                     out_debug["llm_fallback_threshold"] = float(_thr)
             except Exception:
                 pass
+        except Exception:
+            pass
+        # NLP18: acceptance beacon (hash-only) — indicates whether this assist path produced a usable output
+        try:
+            _det_main_s = str(det_main or "").strip()
+            _det_side_l = list(det_side or [])
+            _chg = []
+            try:
+                if str(out.get("main") or "").strip() != _det_main_s:
+                    _chg.append("main")
+            except Exception:
+                pass
+            try:
+                if list(out.get("side") or []) != _det_side_l:
+                    _chg.append("side")
+            except Exception:
+                pass
+            _reason = "changed:" + ",".join(_chg) if _chg else "no_change"
+            _yureeka_llm_record_acceptance_v1("llm00_query_structure", ["query_structure"], True, _reason)
+            if isinstance(out_debug, dict):
+                out_debug["llm00_acceptance_v1"] = dict((globals().get("_YUREEKA_LLM_ACCEPT_V1") or {}).get("llm00_query_structure") or {})
         except Exception:
             pass
 
@@ -27928,6 +28111,7 @@ def main():
                 output.setdefault("debug", {})
                 if isinstance(output.get("debug"), dict):
                     output["debug"]["llm_sidecar_health_v1"] = _yureeka_llm_health_snapshot_v1(stage="analysis")
+                    output["debug"]["llm00_status_v1"] = _yureeka_llm00_status_v1(stage="analysis")
                     try:
                         if _yureeka_llm_flag_bool_v1("ENABLE_LLM_SMOKE_TEST"):
                             output["debug"]["llm_smoke_test_v1"] = _yureeka_llm_smoke_test_v1(stage="analysis")
@@ -28874,6 +29058,7 @@ def main():
                             _dbg = None
                     if isinstance(_dbg, dict):
                         _dbg["llm_sidecar_health_v1"] = _yureeka_llm_health_snapshot_v1(stage="evolution")
+                        _dbg["llm00_status_v1"] = _yureeka_llm00_status_v1(stage="evolution")
                         try:
                             if _yureeka_llm_flag_bool_v1("ENABLE_LLM_SMOKE_TEST"):
                                 _dbg["llm_smoke_test_v1"] = _yureeka_llm_smoke_test_v1(stage="evolution")
@@ -35310,6 +35495,23 @@ except Exception:
         st.exception(Exception(f"Yureeka app crashed during main() execution ({_yureeka_get_code_version()})."))
     except Exception:
         pass
+# NLP18: patch tracker entry
+try:
+    if isinstance(PATCH_TRACKER_V1, list) and not any(str(e.get("patch_id") or "") == "NLP18" for e in PATCH_TRACKER_V1 if isinstance(e, dict)):
+        PATCH_TRACKER_V1.insert(0, {
+            "patch_id": "NLP18",
+            "date": "2026-02-19",
+            "title": "NLP18 LLM sidecar audit ledger (hash-only) + llm00 status/acceptance beacons",
+            "summary": [
+                "Add replayable, hash-only LLM diagnostics: prompt_hash_v1 + response_hash_v1 emitted by the OpenAI-compatible call boundary, without storing prompts or responses.",
+                "Extend run-scope LLM aggregation to include per-feature last snapshots and a bounded ledger_events list (hash-only) for auditability and triage.",
+                "Record llm00 (query structure fallback) acceptance and publish a grep-friendly llm00_status_v1 beacon in both analysis and evolution JSON outputs.",
+            ],
+            "risk": "low",
+        })
+except Exception:
+    pass
+
 # NLP17: patch tracker entry
 try:
     if isinstance(PATCH_TRACKER_V1, list) and not any(str(e.get("patch_id") or "") == "NLP17" for e in PATCH_TRACKER_V1 if isinstance(e, dict)):
