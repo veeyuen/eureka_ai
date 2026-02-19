@@ -455,7 +455,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "NLP15"
+_YUREEKA_CODE_VERSION_LOCK = "NLP16"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 # REFACTOR206: Release Candidate freeze (no pipeline behavior change).
 YUREEKA_RELEASE_CANDIDATE_V1 = False
@@ -15266,13 +15266,46 @@ def _fresh01_extract_pub_hint_from_html_v1(html: str, max_chars: int = 250000) -
         except Exception:
             pass
 
-        # 2) <time datetime="...">
+        # 2) <time ...> tags: prefer datetime attr, but also fall back to short inner-text
         try:
             for ttag in soup.find_all("time"):
                 try:
                     raw = (ttag.get("datetime") or "").strip() if hasattr(ttag, "get") else ""
                     if raw:
                         _add("time:datetime", raw, 55, "time")
+                        continue
+                    # NLP16: some sites omit datetime attr; attempt short inner text
+                    try:
+                        raw_txt = (ttag.get_text(" ", strip=True) or "").strip()
+                        if raw_txt and len(raw_txt) <= 80 and re.search(r"20\d{2}", raw_txt):
+                            _add("time:text", raw_txt, 45, "time")
+                    except Exception:
+                        pass
+                except Exception:
+                    continue
+        except Exception:
+            pass
+
+        # 2b) Date-like nodes near top (class/id/itemprop hints)
+        try:
+            _hint_re = re.compile(r"(publish|posted|update|modified|date|time)", flags=re.I)
+            _nodes = soup.find_all(["span", "div", "p"], limit=800)
+            for _n in _nodes:
+                try:
+                    if not hasattr(_n, "get"):
+                        continue
+                    _cls = " ".join([str(x) for x in (_n.get("class") or [])])
+                    _id = str(_n.get("id") or "")
+                    _ip = str(_n.get("itemprop") or "")
+                    _attrs = f"{_cls} {_id} {_ip}"
+                    if (not _attrs) or (not _hint_re.search(_attrs)):
+                        continue
+                    _txt = (_n.get_text(" ", strip=True) or "").strip()
+                    if (not _txt) or (len(_txt) > 90):
+                        continue
+                    if not re.search(r"20\d{2}", _txt):
+                        continue
+                    _add("node:date_hint", _txt, 50, "node")
                 except Exception:
                     continue
         except Exception:
@@ -35253,3 +35286,19 @@ except Exception:
         st.exception(Exception(f"Yureeka app crashed during main() execution ({_yureeka_get_code_version()})."))
     except Exception:
         pass
+# NLP16: patch tracker entry
+try:
+    if isinstance(PATCH_TRACKER_V1, list) and not any(str(e.get("patch_id") or "") == "NLP16" for e in PATCH_TRACKER_V1 if isinstance(e, dict)):
+        PATCH_TRACKER_V1.insert(0, {
+            "patch_id": "NLP16",
+            "date": "2026-02-19",
+            "title": "NLP16 publish-date extraction broadened: <time> inner text + date-like nodes",
+            "summary": [
+                "Extend HTML publish-hint extraction to parse <time> tags that lack a datetime attribute by reading short inner text (deterministic).",
+                "Add a conservative 'date-like node' heuristic (class/id/itemprop contains date/publish/update) to capture common CMS date widgets when meta/JSON-LD are absent.",
+                "Target: increase fresh01.sources_with_published_at and shrink sources_missing_published_at_urls_v1, without affecting deterministic winners when freshness flags are OFF (sidecar-assist only).",
+            ],
+            "risk": "low",
+        })
+except Exception:
+    pass
