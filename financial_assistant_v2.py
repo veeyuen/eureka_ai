@@ -455,7 +455,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "NLP13"
+_YUREEKA_CODE_VERSION_LOCK = "NLP14"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 # REFACTOR206: Release Candidate freeze (no pipeline behavior change).
 YUREEKA_RELEASE_CANDIDATE_V1 = False
@@ -15405,6 +15405,30 @@ def _fresh01_extract_url_date_candidates_v1(url: str) -> list:
         return out
     return out[:6]
 
+
+# NLP14: cache-first reuse of prior published_at by URL (baseline replay)
+def _fresh12_seed_prev_published_at_cache_v1(previous_data: Any) -> None:
+    """Seed a run-scope URL->published_at map from the previous snapshot (replayable; no web calls)."""
+    try:
+        pc = {}
+        pd = previous_data if isinstance(previous_data, dict) else {}
+        for k in ("baseline_sources_cache", "sources_cache", "baseline_sources", "current_sources_cache"):
+            bsc = pd.get(k)
+            if isinstance(bsc, list) and bsc:
+                for s in bsc:
+                    if not isinstance(s, dict):
+                        continue
+                    u = str(s.get("url") or "").strip()
+                    p = str(s.get("published_at") or "").strip()
+                    if not u or not p:
+                        continue
+                    nu = _normalize_url(u) or u
+                    if nu and (nu not in pc):
+                        pc[nu] = p
+        globals()["_FRESH12_PREV_PUBLISHED_AT_BY_URL_V1"] = pc
+    except Exception:
+        globals()["_FRESH12_PREV_PUBLISHED_AT_BY_URL_V1"] = {}
+
 def _fresh01_pick_best_candidate_v1(cands: list, fetched_at: str = "") -> Optional[dict]:
     """Pick the best candidate date dict using deterministic heuristics + fetched_at sanity bounds.
 
@@ -15565,6 +15589,9 @@ def _fresh01_compute_source_freshness_v2(text: str, fetched_at: str = "", url: s
         "freshness_date_confidence": None,  # float in [0,1] or None
         "freshness_score": None,            # float 0-100 or None
         "freshness_score_method": "none",   # bucket_v1_conf_v1 / none
+        "freshness_confidence_label": "",  # high/med/low (diagnostic)
+        "freshness_method_detail": "",      # url_fallback_v1 / cached_prev_v1 / ""
+        "freshness_candidate_kind": "",     # hint / regex / url / cache (diagnostic)
     }
     try:
         # Two-pass scan: prefer header-area dates; widen scan only when none found.
@@ -15640,16 +15667,53 @@ def _fresh01_compute_source_freshness_v2(text: str, fetched_at: str = "", url: s
                 best = cand
 
         if not (isinstance(best, dict) and isinstance(best.get("dt"), datetime)):
-            return out
+            # NLP14: cache-first reuse of previous published_at by URL (baseline replay)
+            try:
+                if url:
+                    _pc = globals().get("_FRESH12_PREV_PUBLISHED_AT_BY_URL_V1")
+                    if isinstance(_pc, dict):
+                        _u = _normalize_url(url) or str(url or "").strip()
+                        _pub = str(_pc.get(_u) or "").strip()
+                        dtc = _fresh01_parse_any_date_str_v1(_pub) if _pub else None
+                        if isinstance(dtc, datetime):
+                            best = {"dt": dtc.astimezone(timezone.utc), "pos": 0, "raw": _pub[:80], "kind": "cache", "ctx": "cache", "_heur": 1}
+                            out["freshness_method_detail"] = "cached_prev_v1"
+            except Exception:
+                pass
+            if not (isinstance(best, dict) and isinstance(best.get("dt"), datetime)):
+                return out
         dt = best["dt"].astimezone(timezone.utc)
         out["published_at"] = _fresh01__norm_iso_date_v1(dt)
         out["freshness_method"] = "html_hint_v1" if (best is best_hint) else "regex_v1"
         out["freshness_hint_kind"] = str(best.get("_hint_kind") or "") if (best is best_hint) else ""
 
+        # NLP14: method detail + candidate kind (diagnostic-only)
+        try:
+            _k = str(best.get("kind") or ("hint" if (best is best_hint) else "regex") or "")
+            out["freshness_candidate_kind"] = _k
+            if _k == "url":
+                out["freshness_method_detail"] = "url_fallback_v1"
+            elif _k == "cache" and not out.get("freshness_method_detail"):
+                out["freshness_method_detail"] = "cached_prev_v1"
+        except Exception:
+            pass
+
         # confidence from heuristics used in deterministic selection
         heur = int(best.get("_heur") or 0)
         conf = float(_fresh01_confidence_from_heur_v1(heur))
         out["freshness_date_confidence"] = round(conf, 3)
+
+        # NLP14: confidence label bucket (high/med/low)
+        try:
+            _c = float(out.get("freshness_date_confidence") or 0.0)
+            if _c >= 0.90:
+                out["freshness_confidence_label"] = "high"
+            elif _c >= 0.82:
+                out["freshness_confidence_label"] = "med"
+            else:
+                out["freshness_confidence_label"] = "low"
+        except Exception:
+            pass
 
         fdt = _parse_iso_dt(fetched_at) if fetched_at else None
         if isinstance(fdt, datetime):
@@ -15681,6 +15745,8 @@ def _fresh01_aggregate_source_freshness_v1(baseline_sources_cache: Any, stage: s
     bsc = baseline_sources_cache if isinstance(baseline_sources_cache, list) else []
     ages: list = []
     bucket_counts: dict = {}
+    conf_counts: dict = {}
+    method_counts: dict = {}
     samples: list = []
     pub_count = 0
     age_count = 0
@@ -15691,6 +15757,17 @@ def _fresh01_aggregate_source_freshness_v1(baseline_sources_cache: Any, stage: s
 
         pub = str(s.get("published_at") or "").strip()
         age = s.get("freshness_age_days")
+
+        # NLP14: confidence/method breakdown (diagnostic-only)
+        try:
+            _cl = str(s.get("freshness_confidence_label") or "").strip().lower()
+            if _cl:
+                conf_counts[_cl] = int(conf_counts.get(_cl) or 0) + 1
+            _md = str(s.get("freshness_method_detail") or "").strip().lower()
+            if _md:
+                method_counts[_md] = int(method_counts.get(_md) or 0) + 1
+        except Exception:
+            pass
 
         # published_at presence
         if pub:
@@ -18613,6 +18690,10 @@ def attach_source_snapshots_to_analysis(analysis: dict, web_context: dict) -> di
                 except Exception:
                     pass
                 analysis["debug"]["fresh01_source_freshness_v1"] = _f01
+                try:
+                    analysis["debug"]["fresh12_confidence_summary_v1"] = _f01
+                except Exception:
+                    pass
 
                 # LLM35-A: wire deterministic freshness score into veracity_scores.data_freshness (0-100)
                 try:
@@ -18643,6 +18724,14 @@ def attach_source_snapshots_to_analysis(analysis: dict, web_context: dict) -> di
                     _tb = globals().get("_FRESH02_TIEBREAK_V1")
                     if isinstance(_tb, dict):
                         analysis["debug"]["fresh02_freshness_tiebreak_v1"] = _tb
+                except Exception:
+                    pass
+
+                # NLP14: attach strict tie-break guard beacon (if any)
+                try:
+                    _g = globals().get("_FRESH14_GUARD_V1")
+                    if isinstance(_g, dict):
+                        analysis["debug"]["fresh14_value_invariance_guard_v1"] = _g
                 except Exception:
                     pass
                 # LLM36: derive a run-level freshness tiebreak summary from per-metric beacons (robust; avoids globals()).
@@ -31926,6 +32015,21 @@ def _refactor28_schema_only_rebuild_authoritative_v1(
         }
     except Exception:
         pass
+    # NLP14: strict tie-break value-invariance guard run-scope beacon (diagnostic-only)
+    global _FRESH14_GUARD_V1
+    try:
+        _FRESH14_GUARD_V1 = {
+            "enabled": bool(_fresh02_enabled),  # only relevant when freshness tiebreak is enabled
+            "blocked_swap_count": 0,
+            "blocked_low_confidence_count": 0,
+            "blocked_value_mismatch_count": 0,
+            "allowed_swap_count": 0,
+            "examples": [],
+        }
+    except Exception:
+        pass
+
+
 
     # LLM37: tie-break quantization knob (only effective when freshness tie-break is enabled).
     _fresh02_min_score_delta = 0.0
@@ -32699,6 +32803,83 @@ def _refactor28_schema_only_rebuild_authoritative_v1(
                                 _changed = bool(_base_url and _win_url and (_base_url.strip().lower() != _win_url.strip().lower()))
 
                             if _changed and isinstance(_win_c, dict):
+                                # NLP14: value-invariance + confidence guard (strict tiebreak)
+                                _allow_swap = True
+                                _block_reason = ""
+                                try:
+                                    # Confidence threshold (require both base + winner have >= 0.82)
+                                    def _f14_conf(_p):
+                                        try:
+                                            return float((_p or {}).get("freshness_date_confidence") or 0.0)
+                                        except Exception:
+                                            return 0.0
+                                    _base_p = None
+                                    try:
+                                        for _pp in _grp:
+                                            if str((_pp or {}).get("url") or "").strip() and _base_url and (_normalize_url(str((_pp or {}).get("url") or "")) == _normalize_url(_base_url)):
+                                                _base_p = _pp
+                                                break
+                                    except Exception:
+                                        _base_p = None
+                                    _c_base = _f14_conf(_base_p)
+                                    _c_win = _f14_conf(_winp)
+                                    if (_c_base < 0.82) or (_c_win < 0.82):
+                                        _allow_swap = False
+                                        _block_reason = "score_tie_blocked_low_confidence"
+                                except Exception:
+                                    pass
+
+                                try:
+                                    # Value invariance: only swap if values equivalent (tight tolerance)
+                                    def _f14_val(_cand):
+                                        if not isinstance(_cand, dict):
+                                            return None
+                                        for kk in ("value_norm", "value_numeric", "value_number", "value", "metric_value"):
+                                            if kk in _cand:
+                                                v = _cand.get(kk)
+                                                if isinstance(v, (int, float)):
+                                                    return float(v)
+                                                if isinstance(v, str) and v.strip():
+                                                    try:
+                                                        return float(v.strip().replace(",", ""))
+                                                    except Exception:
+                                                        continue
+                                        return None
+                                    _base_c = None
+                                    try:
+                                        _base_c = (_base_p or {}).get("cand") if isinstance(_base_p, dict) else None
+                                    except Exception:
+                                        _base_c = None
+                                    _v_base = _f14_val(_base_c)
+                                    _v_win = _f14_val(_win_c)
+                                    if (_v_base is not None) and (_v_win is not None):
+                                        try:
+                                            if abs(float(_v_base) - float(_v_win)) > max(1e-6, 1e-3 * max(abs(float(_v_base)), abs(float(_v_win)))):
+                                                _allow_swap = False
+                                                _block_reason = "score_tie_blocked_value_invariance"
+                                        except Exception:
+                                            pass
+                                except Exception:
+                                    pass
+
+                                if not _allow_swap:
+                                    _changed = False
+                                    try:
+                                        if isinstance(_FRESH14_GUARD_V1, dict):
+                                            _FRESH14_GUARD_V1["blocked_swap_count"] = int(_FRESH14_GUARD_V1.get("blocked_swap_count") or 0) + 1
+                                            if _block_reason == "score_tie_blocked_low_confidence":
+                                                _FRESH14_GUARD_V1["blocked_low_confidence_count"] = int(_FRESH14_GUARD_V1.get("blocked_low_confidence_count") or 0) + 1
+                                            if _block_reason == "score_tie_blocked_value_invariance":
+                                                _FRESH14_GUARD_V1["blocked_value_mismatch_count"] = int(_FRESH14_GUARD_V1.get("blocked_value_mismatch_count") or 0) + 1
+                                            ex = {"canonical_key": str(canonical_key or ""), "base_url": str(_base_url or ""), "winner_url": str(_win_url or ""), "reason": _block_reason}
+                                            try:
+                                                if isinstance(_FRESH14_GUARD_V1.get("examples"), list) and len(_FRESH14_GUARD_V1["examples"]) < 5:
+                                                    _FRESH14_GUARD_V1["examples"].append(ex)
+                                            except Exception:
+                                                pass
+                                    except Exception:
+                                        pass
+
                                 best = _win_c
                                 if _ref100_required_years:
                                     try:
@@ -32717,6 +32898,12 @@ def _refactor28_schema_only_rebuild_authoritative_v1(
                                 "winner_url": _win_url or _base_url,
                                 "base_url": _base_url,
                             }
+
+                            try:
+                                if bool(_changed) and isinstance(_FRESH14_GUARD_V1, dict):
+                                    _FRESH14_GUARD_V1["allowed_swap_count"] = int(_FRESH14_GUARD_V1.get("allowed_swap_count") or 0) + 1
+                            except Exception:
+                                pass
 
                             # Update run-level beacon (global) for auditability
                             try:
@@ -34213,6 +34400,12 @@ def run_source_anchored_evolution(previous_data: dict, web_context: dict = None)
     # Input coercion (avoid None.get)
     if not isinstance(previous_data, dict):
         previous_data = {}
+
+    # NLP14: seed previous published_at cache for cache-first replay (diagnostic-only)
+    try:
+        _fresh12_seed_prev_published_at_cache_v1(previous_data)
+    except Exception:
+        pass
     if web_context is None or not isinstance(web_context, dict):
         web_context = {}
 
@@ -34852,6 +35045,24 @@ try:
                 "When ENABLE_SOURCE_FRESHNESS_TIEBREAK is ON, missing-freshness fallback events should reduce when publish hints exist; strict tie-break behavior remains unchanged.",
                 "endstate_check_v1 reports assumed_injected_mode consistently with injection_present_v3 / admitted injected URLs, and delta_gating_expected follows suppression policy rather than assuming blanks.",
                 "Default behavior unchanged when assist flags are OFF.",
+            ],
+            "risk": "low",
+        })
+except Exception:
+    pass
+
+
+# NLP14: patch tracker entry
+try:
+    if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "NLP14" for e in PATCH_TRACKER_V1):
+        PATCH_TRACKER_V1.insert(0, {
+            "patch_id": "NLP14",
+            "date": "2026-02-19",
+            "title": "NLP14 freshness confidence + cache reuse + value-invariance guard for strict tiebreak",
+            "summary": [
+                "Additive freshness confidence labels (high/med/low) and method detail for auditability; extend fresh01 aggregate beacons with confidence/method breakdown.",
+                "Cache-first reuse of prior published_at by URL (baseline replay) for sources that are temporarily inaccessible (e.g., 403), without making new web calls.",
+                "Harden strict freshness tie-break: allow winner swaps only when all tied candidates have freshness AND the candidate values are equivalent (value-invariance guard) and confidence threshold is met.",
             ],
             "risk": "low",
         })
