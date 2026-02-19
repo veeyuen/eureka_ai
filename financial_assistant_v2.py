@@ -116,6 +116,9 @@ _HYPERPARAMS_V1_DEFAULTS = {
             "min_score_delta": 0.0,
             # Reserved for future: prefer explicit published_at over inferred date.
             "prefer_published_at": True,
+            # Minimum confidence (0..1) required to allow strict freshness swaps.
+            # NLP17: relax to allow regex-based dates (0.75) to participate when value-invariance holds.
+            "min_confidence": 0.75,
             # Reserved for future: url_sort_v1 / source_index_v1
             "stable_fallback": "url_sort_v1",
         },
@@ -455,7 +458,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "NLP16"
+_YUREEKA_CODE_VERSION_LOCK = "NLP17"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 # REFACTOR206: Release Candidate freeze (no pipeline behavior change).
 YUREEKA_RELEASE_CANDIDATE_V1 = False
@@ -25174,7 +25177,7 @@ def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) 
             ["primary_response", "baseline_sources_cache"],
             ["results", "primary_response", "baseline_sources_cache"],
         ], default=None)
-        _cur_sources = output.get("source_results") or output.get("baseline_sources_cache_current") or []
+        _cur_sources = output.get("baseline_sources_cache_current") or output.get("source_results") or []
 
         _prev_failures = _summ_failures(_prev_cache)
         _cur_failures = _summ_failures(_cur_sources)
@@ -32970,7 +32973,12 @@ def _refactor28_schema_only_rebuild_authoritative_v1(
                                         _base_p = None
                                     _c_base = _f14_conf(_base_p)
                                     _c_win = _f14_conf(_winp)
-                                    if (_c_base < 0.82) or (_c_win < 0.82):
+                                    _min_conf = 0.82
+                                    try:
+                                        _min_conf = float(_yureeka_hp_get_v1("freshness.tiebreak.min_confidence", 0.82) or 0.82)
+                                    except Exception:
+                                        _min_conf = 0.82
+                                    if (_c_base < _min_conf) or (_c_win < _min_conf):
                                         _allow_swap = False
                                         _block_reason = "score_tie_blocked_low_confidence"
                                 except Exception:
@@ -33035,12 +33043,28 @@ def _refactor28_schema_only_rebuild_authoritative_v1(
                                     except Exception:
                                         pass
 
+                            _f17_block_reason = ""
+                            try:
+                                _f17_block_reason = str(_block_reason or "")
+                            except Exception:
+                                _f17_block_reason = ""
+                            _f17_min_conf = None
+                            try:
+                                _f17_min_conf = float(_min_conf)
+                            except Exception:
+                                _f17_min_conf = None
+                            _f17_reason = "score_tie_resolved_by_freshness" if bool(_changed) else "score_tie_winner_unchanged"
+                            if _f17_block_reason and (not bool(_changed)):
+                                _f17_reason = _f17_block_reason
+
                             _fresh11_ftb_override = {
                                 "used": True,
                                 "applied": bool(_changed),
                                 "all_tied_have_freshness": True,
                                 "tie_count": int(len(_grp)),
-                                "reason": "score_tie_resolved_by_freshness" if bool(_changed) else "score_tie_winner_unchanged",
+                                "reason": _f17_reason,
+                                "blocked_reason": _f17_block_reason if (not bool(_changed)) else "",
+                                "min_confidence": _f17_min_conf,
                                 "changed_winner": bool(_changed),
                                 "winner_url": _win_url or _base_url,
                                 "base_url": _base_url,
@@ -35286,6 +35310,23 @@ except Exception:
         st.exception(Exception(f"Yureeka app crashed during main() execution ({_yureeka_get_code_version()})."))
     except Exception:
         pass
+# NLP17: patch tracker entry
+try:
+    if isinstance(PATCH_TRACKER_V1, list) and not any(str(e.get("patch_id") or "") == "NLP17" for e in PATCH_TRACKER_V1 if isinstance(e, dict)):
+        PATCH_TRACKER_V1.insert(0, {
+            "patch_id": "NLP17",
+            "date": "2026-02-19",
+            "title": "NLP17 strict freshness tie-break: relax min_confidence + expose blocked reason; harness prefers stable cache",
+            "summary": [
+                "Add hyperparam freshness.tiebreak.min_confidence=0.75 to allow strict freshness swaps when dates were extracted via deterministic regex (previous hardcoded 0.82 blocked all regex-derived ties).",
+                "Enhance per-metric fresh_tiebreak_v1 beacon to include blocked_reason + min_confidence used, so strict tie-break fall-through is auditable (no more silent blocks).",
+                "Adjust harness source failure summary to prefer baseline_sources_cache_current over source_results, preventing placeholder scrape failures from surfacing as harness failures when the stable cache already marks them seeded_pending.",
+            ],
+            "risk": "low",
+        })
+except Exception:
+    pass
+
 # NLP16: patch tracker entry
 try:
     if isinstance(PATCH_TRACKER_V1, list) and not any(str(e.get("patch_id") or "") == "NLP16" for e in PATCH_TRACKER_V1 if isinstance(e, dict)):
