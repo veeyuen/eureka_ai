@@ -455,7 +455,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "NLP14"
+_YUREEKA_CODE_VERSION_LOCK = "NLP15"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 # REFACTOR206: Release Candidate freeze (no pipeline behavior change).
 YUREEKA_RELEASE_CANDIDATE_V1 = False
@@ -15081,11 +15081,14 @@ def _fresh01_parse_any_date_str_v1(s: str) -> Optional[datetime]:
         t = s.strip()
         if not t:
             return None
-        # Normalize common ISO forms
-        t0 = t.replace("Z", "+00:00")
-        # Note: keep fractional seconds as-is; fromisoformat handles microseconds best-effort.
 
-        # Try full ISO datetime first
+        # Normalize trivial wrappers
+        t = re.sub(r"^[\[\(\{\s]+|[\]\)\}\s]+$", "", t).strip()
+        if not t:
+            return None
+
+        # 1) ISO datetime / datetime-like first (fast path)
+        t0 = t.replace("Z", "+00:00")
         try:
             dt = datetime.fromisoformat(t0)
             if isinstance(dt, datetime):
@@ -15095,8 +15098,8 @@ def _fresh01_parse_any_date_str_v1(s: str) -> Optional[datetime]:
         except Exception:
             pass
 
-        # Try ISO date only
-        m = re.match(r"^\s*(20\d{2})[-/](\d{1,2})[-/](\d{1,2})\s*$", t)
+        # 2) ISO date only: YYYY-MM-DD / YYYY/MM/DD / YYYY.MM.DD
+        m = re.match(r"^\s*(20\d{2})[-/.](\d{1,2})[-/.](\d{1,2})\s*$", t)
         if m:
             yy = _fresh01__safe_int_v1(m.group(1))
             mm = _fresh01__safe_int_v1(m.group(2))
@@ -15104,7 +15107,16 @@ def _fresh01_parse_any_date_str_v1(s: str) -> Optional[datetime]:
             if yy and mm and dd:
                 return _fresh01__make_dt_v1(yy, mm, dd)
 
-        # Try RFC3339-ish without seconds
+        # 3) Compact YYYYMMDD (common in URLs / meta)
+        m = re.match(r"^\s*(20\d{2})(\d{2})(\d{2})\s*$", t)
+        if m:
+            yy = _fresh01__safe_int_v1(m.group(1))
+            mm = _fresh01__safe_int_v1(m.group(2))
+            dd = _fresh01__safe_int_v1(m.group(3))
+            if yy and mm and dd and 1 <= mm <= 12 and 1 <= dd <= 31:
+                return _fresh01__make_dt_v1(yy, mm, dd)
+
+        # 4) RFC3339-ish without seconds (still common in meta)
         m = re.match(r"^\s*(20\d{2})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})(?::(\d{2}))?", t0)
         if m:
             yy = _fresh01__safe_int_v1(m.group(1))
@@ -15118,9 +15130,50 @@ def _fresh01_parse_any_date_str_v1(s: str) -> Optional[datetime]:
                     return datetime(int(yy), int(mm), int(dd), int(hh or 0), int(mi or 0), int(ss or 0), tzinfo=timezone.utc)
                 except Exception:
                     return _fresh01__make_dt_v1(yy, mm, dd)
+
+        # 5) Month-name formats (allow trailing '.' on abbreviations)
+        mon_re = r"Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t|tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?"
+
+        # Month day, year: Feb. 17, 2026 / Feb 17 2026
+        m = re.search(rf"\b({mon_re})\.?\s+(\d{{1,2}})(?:st|nd|rd|th)?\s*,?\s*(20\d{{2}})\b", t, flags=re.I)
+        if m:
+            mon_s = (m.group(1) or "").lower().rstrip(".")
+            dd = _fresh01__safe_int_v1(m.group(2))
+            yy = _fresh01__safe_int_v1(m.group(3))
+            mm = _FRESH01_MONTHS.get(mon_s[:3], _FRESH01_MONTHS.get(mon_s, None))
+            if yy and mm and dd and 1 <= mm <= 12 and 1 <= dd <= 31:
+                return _fresh01__make_dt_v1(yy, mm, dd)
+
+        # Day month year: 17 Feb. 2026 / 17 Feb, 2026
+        m = re.search(rf"\b(\d{{1,2}})(?:st|nd|rd|th)?\s+({mon_re})\.?\s*,?\s*(20\d{{2}})\b", t, flags=re.I)
+        if m:
+            dd = _fresh01__safe_int_v1(m.group(1))
+            mon_s = (m.group(2) or "").lower().rstrip(".")
+            yy = _fresh01__safe_int_v1(m.group(3))
+            mm = _FRESH01_MONTHS.get(mon_s[:3], _FRESH01_MONTHS.get(mon_s, None))
+            if yy and mm and dd and 1 <= mm <= 12 and 1 <= dd <= 31:
+                return _fresh01__make_dt_v1(yy, mm, dd)
+
+        # 6) Numeric D/M/Y or M/D/Y (only when unambiguous: one side > 12)
+        m = re.match(r"^\s*(\d{1,2})[./-](\d{1,2})[./-](20\d{2})\s*$", t)
+        if m:
+            a = _fresh01__safe_int_v1(m.group(1))
+            b = _fresh01__safe_int_v1(m.group(2))
+            yy = _fresh01__safe_int_v1(m.group(3))
+            dd = None
+            mm = None
+            if yy and a and b:
+                if a > 12 and b <= 12:
+                    dd, mm = a, b
+                elif b > 12 and a <= 12:
+                    mm, dd = a, b
+            if yy and mm and dd and 1 <= mm <= 12 and 1 <= dd <= 31:
+                return _fresh01__make_dt_v1(yy, mm, dd)
+
     except Exception:
         return None
     return None
+
 
 def _fresh01_extract_pub_hint_from_html_v1(html: str, max_chars: int = 250000) -> dict:
     """Extract publish/updated date hints from fetched HTML (meta tags, <time>, JSON-LD).
@@ -15347,7 +15400,7 @@ def _fresh01_extract_date_candidates_v1(text: str, max_scan: int = 5200) -> list
 
     # Month day, year: July 1, 2025 / Jul 1 2025
     mon_re = r"Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t|tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?"
-    for m in re.finditer(rf"\b({mon_re})\s+(\d{{1,2}})(?:st|nd|rd|th)?\s*,?\s*(20\d{{2}})\b", t, flags=re.I):
+    for m in re.finditer(rf"\b({mon_re})\.?\s+(\d{{1,2}})(?:st|nd|rd|th)?\s*,?\s*(20\d{{2}})\b", t, flags=re.I):
         mon_s = (m.group(1) or "").lower()
         dd = _fresh01__safe_int_v1(m.group(2))
         yy = _fresh01__safe_int_v1(m.group(3))
@@ -15362,7 +15415,7 @@ def _fresh01_extract_date_candidates_v1(text: str, max_scan: int = 5200) -> list
         out.append({"dt": dt, "pos": int(m.start()), "raw": m.group(0), "kind": "mdy", "ctx": _ctx(m.start(), m.end())})
 
     # Day Month year: 1 July 2025 / 1 Jul, 2025
-    for m in re.finditer(rf"\b(\d{{1,2}})(?:st|nd|rd|th)?\s+({mon_re})\s*,?\s*(20\d{{2}})\b", t, flags=re.I):
+    for m in re.finditer(rf"\b(\d{{1,2}})(?:st|nd|rd|th)?\s+({mon_re})\.?\s*,?\s*(20\d{{2}})\b", t, flags=re.I):
         dd = _fresh01__safe_int_v1(m.group(1))
         mon_s = (m.group(2) or "").lower()
         yy = _fresh01__safe_int_v1(m.group(3))
@@ -15376,19 +15429,51 @@ def _fresh01_extract_date_candidates_v1(text: str, max_scan: int = 5200) -> list
             continue
         out.append({"dt": dt, "pos": int(m.start()), "raw": m.group(0), "kind": "dmy", "ctx": _ctx(m.start(), m.end())})
 
+    # Day-Month-Year with separators: 17-Feb-2026 / 17 Feb. 2026
+    for m in re.finditer(rf"\b(\d{{1,2}})(?:st|nd|rd|th)?[-/. ]+({mon_re})\.?[-/. ]+(20\d{{2}})\b", t, flags=re.I):
+        dd = _fresh01__safe_int_v1(m.group(1))
+        mon_s = (m.group(2) or "").lower()
+        yy = _fresh01__safe_int_v1(m.group(3))
+        mm = _FRESH01_MONTHS.get(mon_s[:3], _FRESH01_MONTHS.get(mon_s, None))
+        if not yy or not mm or not dd:
+            continue
+        if mm < 1 or mm > 12 or dd < 1 or dd > 31:
+            continue
+        dt = _fresh01__make_dt_v1(yy, mm, dd)
+        if not dt:
+            continue
+        out.append({"dt": dt, "pos": int(m.start()), "raw": m.group(0), "kind": "dmy_sep", "ctx": _ctx(m.start(), m.end())})
+
+    # Month-Day-Year with separators: Feb-17-2026 / Feb. 17 2026
+    for m in re.finditer(rf"\b({mon_re})\.?[-/. ]+(\d{{1,2}})(?:st|nd|rd|th)?[-/. ]+(20\d{{2}})\b", t, flags=re.I):
+        mon_s = (m.group(1) or "").lower()
+        dd = _fresh01__safe_int_v1(m.group(2))
+        yy = _fresh01__safe_int_v1(m.group(3))
+        mm = _FRESH01_MONTHS.get(mon_s[:3], _FRESH01_MONTHS.get(mon_s, None))
+        if not yy or not mm or not dd:
+            continue
+        if mm < 1 or mm > 12 or dd < 1 or dd > 31:
+            continue
+        dt = _fresh01__make_dt_v1(yy, mm, dd)
+        if not dt:
+            continue
+        out.append({"dt": dt, "pos": int(m.start()), "raw": m.group(0), "kind": "mdy_sep", "ctx": _ctx(m.start(), m.end())})
+
     return out[:32]
 
 
 def _fresh01_extract_url_date_candidates_v1(url: str) -> list:
     """Extract publish-date candidates from URL paths when meta/text dates are missing.
 
-    Deterministic and conservative: only returns full YYYY/MM/DD or YYYY-MM-DD patterns.
+    Deterministic and conservative: only returns full YYYY/MM/DD or YYYY-MM-DD patterns,
+    plus a compact YYYYMMDD fallback when a full day is present.
     """
     if not isinstance(url, str) or not url.strip():
         return []
     u = url.strip()
     out = []
     try:
+        # YYYY-MM-DD / YYYY/MM/DD (also matches inside query strings)
         for m in re.finditer(r"(20\d{2})[-/](\d{1,2})[-/](\d{1,2})", u):
             yy = _fresh01__safe_int_v1(m.group(1))
             mm = _fresh01__safe_int_v1(m.group(2))
@@ -15401,6 +15486,20 @@ def _fresh01_extract_url_date_candidates_v1(url: str) -> list:
             if not dt:
                 continue
             out.append({"dt": dt, "pos": 0, "raw": m.group(0), "kind": "url", "ctx": "url"})
+
+        # Compact YYYYMMDD (common in blog paths): .../20260217/...
+        for m in re.finditer(r"(?<!\d)(20\d{2})(\d{2})(\d{2})(?!\d)", u):
+            yy = _fresh01__safe_int_v1(m.group(1))
+            mm = _fresh01__safe_int_v1(m.group(2))
+            dd = _fresh01__safe_int_v1(m.group(3))
+            if not yy or not mm or not dd:
+                continue
+            if mm < 1 or mm > 12 or dd < 1 or dd > 31:
+                continue
+            dt = _fresh01__make_dt_v1(yy, mm, dd)
+            if not dt:
+                continue
+            out.append({"dt": dt, "pos": 0, "raw": m.group(0), "kind": "url_compact", "ctx": "url"})
     except Exception:
         return out
     return out[:6]
@@ -15614,6 +15713,21 @@ def _fresh01_compute_source_freshness_v2(text: str, fetched_at: str = "", url: s
                 _cache = globals().get("_FRESH01_PUB_HINT_CACHE_V1")
                 if isinstance(_cache, dict):
                     _hint = _cache.get(_normalize_url(url) or str(url or "").strip())
+
+
+            # NLP15: if no publish-hint is available but the captured text appears to be raw HTML,
+            # attempt an inline meta/<time>/JSON-LD hint extraction (still replayable; no web calls).
+            try:
+                if _hint is None and isinstance(text, str) and text.strip():
+                    tl = text[:6000].lower()
+                    if ("<!doctype html" in tl) or ("<html" in tl) or ("<meta" in tl) or ("ld+json" in tl) or ("article:published_time" in tl):
+                        _h2 = _fresh01_extract_pub_hint_from_html_v1(text)
+                        if isinstance(_h2, dict) and str(_h2.get("published_at") or "").strip():
+                            _hint = _h2
+                            if not out.get("freshness_method_detail"):
+                                out["freshness_method_detail"] = "inline_html_hint_v1"
+            except Exception:
+                pass
 
             hint_kind = ""
             hint_raw = ""
@@ -35086,6 +35200,30 @@ try:
             "acceptance": [
                 "analysis.debug.fresh01_source_freshness_v1.sources_with_published_at increases for previously-missing sources where a date is present in text (e.g., Published/Updated lines).",
                 "When ENABLE_SOURCE_FRESHNESS_TIEBREAK is ON, strict tie-break applies more often (fewer score_tie_missing_freshness_stable_fallback events) without changing base ordering outside exact tie groups.",
+                "Prod evolution stability remains 100% for the regression question when assist flags are OFF.",
+            ],
+            "risk": "low",
+        })
+except Exception:
+    pass
+
+
+# NLP15: patch tracker entry
+try:
+    if isinstance(PATCH_TRACKER_V1, list) and not any(str(e.get("patch_id") or "") == "NLP15" for e in PATCH_TRACKER_V1 if isinstance(e, dict)):
+        PATCH_TRACKER_V1.insert(0, {
+            "patch_id": "NLP15",
+            "date": "2026-02-19",
+            "title": "NLP15 publish-date parsing polish (month-dot + compact URL + inline HTML hints)",
+            "summary": [
+                "Extend deterministic month-name parsing to accept trailing periods (e.g., 'Feb. 17, 2026', 'Sept. 26, 2025') across both text scans and meta/JSON-LD hint parsing.",
+                "Add compact URL date fallback for YYYYMMDD path segments (conservative; only when full day is present).",
+                "If a captured source text appears to be raw HTML (doctype/html/meta/ld+json), attempt an inline meta/<time>/JSON-LD hint extraction even when a separate published_at_hint was not provided.",
+                "No change to deterministic winners/values unless ENABLE_SOURCE_FRESHNESS_TIEBREAK is explicitly enabled (freshness remains diagnostic otherwise).",
+            ],
+            "acceptance": [
+                "analysis.debug.fresh01_source_freshness_v1.sources_with_published_at increases vs NLP14 for sources whose dates were previously missed due to month-dot or HTML-only meta hints.",
+                "analysis.debug.fresh11_strict_tiebreak_summary_v1.missing_freshness_fallback_count does not increase (ideally decreases further).",
                 "Prod evolution stability remains 100% for the regression question when assist flags are OFF.",
             ],
             "risk": "low",
