@@ -458,7 +458,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "NLP50"
+_YUREEKA_CODE_VERSION_LOCK = "NLP52"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 # REFACTOR206: Release Candidate freeze (no pipeline behavior change).
 YUREEKA_RELEASE_CANDIDATE_V1 = False
@@ -1163,6 +1163,63 @@ def _nlp50_query_frame_debug_v1(query: str, base_signals: Optional[Dict[str, Any
     }
 
 
+
+
+# NLP51: Effective flag snapshot fingerprint (audit-only; no pipeline behavior change)
+# - Captures the effective values + sources for key NLP/LLM/freshness flags (UI/secrets/env).
+# - Provides a stable fingerprint so triads can confirm "same knobs" across runs (replayable).
+_YUREEKA_NLP51_EFFECTIVE_FLAGS_FINGERPRINT_V1 = ""
+
+
+def _nlp51_effective_flags_debug_v1() -> dict:
+    """Return non-sensitive effective-flag snapshot (value+source) + stable fingerprint."""
+    flag_names = [
+        # Freshness
+        "ENABLE_SOURCE_FRESHNESS",
+        "ENABLE_SOURCE_FRESHNESS_TIEBREAK",
+        # NLP
+        "ENABLE_NLP_QUERY_BOOST",
+        # LLM / sidecar
+        "ENABLE_LLM_QUERY_FRAME",
+        "ENABLE_LLM_QUERY_STRUCTURE_FALLBACK",
+        "ENABLE_LLM_EVIDENCE_SNIPPETS",
+        "ENABLE_LLM_SOURCE_CLUSTERING",
+        "ENABLE_LLM_ANOMALY_FLAGS",
+        "ENABLE_LLM_DATASET_LOGGING",
+        # Cache controls / ops
+        "LLM_BYPASS_CACHE",
+        "LLM_CACHE_REPLAY_ONLY",
+        "ENABLE_LLM_SMOKE_TEST",
+        "LLM_FORCE_REFRESH_ONCE",
+    ]
+    out = {"v": "nlp51_effective_flags_v1", "flags": {}}
+    try:
+        fn = globals().get("_yureeka_llm_flag_effective_v1")
+        for name in flag_names:
+            try:
+                if callable(fn):
+                    val, src = fn(str(name))
+                else:
+                    val = bool(globals().get(str(name), False))
+                    src = "globals"
+                out["flags"][str(name)] = {"value": bool(val), "source": str(src or "")[:120]}
+            except Exception:
+                out["flags"][str(name)] = {"value": False, "source": "error"}
+    except Exception:
+        pass
+
+    fp = ""
+    try:
+        fp = str(_hp__sha256_hex_v1(_hp__stable_json_v1(out.get("flags") or {})) or "")
+    except Exception:
+        fp = ""
+    out["fingerprint_v1"] = fp
+    try:
+        globals()["_YUREEKA_NLP51_EFFECTIVE_FLAGS_FINGERPRINT_V1"] = str(fp or "")
+    except Exception:
+        pass
+    return out
+
 def _llm03__validate_query_frame_v1(frame: Any) -> Tuple[bool, str]:
     """Strict validator for LLM query frame proposals."""
     if not isinstance(frame, dict) or not frame:
@@ -1440,6 +1497,9 @@ def _llm03_get_query_frame_v1(query: str, base_signals: Optional[Dict[str, Any]]
             model=str(model),
             system_prompt=system_prompt,
             user_payload=user_payload,
+            feature="llm03_query_frame",
+            prompt_version=prompt_version,
+            schema_version=schema_version,
             timeout_sec=30,
             max_tokens=260,
         )
@@ -2185,6 +2245,9 @@ def _llm04_llm_relevance_check_v1(
             model=str(model),
             system_prompt=system_prompt,
             user_payload=user_payload,
+            feature="llm04_anomaly_relevance",
+            prompt_version=prompt_version,
+            schema_version=schema_version,
             timeout_sec=30,
             max_tokens=180,
         )
@@ -2640,6 +2703,9 @@ def _yureeka_call_openai_chat_json_v1(
     model: str,
     system_prompt: str,
     user_payload: dict,
+    feature: str = "",
+    prompt_version: str = "",
+    schema_version: str = "",
     timeout_sec: int = 30,
     max_tokens: int = 220,
 ) -> Tuple[Optional[dict], dict]:
@@ -2652,6 +2718,33 @@ def _yureeka_call_openai_chat_json_v1(
         diag["prompt_hash_v1"] = str(_yureeka_llm_text_hash_v1(_yureeka__stable_json_dumps_v1(_ph_payload)))[:120]
     except Exception:
         pass
+
+    # NLP52: request fingerprint capsule (hash-only) for replayable prompt/schema versioning.
+    # Includes prompt/schema versions plus query/flag/hyperparam fingerprints; never stores raw prompts.
+    try:
+        _qfh = str(globals().get("_YUREEKA_NLP50_QUERY_FRAME_HASH_V1") or "")
+        _eff_fp = str(globals().get("_YUREEKA_NLP51_EFFECTIVE_FLAGS_FINGERPRINT_V1") or "")
+        if (not _eff_fp):
+            _fn = globals().get("_nlp51_effective_flags_debug_v1")
+            if callable(_fn):
+                _eff_fp = str((_fn() or {}).get("fingerprint_v1") or "")
+        _hp_fp_llm = str(globals().get("HYPERPARAMS_FINGERPRINT_LLM_V1") or "")
+        _capsule = {
+            "v": "llm_request_capsule_v1",
+            "feature": str(feature or "")[:80],
+            "prompt_version": str(prompt_version or "")[:80],
+            "schema_version": str(schema_version or "")[:80],
+            "prompt_hash_v1": str(diag.get("prompt_hash_v1") or "")[:120],
+            "query_frame_hash_v1": str(_qfh or "")[:160],
+            "effective_flags_fingerprint_v1": str(_eff_fp or "")[:160],
+            "hyperparams_fingerprint_llm_v1": str(_hp_fp_llm or "")[:160],
+        }
+        _s = _yureeka__stable_json_dumps_v1(_capsule)
+        _h = hashlib.sha256((_s or "").encode("utf-8", errors="ignore")).hexdigest()
+        diag["request_fingerprint_v1"] = _h[:16]
+    except Exception:
+        pass
+
 
 
     # NLP48: replay-only policy (cache hits only; disable live provider calls).
@@ -3053,6 +3146,7 @@ def _yureeka_llm_global_agg_update_v1(feature: str, call_diag: dict, *, cache_hi
                 "model": str(call_diag.get("model") or "")[:80],
                 "prompt_hash_v1": str(call_diag.get("prompt_hash_v1") or "")[:80],
                 "response_hash_v1": str(call_diag.get("response_hash_v1") or "")[:80],
+                "request_fingerprint_v1": str(call_diag.get("request_fingerprint_v1") or "")[:80],
                 "hint": str(call_diag.get("hint") or _yureeka_llm_hint_from_diag_v1(call_diag))[:200],
             }
             agg["last"] = _last
@@ -3083,6 +3177,7 @@ def _yureeka_llm_global_agg_update_v1(feature: str, call_diag: dict, *, cache_hi
                     "model": str(call_diag.get("model") or "")[:80],
                     "prompt_hash_v1": str(call_diag.get("prompt_hash_v1") or "")[:80],
                     "response_hash_v1": str(call_diag.get("response_hash_v1") or "")[:80],
+                    "request_fingerprint_v1": str(call_diag.get("request_fingerprint_v1") or "")[:80],
                 })
                 if len(le) > 25:
                     del le[:-25]
@@ -3203,6 +3298,18 @@ def _yureeka_llm_health_snapshot_v1(stage: str = "") -> dict:
     except Exception:
         pass
 
+    # NLP51: surface effective-flag fingerprint (hash-only) for replayable triads.
+    try:
+        _ffp = str(globals().get("_YUREEKA_NLP51_EFFECTIVE_FLAGS_FINGERPRINT_V1") or "")
+        if not _ffp:
+            _fn = globals().get("_nlp51_effective_flags_debug_v1")
+            if callable(_fn):
+                _ffp = str((_fn() or {}).get("fingerprint_v1") or "")
+        if _ffp:
+            out["effective_flags_fingerprint_v1"] = _ffp[:160]
+    except Exception:
+        pass
+
     return out
 
 def _yureeka_llm_record_acceptance_v1(feature: str, used_for: list, accepted: bool, reason: str = "") -> None:
@@ -3277,6 +3384,7 @@ def _yureeka_llm00_status_v1(stage: str = "") -> dict:
                         out["status"] = _last.get("status")
                         out["prompt_hash_v1"] = str(_last.get("prompt_hash_v1") or "")[:120]
                         out["response_hash_v1"] = str(_last.get("response_hash_v1") or "")[:120]
+                        out["request_fingerprint_v1"] = str(_last.get("request_fingerprint_v1") or "")[:120]
                 except Exception:
                     pass
     except Exception:
@@ -3333,6 +3441,9 @@ def _yureeka_llm_smoke_test_v1(stage: str = "") -> dict:
         model=str(model),
         system_prompt=system_prompt,
         user_payload=user_payload,
+        feature="llm_smoke_test",
+        prompt_version="llm_smoke_test_v1",
+        schema_version="pong_v1",
         timeout_sec=12,
         max_tokens=60,
     )
@@ -3588,6 +3699,9 @@ def _llm01_llm_rank_windows_v1(
             model=str(model),
             system_prompt=system_prompt,
             user_payload=input_payload,
+            feature="llm01_evidence_rank",
+            prompt_version=prompt_version,
+            schema_version=schema_version,
         )
         diag.update({"used": bool(call_diag.get("ok")), "cache_hit": False, "reason": call_diag.get("reason")})
         if isinstance(obj, dict) and obj:
@@ -5572,14 +5686,28 @@ def _yureeka_attach_hyperparams_debug_v1(wrapper: dict, stage: str = ""):
                 dbg = t.setdefault("debug", {})
                 if not isinstance(dbg, dict):
                     continue
-                # Attach only once per debug dict
-                if isinstance(dbg.get("hyperparams_snapshot_v1"), dict):
-                    continue
-                dbg["hyperparams_snapshot_v1"] = hp_dict
-                dbg["hyperparams_fingerprint_v1"] = fp_full
-                dbg["hyperparams_fingerprint_llm_v1"] = fp_llm
-                dbg["hyperparams_source_v1"] = src
-                dbg["hyperparams_stage_v1"] = str(stage or "")
+                # Attach hyperparam snapshot once per debug dict
+                if not isinstance(dbg.get("hyperparams_snapshot_v1"), dict):
+                    dbg["hyperparams_snapshot_v1"] = hp_dict
+                    dbg["hyperparams_fingerprint_v1"] = fp_full
+                    dbg["hyperparams_fingerprint_llm_v1"] = fp_llm
+                    dbg["hyperparams_source_v1"] = src
+                    dbg["hyperparams_stage_v1"] = str(stage or "")
+
+                # NLP51: attach effective flag snapshot + stable fingerprint (replayable triads)
+                if not isinstance(dbg.get("nlp51_effective_flags_v1"), dict):
+                    try:
+                        _ef = _nlp51_effective_flags_debug_v1()
+                    except Exception:
+                        _ef = {}
+                    if isinstance(_ef, dict) and _ef:
+                        dbg["nlp51_effective_flags_v1"] = _ef
+                        try:
+                            _ffp = str(_ef.get("fingerprint_v1") or "")
+                            if _ffp:
+                                dbg["nlp51_effective_flags_fingerprint_v1"] = _ffp[:160]
+                        except Exception:
+                            pass
             except Exception:
                 continue
     except Exception:
@@ -15096,6 +15224,9 @@ def _llm_fallback_query_structure(query: str, web_context: Optional[Dict] = None
                 model=str(model),
                 system_prompt=system_prompt,
                 user_payload=input_payload,
+                feature="llm00_query_structure",
+                prompt_version="llm00_qstruct_v1",
+                schema_version="qstruct_v1",
                 timeout_sec=30,
                 max_tokens=250,
             )
@@ -37753,6 +37884,96 @@ try:
                 "Surface query_fingerprint_v1 and query_frame_hash_v1 in llm_sidecar_health_v1 (hash-only) so triads can confirm semantic stability without leaking raw prompts or adding network behavior."
             ],
             "risk": "Low: diagnostics/beacons only; deterministic selection, thresholds, and network behavior unchanged."
+        }
+        if _existing_i is None:
+            PATCH_TRACKER_V1.append(_ent)
+        else:
+            try:
+                _ex = PATCH_TRACKER_V1[_existing_i]
+                if isinstance(_ex, dict):
+                    _auto = str((_ex.get("summary") or "") if not isinstance(_ex.get("summary"), list) else "")
+                    if not (_ex.get("title")):
+                        _ex["title"] = _ent.get("title")
+                    if not (_ex.get("date")):
+                        _ex["date"] = _ent.get("date")
+                    if not (_ex or {}).get("risk"):
+                        _ex["risk"] = _ent.get("risk")
+                    if (_auto == "(auto placeholder)") or (_auto == ""):
+                        _ex["summary"] = _ent.get("summary")
+                    PATCH_TRACKER_V1[_existing_i] = _ex
+            except Exception:
+                pass
+        try:
+            _yureeka_patch_tracker_ensure_head_v1(_pid, {"patch_id": _pid})
+        except Exception:
+            pass
+except Exception:
+    pass
+
+
+# NLP51: patch tracker entry
+try:
+    if isinstance(PATCH_TRACKER_V1, list):
+        _pid = "NLP51"
+        _existing_i = None
+        for _i, _e in enumerate(list(PATCH_TRACKER_V1)):
+            if isinstance(_e, dict) and str(_e.get("patch_id") or "") == _pid:
+                _existing_i = _i
+                break
+        _ent = {
+            "patch_id": _pid,
+            "date": "2026-02-20",
+            "title": "Effective-flag snapshot + fingerprint beacons (audit-only; replayable triads)",
+            "summary": [
+                "Add debug.nlp51_effective_flags_v1 (value+source) + debug.nlp51_effective_flags_fingerprint_v1 to both analysis and evolution wrappers so triads can confirm that UI/secrets/env toggles are identical across runs.",
+                "Surface effective_flags_fingerprint_v1 in llm_sidecar_health_v1 (hash-only) to align future LLM cache-salting and reduce 'same inputs, different knobs' ambiguity when diagnosing regressions."
+            ],
+            "risk": "Low: diagnostics/beacons only; deterministic selection, thresholds, and network behavior unchanged."
+        }
+        if _existing_i is None:
+            PATCH_TRACKER_V1.append(_ent)
+        else:
+            try:
+                _ex = PATCH_TRACKER_V1[_existing_i]
+                if isinstance(_ex, dict):
+                    _auto = str((_ex.get("summary") or "") if not isinstance(_ex.get("summary"), list) else "")
+                    if not (_ex.get("title")):
+                        _ex["title"] = _ent.get("title")
+                    if not (_ex.get("date")):
+                        _ex["date"] = _ent.get("date")
+                    if not (_ex or {}).get("risk"):
+                        _ex["risk"] = _ent.get("risk")
+                    if (_auto == "(auto placeholder)") or (_auto == ""):
+                        _ex["summary"] = _ent.get("summary")
+                    PATCH_TRACKER_V1[_existing_i] = _ex
+            except Exception:
+                pass
+        try:
+            _yureeka_patch_tracker_ensure_head_v1(_pid, {"patch_id": _pid})
+        except Exception:
+            pass
+except Exception:
+    pass
+
+
+# NLP52: patch tracker entry
+try:
+    if isinstance(PATCH_TRACKER_V1, list):
+        _pid = "NLP52"
+        _existing_i = None
+        for _i, _e in enumerate(list(PATCH_TRACKER_V1)):
+            if isinstance(_e, dict) and str(_e.get("patch_id") or "") == _pid:
+                _existing_i = _i
+                break
+        _ent = {
+            "patch_id": _pid,
+            "date": "2026-02-20",
+            "title": "Hash-only LLM request fingerprints (prompt/schema versioning; replay diagnostics)",
+            "summary": [
+                "Extend _yureeka_call_openai_chat_json_v1 with optional (feature, prompt_version, schema_version) and attach request_fingerprint_v1 computed from a non-sensitive capsule that also includes query_frame_hash_v1, effective_flags_fingerprint_v1, and HYPERPARAMS_FINGERPRINT_LLM_V1.",
+                "Propagate request_fingerprint_v1 into run-scope LLM health aggregation (agg.last + ledger_events) and llm00_status_v1 so triads can verify prompt/schema stability without storing raw prompts or changing deterministic selection."
+            ],
+            "risk": "Low: hash-only diagnostics; no scoring, thresholds, caching behavior, or network calls changed."
         }
         if _existing_i is None:
             PATCH_TRACKER_V1.append(_ent)
