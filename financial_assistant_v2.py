@@ -458,7 +458,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "NLP20"
+_YUREEKA_CODE_VERSION_LOCK = "NLP22"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 # REFACTOR206: Release Candidate freeze (no pipeline behavior change).
 YUREEKA_RELEASE_CANDIDATE_V1 = False
@@ -10404,6 +10404,9 @@ def fetch_web_context(
                                 "freshness_score",
                                 "freshness_score_method",
                                 "freshness_hint_kind",
+                            "freshness_confidence_label",
+                            "freshness_method_detail",
+                            "freshness_candidate_kind",
                             ):
                                 if isinstance(_prev, dict) and kk in _prev and _prev.get(kk) not in (None, "", []):
                                     meta[kk] = _prev.get(kk)
@@ -10430,6 +10433,9 @@ def fetch_web_context(
                                         "freshness_score",
                                         "freshness_score_method",
                                         "freshness_hint_kind",
+                                    "freshness_confidence_label",
+                                    "freshness_method_detail",
+                                    "freshness_candidate_kind",
                                     ):
                                         if kk in fres:
                                             meta[kk] = fres.get(kk)
@@ -10489,6 +10495,9 @@ def fetch_web_context(
                             "freshness_score",
                             "freshness_score_method",
                             "freshness_hint_kind",
+                        "freshness_confidence_label",
+                        "freshness_method_detail",
+                        "freshness_candidate_kind",
                         ):
                             if kk in fres:
                                 meta[kk] = fres.get(kk)
@@ -11384,6 +11393,10 @@ def source_freshness_score_v1(sources: Any, web_context: dict) -> Optional[float
                                         "freshness_date_confidence",
                                         "freshness_score",
                                         "freshness_score_method",
+                                    "freshness_hint_kind",
+                                    "freshness_confidence_label",
+                                    "freshness_method_detail",
+                                    "freshness_candidate_kind",
                                     ):
                                         if kk in fres:
                                             meta[kk] = fres.get(kk)
@@ -15588,6 +15601,64 @@ def _fresh01_extract_pub_hint_from_html_v1(html: str, max_chars: int = 250000) -
         except Exception:
             pass
 
+        # NLP22: embedded JSON payloads (e.g., Next.js __NEXT_DATA__) may carry publish/modified timestamps.
+        # We treat these as high-confidence only when the key names are explicit (datePublished/dateModified/etc.).
+        try:
+            for sc in soup.find_all("script"):
+                try:
+                    if not hasattr(sc, "get"):
+                        continue
+                    sid = (sc.get("id") or "").strip()
+                    stype = (sc.get("type") or "").strip().lower()
+                    is_next = (sid == "__NEXT_DATA__") or (sid.lower() == "__next_data__")
+                    is_jsonish = stype in ("application/json", "application/json; charset=utf-8", "application/json;charset=utf-8")
+                    if not (is_next or is_jsonish):
+                        continue
+                    raw = sc.string or sc.get_text() or ""
+                    raw = str(raw or "").strip()
+                    if not raw:
+                        continue
+                    if len(raw) > 200000:
+                        continue
+                    rl = raw.lower()
+                    if ("datepublished" not in rl) and ("datemodified" not in rl) and ("publishdate" not in rl) and ("publicationdate" not in rl) and ("updatedat" not in rl) and ("modifiedat" not in rl):
+                        continue
+                    data = None
+                    try:
+                        data = json.loads(raw)
+                    except Exception:
+                        data = None
+                    if not isinstance(data, (dict, list)):
+                        continue
+                    stack = [data]
+                    seen = 0
+                    while stack and seen < 2000:
+                        cur = stack.pop()
+                        seen += 1
+                        if isinstance(cur, dict):
+                            for k, v in list(cur.items()):
+                                kl = str(k or "").strip()
+                                kll = kl.lower()
+                                if isinstance(v, str) and v.strip():
+                                    vs = v.strip()
+                                    if kll in ("datepublished", "publishdate", "publicationdate", "publishedat", "firstpublishedat"):
+                                        _add(f"json:{kl}", vs, 75, "json")
+                                    elif kll in ("datemodified", "modifiedat", "updatedat", "lastmodified", "lastmodifiedat", "lastupdated", "updated"):
+                                        _add(f"json:{kl}", vs, 82, "json")
+                                    elif kll in ("createdat", "datecreated"):
+                                        _add(f"json:{kl}", vs, 70, "json")
+                                if isinstance(v, (dict, list)):
+                                    stack.append(v)
+                        elif isinstance(cur, list):
+                            for it in cur:
+                                if isinstance(it, (dict, list)):
+                                    stack.append(it)
+                except Exception:
+                    continue
+        except Exception:
+            pass
+
+
         if not cands:
             return out
 
@@ -18659,6 +18730,10 @@ def attach_source_snapshots_to_analysis(analysis: dict, web_context: dict) -> di
                         "freshness_date_confidence",
                         "freshness_score",
                         "freshness_score_method",
+                    "freshness_hint_kind",
+                    "freshness_confidence_label",
+                    "freshness_method_detail",
+                    "freshness_candidate_kind",
                     ):
                         try:
                             # Do not overwrite non-empty existing values.
@@ -35638,6 +35713,33 @@ try:
                 "Propagate freshness confidence/method fields into strict tiebreak pool so confidence gating reflects real extraction (no drift when flags OFF).",
             ],
             "risk": "Low: deterministic-only; no winner/value changes unless already a score-tie under strict freshness rules.",
+        })
+except Exception:
+    pass
+
+
+
+
+# NLP22: patch tracker entry
+try:
+    if isinstance(PATCH_TRACKER_V1, list) and not any(str(e.get("patch_id") or "") == "NLP22" for e in PATCH_TRACKER_V1 if isinstance(e, dict)):
+        PATCH_TRACKER_V1.insert(0, {
+            "patch_id": "NLP22",
+            "date": "2026-02-20",
+            "title": "NLP22 Add embedded JSON (e.g., __NEXT_DATA__) publish/modified date extraction (high-confidence) to boost published_at coverage",
+            "notes": "Extends HTML hint extraction to parse embedded JSON payloads (Next.js __NEXT_DATA__ and generic application/json scripts) for datePublished/dateModified-like fields, improving published_at coverage while preserving strict confidence gating and deterministic behavior.",
+        })
+except Exception:
+    pass
+
+# NLP21: patch tracker entry
+try:
+    if isinstance(PATCH_TRACKER_V1, list) and not any(str(e.get("patch_id") or "") == "NLP21" for e in PATCH_TRACKER_V1 if isinstance(e, dict)):
+        PATCH_TRACKER_V1.insert(0, {
+            "patch_id": "NLP21",
+            "date": "2026-02-20",
+            "title": "NLP21 Propagate freshness confidence/method fields into cache + strict tiebreak diagnostics",
+            "notes": "Copies full freshness fields from _fresh01_compute_source_freshness_v2 into scraped_meta and baseline_sources_cache so strict tiebreak can evaluate confidence and method (no winner changes).",
         })
 except Exception:
     pass
