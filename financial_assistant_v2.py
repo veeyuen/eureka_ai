@@ -458,7 +458,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "NLP42"
+_YUREEKA_CODE_VERSION_LOCK = "NLP44"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 # REFACTOR206: Release Candidate freeze (no pipeline behavior change).
 YUREEKA_RELEASE_CANDIDATE_V1 = False
@@ -9081,6 +9081,14 @@ def _refactor116_apply_effective_timing_and_row_deltas_v1(evo_obj: Any, previous
                 except Exception:
                     res["stability_score_effective"] = _eff_stab
 
+                # NLP43: expose "percent unchanged" for the effective view (helps interpret graded stability_score).
+                try:
+                    _tm = float((_eff_summary or {}).get("total_metrics") or 0)
+                    _mu = float((_eff_summary or {}).get("metrics_unchanged") or 0)
+                    res["stability_pct_unchanged_effective"] = (round((_mu / _tm) * 100.0, 1) if _tm > 0 else None)
+                except Exception:
+                    pass
+
                 # Annotate effective summary with injection counters (for UI + audit).
                 _eff_summary["metrics_injected"] = int(gating.get("injected_rows_total") or 0)
                 _eff_summary["metrics_production"] = int(gating.get("production_rows_total") or 0)
@@ -16967,6 +16975,16 @@ def _refactor13_recompute_summary_and_stability_v1(out: dict) -> None:
             # Preserve backward compatibility: do not remove existing keys
             s.setdefault("metrics_added", added)
             s.setdefault("metrics_removed", removed)
+
+    except Exception:
+        pass
+
+    # NLP43: expose a simple "percent unchanged" alongside graded stability_score (diagnostic/UI helper).
+    try:
+        if total > 0:
+            out["stability_pct_unchanged"] = round((float(unchanged) / float(total)) * 100.0, 1)
+        else:
+            out["stability_pct_unchanged"] = None
     except Exception:
         pass
 
@@ -17084,6 +17102,7 @@ def _refactor13_recompute_summary_and_stability_v1(out: dict) -> None:
                 "metrics_increased": increased,
                 "metrics_decreased": decreased,
                 "metrics_unchanged": unchanged,
+                "pct_unchanged": (round((float(unchanged) / float(total)) * 100.0, 1) if total > 0 else None),
                 "metrics_added": added,
                 "metrics_removed": removed,
                 "stability_score": round(float(stability), 1),
@@ -26753,7 +26772,26 @@ def render_source_anchored_results(results, query: str):
     col1, col2, col3, col4 = st.columns(4)
     col1.metric("Sources Checked", sources_checked)
     col2.metric("Sources Fetched", sources_fetched)
-    col3.metric("Stability", _fmt_pct(stability))
+    # NLP44: show "unchanged %" as a companion to graded stability_score (reporting-only UI).
+    _pct_unch = results.get("stability_pct_unchanged")
+    if _pct_unch is None:
+        try:
+            _tm = _safe_int(summary.get("total_metrics"), 0)
+            if not _tm:
+                _tm = max(_safe_int(summary.get("metrics_found"), 0), 0)
+            if _tm > 0:
+                _pct_unch = (float(metrics_unch) / float(_tm)) * 100.0
+        except Exception:
+            _pct_unch = None
+
+    _delta_unch = None
+    try:
+        if _pct_unch is not None:
+            _delta_unch = f"Unchanged: {_fmt_pct(_pct_unch)}"
+    except Exception:
+        _delta_unch = None
+
+    col3.metric("Stability score", _fmt_pct(stability), delta=_delta_unch)
     _sum_eff = results.get("summary_effective") if isinstance(results.get("summary_effective"), dict) else {}
     metrics_inj = _safe_int(_sum_eff.get("metrics_injected"), injected_rows_total)
     if is_injection_run:
@@ -26770,7 +26808,23 @@ def render_source_anchored_results(results, query: str):
 
     if is_injection_run:
         if production_rows_total > 0 and (effective_stability is not None):
-            st.caption(f"Prod-only stability (excluding injected rows): {_fmt_pct(effective_stability)}")
+            _pct_unch_eff = results.get("stability_pct_unchanged_effective")
+            if _pct_unch_eff is None:
+                try:
+                    _se = _sum_eff if isinstance(_sum_eff, dict) else {}
+                    _tm_eff = _safe_int(_se.get("total_metrics"), 0)
+                    _mu_eff = _safe_int(_se.get("metrics_unchanged"), 0)
+                    if _tm_eff > 0:
+                        _pct_unch_eff = (float(_mu_eff) / float(_tm_eff)) * 100.0
+                except Exception:
+                    _pct_unch_eff = None
+            _extra = ""
+            try:
+                if _pct_unch_eff is not None:
+                    _extra = f" (unchanged: {_fmt_pct(_pct_unch_eff)})"
+            except Exception:
+                _extra = ""
+            st.caption(f"Prod-only stability (excluding injected rows): {_fmt_pct(effective_stability)}{_extra}")
         else:
             st.caption("Prod-only stability (excluding injected rows): n/a (0 production rows)")
 
@@ -36944,6 +36998,95 @@ try:
                 "Scheduled triad cadence patch (every-two-patch) following the NLP39 injection-mode stability JSON reporting fix."
             ],
             "risk": "Low: patch hygiene only; deterministic selection/diff logic unchanged."
+        }
+        if _existing_i is None:
+            PATCH_TRACKER_V1.insert(0, dict(_ent))
+        else:
+            try:
+                _ex = PATCH_TRACKER_V1[_existing_i]
+                _auto = str((_ex or {}).get("summary") or "").strip()
+                if (not (_ex or {}).get("title")):
+                    _ex["title"] = _ent.get("title")
+                if (not (_ex or {}).get("date")):
+                    _ex["date"] = _ent.get("date")
+                if (not (_ex or {}).get("risk")):
+                    _ex["risk"] = _ent.get("risk")
+                if (_auto == "(auto) head normalized to code version") or (_auto == ""):
+                    _ex["summary"] = _ent.get("summary")
+                PATCH_TRACKER_V1[_existing_i] = _ex
+            except Exception:
+                pass
+        try:
+            _yureeka_patch_tracker_ensure_head_v1(_pid, {"patch_id": _pid})
+        except Exception:
+            pass
+except Exception:
+    pass
+
+
+# NLP43: patch tracker entry
+try:
+    if isinstance(PATCH_TRACKER_V1, list):
+        _pid = "NLP43"
+        _existing_i = None
+        for _i, _e in enumerate(list(PATCH_TRACKER_V1)):
+            if isinstance(_e, dict) and str(_e.get("patch_id") or "") == _pid:
+                _existing_i = _i
+                break
+        _ent = {
+            "patch_id": _pid,
+            "date": "2026-02-20",
+            "title": "Expose stability_pct_unchanged alongside graded stability_score (reporting-only)",
+            "summary": [
+                "Add results.stability_pct_unchanged = metrics_unchanged/total_metrics*100 (simple interpretability companion to the graded stability_score).",
+                "When injection-aware stability_score_effective is emitted, also attach stability_pct_unchanged_effective for the effective view."
+            ],
+            "risk": "Low: reporting-only fields; deterministic selection/diff logic unchanged."
+        }
+        if _existing_i is None:
+            PATCH_TRACKER_V1.insert(0, dict(_ent))
+        else:
+            try:
+                _ex = PATCH_TRACKER_V1[_existing_i]
+                _auto = str((_ex or {}).get("summary") or "").strip()
+                if (not (_ex or {}).get("title")):
+                    _ex["title"] = _ent.get("title")
+                if (not (_ex or {}).get("date")):
+                    _ex["date"] = _ent.get("date")
+                if (not (_ex or {}).get("risk")):
+                    _ex["risk"] = _ent.get("risk")
+                if (_auto == "(auto) head normalized to code version") or (_auto == ""):
+                    _ex["summary"] = _ent.get("summary")
+                PATCH_TRACKER_V1[_existing_i] = _ex
+            except Exception:
+                pass
+        try:
+            _yureeka_patch_tracker_ensure_head_v1(_pid, {"patch_id": _pid})
+        except Exception:
+            pass
+except Exception:
+    pass
+
+
+
+# NLP44: patch tracker entry
+try:
+    if isinstance(PATCH_TRACKER_V1, list):
+        _pid = "NLP44"
+        _existing_i = None
+        for _i, _e in enumerate(list(PATCH_TRACKER_V1)):
+            if isinstance(_e, dict) and str(_e.get("patch_id") or "") == _pid:
+                _existing_i = _i
+                break
+        _ent = {
+            "patch_id": _pid,
+            "date": "2026-02-20",
+            "title": "Evolution UI: show unchanged % alongside graded stability score (reporting-only)",
+            "summary": [
+                "In Source-Anchored Evolution UI, show a delta line 'Unchanged: X%' next to the graded stability_score to avoid confusion between magnitude-based stability and metric-count stability.",
+                "When injection-mode prod-only stability caption is shown, also include prod-only unchanged % when available."
+            ],
+            "risk": "Low: UI/reporting-only; deterministic selection/diff logic unchanged."
         }
         if _existing_i is None:
             PATCH_TRACKER_V1.insert(0, dict(_ent))
