@@ -458,7 +458,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "NLP28"
+_YUREEKA_CODE_VERSION_LOCK = "NLP30"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 # REFACTOR206: Release Candidate freeze (no pipeline behavior change).
 YUREEKA_RELEASE_CANDIDATE_V1 = False
@@ -15159,6 +15159,15 @@ def fetch_url_content_with_status(url: str, timeout: int = 25, force_pdf: bool =
                 re.search(r"(?is)<(div|span|p|article|main|section|header|footer|nav|script|style)\b", _rf120_raw[:2000] or "")
             )
             if _rf120_looks_html:
+                # NLP29: capture publish/updated date hints from raw HTML before stripping.
+                try:
+                    _ph = _fresh01_extract_pub_hint_from_html_v1(_rf120_raw or "")
+                    if isinstance(_ph, dict) and str(_ph.get("published_at") or "").strip():
+                        _cache = globals().get("_FRESH01_PUB_HINT_CACHE_V1")
+                        if isinstance(_cache, dict):
+                            _cache[_normalize_url(url) or str(url or "").strip()] = dict(_ph)
+                except Exception:
+                    pass
                 _rf120_txt = ""
                 try:
                     soup = BeautifulSoup(_rf120_raw, "html.parser")
@@ -16265,8 +16274,37 @@ def _fresh01_compute_source_freshness_v2(text: str, fetched_at: str = "", url: s
                 return out
         dt = best["dt"].astimezone(timezone.utc)
         out["published_at"] = _fresh01__norm_iso_date_v1(dt)
-        out["freshness_method"] = "html_hint_v1" if (best is best_hint) else "regex_v1"
-        out["freshness_hint_kind"] = str(best.get("_hint_kind") or "") if (best is best_hint) else ""
+
+        # NLP29: classify freshness method more precisely for diagnostics (no behavior impact).
+        _kind = str(best.get("kind") or "")
+        if best is best_hint:
+            out["freshness_method"] = "html_hint_v1"
+            out["freshness_hint_kind"] = str(best.get("_hint_kind") or "")
+            # Provide a more specific method_detail family when possible.
+            try:
+                if not str(out.get("freshness_method_detail") or "").strip():
+                    hk = str(out.get("freshness_hint_kind") or "").lower()
+                    if hk.startswith("meta:"):
+                        out["freshness_method_detail"] = "meta_v1"
+                    elif hk.startswith("time:"):
+                        out["freshness_method_detail"] = "time_v1"
+                    elif hk.startswith("ldjson:") or hk.startswith("jsonld:"):
+                        out["freshness_method_detail"] = "jsonld_v1"
+                    elif hk.startswith("node:"):
+                        out["freshness_method_detail"] = "node_v1"
+                    else:
+                        out["freshness_method_detail"] = "html_hint_v1"
+            except Exception:
+                pass
+        elif _kind.startswith("url"):
+            out["freshness_method"] = "url_v1"
+            out["freshness_hint_kind"] = ""
+        elif _kind == "cache":
+            out["freshness_method"] = "cache_v1"
+            out["freshness_hint_kind"] = ""
+        else:
+            out["freshness_method"] = "regex_v1"
+            out["freshness_hint_kind"] = ""
 
         # NLP14: method detail + candidate kind (diagnostic-only)
         try:
@@ -19177,7 +19215,7 @@ def attach_source_snapshots_to_analysis(analysis: dict, web_context: dict) -> di
                                 # FRESH01: compute freshness for schema-seeded sources (diagnostic-only)
                                 try:
                                     _fa_seed = _yureeka_now_iso_v1()
-                                    _fresh_seed = _fresh01_compute_source_freshness_v1(_txt or "", fetched_at=_fa_seed)
+                                    _fresh_seed = _fresh01_compute_source_freshness_v1(_txt or "", fetched_at=_fa_seed, url=str(_u_norm or ""))
                                 except Exception:
                                     _fa_seed = _yureeka_now_iso_v1()
                                     _fresh_seed = {}
@@ -19199,6 +19237,13 @@ def attach_source_snapshots_to_analysis(analysis: dict, web_context: dict) -> di
                                     "freshness_age_days": (_fresh_seed.get("freshness_age_days") if isinstance(_fresh_seed, dict) else None),
                                     "freshness_bucket": (_fresh_seed.get("freshness_bucket") if isinstance(_fresh_seed, dict) else ""),
                                     "freshness_method": (_fresh_seed.get("freshness_method") if isinstance(_fresh_seed, dict) else "none"),
+                                    "freshness_hint_kind": (_fresh_seed.get("freshness_hint_kind") if isinstance(_fresh_seed, dict) else ""),
+                                    "freshness_date_confidence": (_fresh_seed.get("freshness_date_confidence") if isinstance(_fresh_seed, dict) else None),
+                                    "freshness_score": (_fresh_seed.get("freshness_score") if isinstance(_fresh_seed, dict) else None),
+                                    "freshness_score_method": (_fresh_seed.get("freshness_score_method") if isinstance(_fresh_seed, dict) else "none"),
+                                    "freshness_confidence_label": (_fresh_seed.get("freshness_confidence_label") if isinstance(_fresh_seed, dict) else ""),
+                                    "freshness_method_detail": (_fresh_seed.get("freshness_method_detail") if isinstance(_fresh_seed, dict) else ""),
+                                    "freshness_candidate_kind": (_fresh_seed.get("freshness_candidate_kind") if isinstance(_fresh_seed, dict) else ""),
                                 })
                                 _existing.add(_u_norm)
                                 _rf115_added.append(_u_norm)
@@ -19217,7 +19262,7 @@ def attach_source_snapshots_to_analysis(analysis: dict, web_context: dict) -> di
                                 # FRESH01: compute freshness for schema-seeded placeholder sources (diagnostic-only)
                                 try:
                                     _fa_seed2 = _yureeka_now_iso_v1()
-                                    _fresh_seed2 = _fresh01_compute_source_freshness_v1("", fetched_at=_fa_seed2)
+                                    _fresh_seed2 = _fresh01_compute_source_freshness_v1("", fetched_at=_fa_seed2, url=str(_u_norm or ""))
                                 except Exception:
                                     _fa_seed2 = _yureeka_now_iso_v1()
                                     _fresh_seed2 = {}
@@ -19242,6 +19287,10 @@ def attach_source_snapshots_to_analysis(analysis: dict, web_context: dict) -> di
                                     "freshness_date_confidence": (_fresh_seed2.get("freshness_date_confidence") if isinstance(_fresh_seed2, dict) else None),
                                     "freshness_score": (_fresh_seed2.get("freshness_score") if isinstance(_fresh_seed2, dict) else None),
                                     "freshness_score_method": (_fresh_seed2.get("freshness_score_method") if isinstance(_fresh_seed2, dict) else "none"),
+                                    "freshness_hint_kind": (_fresh_seed2.get("freshness_hint_kind") if isinstance(_fresh_seed2, dict) else ""),
+                                    "freshness_confidence_label": (_fresh_seed2.get("freshness_confidence_label") if isinstance(_fresh_seed2, dict) else ""),
+                                    "freshness_method_detail": (_fresh_seed2.get("freshness_method_detail") if isinstance(_fresh_seed2, dict) else ""),
+                                    "freshness_candidate_kind": (_fresh_seed2.get("freshness_candidate_kind") if isinstance(_fresh_seed2, dict) else ""),
                                 })
                                 _existing.add(_u_norm)
                                 _rf115_added.append(_u_norm)
@@ -19413,7 +19462,7 @@ def attach_source_snapshots_to_analysis(analysis: dict, web_context: dict) -> di
                     pass
 
                 try:
-                    analysis["debug"]["fresh03_method_counts_v1"] = _fresh03_method_counts_v1(baseline_sources_cache or [])
+                    analysis["debug"]["fresh03_method_counts_v1"] = _fresh03_method_counts_v1(_pool or [])
                 except Exception:
                     pass
 
@@ -36063,6 +36112,42 @@ try:
 except Exception:
     pass
 
+
+
+
+# NLP30: patch tracker entry
+try:
+    if isinstance(PATCH_TRACKER_V1, list) and not any(str(e.get("patch_id") or "") == "NLP30" for e in PATCH_TRACKER_V1 if isinstance(e, dict)):
+        PATCH_TRACKER_V1.insert(0, {
+            "patch_id": "NLP30",
+            "date": "2026-02-20",
+            "title": "NLP30 Align method histogram + strict pool diagnostics to normalized freshness pool",
+            "summary": [
+                "Compute fresh03_method_counts_v1 from the normalized freshness pool used by aggregation/selection (avoid stale baseline cache fields in diagnostics).",
+                "Keeps strict tiebreak gate unchanged; no deterministic selection/diff logic changes when flags are OFF.",
+                "Patch hygiene: bump CODE_VERSION and register patch tracker entry."
+            ],
+            "risk": "Low: diagnostics alignment only; intended to reduce 'unknown' method counts and improve auditability."
+        })
+except Exception:
+    pass
+
+# NLP29: patch tracker entry
+try:
+    if isinstance(PATCH_TRACKER_V1, list) and not any(str(e.get("patch_id") or "") == "NLP29" for e in PATCH_TRACKER_V1 if isinstance(e, dict)):
+        PATCH_TRACKER_V1.insert(0, {
+            "patch_id": "NLP29",
+            "date": "2026-02-20",
+            "title": "NLP29 Apply freshness extraction to schema-seeded sources + cache pub-hints in fetch_url_content_with_status",
+            "summary": [
+                "When building schema-seeded source records, call _fresh01_compute_source_freshness_v2 with url=... so URL-date fallbacks + cached HTML hints can be used (coverage boost, deterministic).",
+                "In fetch_url_content_with_status, capture publish/updated date hints from raw HTML (meta/<time>/JSON-LD) and store into _FRESH01_PUB_HINT_CACHE_V1 for later freshness scoring.",
+                "Refine freshness_method classification for diagnostics (url_v1/cache_v1/html_hint_v1/regex_v1) without changing strict gate thresholds or winner selection rules."
+            ],
+            "risk": "Low: diagnostic + coverage plumbing only; strict tiebreak gate unchanged; winners change only if already in deterministic score-tie.",
+        })
+except Exception:
+    pass
 
 
 # NLP27: patch tracker entry
