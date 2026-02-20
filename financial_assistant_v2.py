@@ -458,7 +458,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "NLP32"
+_YUREEKA_CODE_VERSION_LOCK = "NLP34"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 # REFACTOR206: Release Candidate freeze (no pipeline behavior change).
 YUREEKA_RELEASE_CANDIDATE_V1 = False
@@ -15532,6 +15532,38 @@ def _fresh01_extract_pub_hint_from_html_v1(html: str, max_chars: int = 250000) -
         except Exception:
             pass
 
+
+        # 1b) Microdata itemprop (schema.org): datePublished/dateModified/dateCreated across any tag.
+        # High-confidence when keys are explicit; deterministic parse from already-fetched HTML only.
+        try:
+            ip_weights = {
+                "datepublished": 80,
+                "datemodified": 85,
+                "datecreated": 75,
+                "dateupdated": 80,
+            }
+            for ip_tag in soup.find_all(attrs={"itemprop": True}, limit=1500):
+                try:
+                    if not hasattr(ip_tag, "get"):
+                        continue
+                    ip = (ip_tag.get("itemprop") or "").strip().lower()
+                    if ip not in ip_weights:
+                        continue
+                    raw = (ip_tag.get("content") or ip_tag.get("datetime") or "").strip()
+                    if not raw:
+                        try:
+                            txt = (ip_tag.get_text(" ", strip=True) or "").strip()
+                            if txt and len(txt) <= 80 and re.search(r"20\d{2}", txt):
+                                raw = txt
+                        except Exception:
+                            raw = ""
+                    if raw:
+                        _add(f"itemprop:{ip}", raw, int(ip_weights.get(ip) or 50), "itemprop")
+                except Exception:
+                    continue
+        except Exception:
+            pass
+
         # 2) <time ...> tags: prefer datetime attr, but also fall back to short inner-text
         try:
             for ttag in soup.find_all("time"):
@@ -15996,6 +16028,17 @@ def _fresh01_pick_best_candidate_v1(cands: list, fetched_at: str = "") -> Option
         if pos <= 600:
             heur += 1
 
+
+        # NLP33: Unambiguous numeric dates (dmy_num/mdy_num) are structurally strong even without nearby labels.
+        # We promote only the weakest cases (heur==0) to "header-only" confidence (0.75) to allow strict tiebreak gating
+        # without relaxing any thresholds.
+        try:
+            if int(heur or 0) == 0:
+                _knd = str(c.get("kind") or "").strip().lower()
+                if _knd in ("dmy_num", "mdy_num"):
+                    heur = 1
+        except Exception:
+            pass
         key = (heur, dt, -pos)
         if (best_key is None) or (key > best_key):
             best_key = key
@@ -36149,6 +36192,42 @@ except Exception:
 
 
 
+
+# NLP34: patch tracker entry
+try:
+    if isinstance(PATCH_TRACKER_V1, list) and not any(str(e.get("patch_id") or "") == "NLP34" for e in PATCH_TRACKER_V1 if isinstance(e, dict)):
+        PATCH_TRACKER_V1.insert(0, {
+            "patch_id": "NLP34",
+            "date": "2026-02-20",
+            "title": "NLP34 Freshness extraction: add microdata itemprop datePublished/dateModified parsing (high confidence)",
+            "summary": [
+                "Extend HTML publish-date hint extraction to include schema.org microdata itemprop fields (datePublished/dateModified/dateCreated) from any tag (content/datetime/text).",
+                "Treat itemprop sources as high-confidence (comparable to meta/JSON-LD) without changing strict tie-break thresholds; improves published_at coverage and reduces low-confidence blocks safely.",
+                "Patch hygiene: bump CODE_VERSION and register patch tracker entry."
+            ],
+            "risk": "Low: additive, deterministic extraction channel using explicit schema.org itemprop keys; no gate relaxation."
+        })
+except Exception:
+    pass
+
+
+# NLP33: patch tracker entry
+try:
+    if isinstance(PATCH_TRACKER_V1, list) and not any(str(e.get("patch_id") or "") == "NLP33" for e in PATCH_TRACKER_V1 if isinstance(e, dict)):
+        PATCH_TRACKER_V1.insert(0, {
+            "patch_id": "NLP33",
+            "date": "2026-02-20",
+            "title": "NLP33 Freshness confidence: promote unambiguous numeric dates to header-only confidence",
+            "summary": [
+                "Promote unambiguous numeric D/M/Y and M/D/Y patterns (dmy_num/mdy_num) from generic 0.70 to header-only 0.75 confidence when no other publish/update context is found (heur==0).",
+                "This targets the remaining strict tiebreak blocker (score_tie_blocked_low_confidence) without relaxing gates; it only affects strict freshness tie-break engagement on already-exact score ties.",
+                "Patch hygiene: bump CODE_VERSION and register patch tracker entry."
+            ],
+            "risk": "Low: narrow, unambiguous date-class confidence tweak; deterministic winners/values unchanged except within legitimate score-tie strict tiebreak paths."
+        })
+except Exception:
+    pass
+
 # NLP32: patch tracker entry
 try:
     if isinstance(PATCH_TRACKER_V1, list) and not any(str(e.get("patch_id") or "") == "NLP32" for e in PATCH_TRACKER_V1 if isinstance(e, dict)):
@@ -36327,5 +36406,15 @@ try:
             ],
             "risk": "low",
         })
+except Exception:
+    pass
+
+
+# PATCH_TRACKER tail normalization (v1) — ensure head matches CODE_VERSION after all patch tracker inserts
+# (Additive; preserves existing entries and does not affect deterministic selection/diff logic.)
+try:
+    _cv = str(_yureeka_get_code_version() or "").strip()
+    if _cv:
+        _yureeka_patch_tracker_ensure_head_v1(_cv, {"patch_id": _cv})
 except Exception:
     pass
