@@ -458,7 +458,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "NLP40"
+_YUREEKA_CODE_VERSION_LOCK = "NLP42"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 # REFACTOR206: Release Candidate freeze (no pipeline behavior change).
 YUREEKA_RELEASE_CANDIDATE_V1 = False
@@ -5058,6 +5058,33 @@ def _yureeka_endstate_check_v1(stage: str, analysis_wrapper: dict = None, evolut
         except Exception:
             stage_kind = "analysis"
     checks["stage_kind"] = stage_kind
+
+    # --- Freshness feature flags (NLP42) ---
+    # Additive diagnostics only: record effective enablement state so greps can distinguish
+    # "disabled intentionally" from "regressed". Does not affect deterministic logic.
+    try:
+        _fn = globals().get("_yureeka_llm_flag_effective_v1")
+        if callable(_fn):
+            _fe, _fe_src = _fn("ENABLE_SOURCE_FRESHNESS")
+            _ft, _ft_src = _fn("ENABLE_SOURCE_FRESHNESS_TIEBREAK")
+        else:
+            _fe = bool(globals().get("ENABLE_SOURCE_FRESHNESS", True))
+            _ft = bool(globals().get("ENABLE_SOURCE_FRESHNESS_TIEBREAK", True))
+            _fe_src = "globals"
+            _ft_src = "globals"
+        checks["freshness_enabled"] = bool(_fe)
+        checks["freshness_enabled_src"] = str(_fe_src or "")
+        checks["freshness_tiebreak_requested"] = bool(_ft)
+        checks["freshness_tiebreak_enabled"] = (bool(_ft) and bool(_fe))
+        if not bool(_fe):
+            checks["freshness_tiebreak_disabled_reason"] = "freshness_disabled"
+        elif not bool(_ft):
+            checks["freshness_tiebreak_disabled_reason"] = "tiebreak_flag_off"
+        else:
+            checks["freshness_tiebreak_disabled_reason"] = ""
+    except Exception:
+        pass
+
 
     # --- Analysis-side checks ---
     if stage_kind == "analysis":
@@ -9791,7 +9818,16 @@ def scrape_url(url: str) -> Optional[str]:
             # NLP10: store publish-date hint (if found) into global cache for later freshness scoring.
             try:
                 _cache = globals().get("_FRESH01_PUB_HINT_CACHE_V1")
-                if isinstance(_cache, dict) and isinstance(pub_hint, dict) and str(pub_hint.get("published_at") or "").strip():
+                _fresh_enabled = True
+                try:
+                    fn2 = globals().get("_yureeka_llm_flag_effective_v1")
+                    if callable(fn2):
+                        _fresh_enabled = bool(fn2("ENABLE_SOURCE_FRESHNESS")[0])
+                    else:
+                        _fresh_enabled = bool(globals().get("ENABLE_SOURCE_FRESHNESS", True))
+                except Exception:
+                    _fresh_enabled = bool(globals().get("ENABLE_SOURCE_FRESHNESS", True))
+                if _fresh_enabled and isinstance(_cache, dict) and isinstance(pub_hint, dict) and str(pub_hint.get("published_at") or "").strip():
                     _cache[_normalize_url(u) or str(u or "").strip()] = dict(pub_hint)
             except Exception:
                 pass
@@ -9813,7 +9849,16 @@ def scrape_url(url: str) -> Optional[str]:
                 # NLP10: store publish-date hint (if found) into global cache for later freshness scoring.
                 try:
                     _cache = globals().get("_FRESH01_PUB_HINT_CACHE_V1")
-                    if isinstance(_cache, dict) and isinstance(pub_hint, dict) and str(pub_hint.get("published_at") or "").strip():
+                    _fresh_enabled = True
+                    try:
+                        fn2 = globals().get("_yureeka_llm_flag_effective_v1")
+                        if callable(fn2):
+                            _fresh_enabled = bool(fn2("ENABLE_SOURCE_FRESHNESS")[0])
+                        else:
+                            _fresh_enabled = bool(globals().get("ENABLE_SOURCE_FRESHNESS", True))
+                    except Exception:
+                        _fresh_enabled = bool(globals().get("ENABLE_SOURCE_FRESHNESS", True))
+                    if _fresh_enabled and isinstance(_cache, dict) and isinstance(pub_hint, dict) and str(pub_hint.get("published_at") or "").strip():
                         _cache[_normalize_url(url_s) or str(url_s or "").strip()] = dict(pub_hint)
                 except Exception:
                     pass
@@ -15295,6 +15340,10 @@ def _yureeka_now_iso_utc() -> str:
 # - Does NOT change metric winners/values unless ENABLE_SOURCE_FRESHNESS_TIEBREAK is explicitly enabled.
 # =============================================================================
 
+# Default ON: additive-only publish-date extraction + scoring beacons.
+# Set to False to fully disable freshness extraction/attachment.
+ENABLE_SOURCE_FRESHNESS = True
+
 # Default OFF: baseline REFACTOR206/LLM series behavior unchanged (selection remains schema/year-anchor driven).
 ENABLE_SOURCE_FRESHNESS_TIEBREAK = False
 
@@ -16228,6 +16277,28 @@ def _fresh01_compute_source_freshness_v2(text: str, fetched_at: str = "", url: s
         "freshness_method_detail": "",      # url_fallback_v1 / cached_prev_v1 / ""
         "freshness_candidate_kind": "",     # hint / regex / url / cache (diagnostic)
     }
+    # NLP41: master freshness kill-switch (deterministic, no network changes).
+    # When disabled, return an empty freshness payload (keeps schema stable; avoids drift).
+    _fresh_enabled = True
+    _fresh_enabled_src = "code:ENABLE_SOURCE_FRESHNESS"
+    try:
+        fn = globals().get("_yureeka_llm_flag_effective_v1")
+        if callable(fn):
+            _fresh_enabled, _fresh_enabled_src = fn("ENABLE_SOURCE_FRESHNESS")
+        else:
+            _fresh_enabled = bool(globals().get("ENABLE_SOURCE_FRESHNESS", True))
+    except Exception:
+        _fresh_enabled = bool(globals().get("ENABLE_SOURCE_FRESHNESS", True))
+    if not _fresh_enabled:
+        try:
+            out["freshness_method"] = "disabled"
+            out["freshness_score_method"] = "disabled"
+            out["freshness_method_detail"] = "disabled:" + str(_fresh_enabled_src or "")
+            out["freshness_candidate_kind"] = "disabled"
+        except Exception:
+            pass
+        return out
+
     try:
         # Two-pass scan: prefer header-area dates; widen scan only when none found.
         cands = _fresh01_extract_date_candidates_v1(text, max_scan=5200)
@@ -28284,6 +28355,45 @@ def main():
 
             )
 
+
+        with col_opt2:
+            with st.expander("Advanced: freshness", expanded=False):
+                try:
+                    _ss = st.session_state
+                    if not isinstance(_ss.get("YUREEKA_FLAGS"), dict):
+                        _ss["YUREEKA_FLAGS"] = {}
+                    _ui_flags = _ss.get("YUREEKA_FLAGS") or {}
+                except Exception:
+                    _ui_flags = {}
+
+                def _ui_flag_checkbox_tab1(flag: str, label: str, default: bool = False, help: str = "") -> None:
+                    try:
+                        if isinstance(_ui_flags, dict) and (flag in _ui_flags):
+                            cur = bool(_ui_flags.get(flag))
+                        else:
+                            try:
+                                cur = bool(_yureeka_llm_flag_effective_v1(flag)[0])
+                            except Exception:
+                                cur = bool(default)
+                        val = st.checkbox(label, value=cur, key=f"ui_tab1_flag_{flag}", help=help)
+                        if isinstance(_ui_flags, dict):
+                            _ui_flags[flag] = bool(val)
+                    except Exception:
+                        pass
+
+                _ui_flag_checkbox_tab1(
+                    "ENABLE_SOURCE_FRESHNESS",
+                    "Enable source freshness extraction",
+                    default=bool(globals().get("ENABLE_SOURCE_FRESHNESS", True)),
+                    help="When OFF, publish-date hints and freshness scores are not computed/attached."
+                )
+                _ui_flag_checkbox_tab1(
+                    "ENABLE_SOURCE_FRESHNESS_TIEBREAK",
+                    "Enable strict freshness tie-break",
+                    default=bool(globals().get("ENABLE_SOURCE_FRESHNESS_TIEBREAK", False)),
+                    help="When ON, resolves exact score ties using freshness signals (still conservative; requires freshness extraction)."
+                )
+
         if st.button("🔍 Analyze", type="primary") and query:
             if len(query.strip()) < 5:
                 st.error("❌ Please enter a question with at least 5 characters")
@@ -28706,6 +28816,48 @@ def main():
                 key="ui_enable_fastpath_toggle",
                 help="Advanced: allows reuse of unchanged evolution results to reduce fetch/load. Automatically bypassed in injection mode."
             )
+
+            st.markdown("---")
+            st.subheader("🗓️ Source freshness (optional)")
+            st.caption("Deterministic publish-date extraction for diagnostics + optional strict tie-break on exact score ties.")
+
+            try:
+                _ss = st.session_state
+                if not isinstance(_ss.get("YUREEKA_FLAGS"), dict):
+                    _ss["YUREEKA_FLAGS"] = {}
+                _ui_flags = _ss.get("YUREEKA_FLAGS") or {}
+            except Exception:
+                _ui_flags = {}
+
+            def _ui_flag_checkbox(flag: str, label: str, default: bool = False, help: str = "") -> None:
+                try:
+                    # If user explicitly set it in-session, respect it; otherwise respect env/secrets/code defaults.
+                    if isinstance(_ui_flags, dict) and (flag in _ui_flags):
+                        cur = bool(_ui_flags.get(flag))
+                    else:
+                        try:
+                            cur = bool(_yureeka_llm_flag_effective_v1(flag)[0])
+                        except Exception:
+                            cur = bool(default)
+                    val = st.checkbox(label, value=cur, key=f"ui_flag_{flag}", help=help)
+                    if isinstance(_ui_flags, dict):
+                        _ui_flags[flag] = bool(val)
+                except Exception:
+                    pass
+
+            with st.expander("Freshness controls", expanded=False):
+                _ui_flag_checkbox(
+                    "ENABLE_SOURCE_FRESHNESS",
+                    "Enable source freshness extraction (attach published_at)",
+                    default=bool(globals().get("ENABLE_SOURCE_FRESHNESS", True)),
+                    help="When OFF, publish-date hints and freshness scores are not computed/attached."
+                )
+                _ui_flag_checkbox(
+                    "ENABLE_SOURCE_FRESHNESS_TIEBREAK",
+                    "Enable strict freshness tie-break on exact score ties",
+                    default=bool(globals().get("ENABLE_SOURCE_FRESHNESS_TIEBREAK", False)),
+                    help="When ON, resolves exact score ties using freshness signals (still conservative; requires freshness extraction)."
+                )
 
             st.markdown("---")
             st.subheader("🧠 LLM Sidecar (experimental)")
@@ -30941,15 +31093,21 @@ def _fresh02_candidate_tie_key_v1(c: dict) -> tuple:
     try:
         # Only active when the explicit flag is enabled.
         enabled = False
+        enabled_src = "code:ENABLE_SOURCE_FRESHNESS_TIEBREAK"
+        fresh_enabled = True
+        fresh_src = "code:ENABLE_SOURCE_FRESHNESS"
         try:
             fn = globals().get("_yureeka_llm_flag_effective_v1")
             if callable(fn):
-                enabled = bool(fn("ENABLE_SOURCE_FRESHNESS_TIEBREAK")[0])
+                enabled, enabled_src = fn("ENABLE_SOURCE_FRESHNESS_TIEBREAK")
+                fresh_enabled, fresh_src = fn("ENABLE_SOURCE_FRESHNESS")
             else:
                 enabled = bool(globals().get("ENABLE_SOURCE_FRESHNESS_TIEBREAK"))
+                fresh_enabled = bool(globals().get("ENABLE_SOURCE_FRESHNESS", True))
         except Exception:
             enabled = bool(globals().get("ENABLE_SOURCE_FRESHNESS_TIEBREAK"))
-        if not enabled or not isinstance(c, dict):
+            fresh_enabled = bool(globals().get("ENABLE_SOURCE_FRESHNESS", True))
+        if (not enabled) or (not fresh_enabled) or (not isinstance(c, dict)):
             return tuple()
 
         sc = c.get("freshness_score")
@@ -32796,15 +32954,26 @@ def _refactor28_schema_only_rebuild_authoritative_v1(
     candidates.sort(key=_cand_sort_key)
     # FRESH02: optional deterministic freshness tie-break (default OFF).
     # When enabled (ENABLE_SOURCE_FRESHNESS_TIEBREAK), ties on keyword-hit score will prefer fresher sources.
+    # NLP41: tie-break also requires master freshness enable (ENABLE_SOURCE_FRESHNESS).
     _fresh02_enabled = False
     _fresh02_src = "code:ENABLE_SOURCE_FRESHNESS_TIEBREAK"
+    _fresh01_enabled = True
+    _fresh01_src = "code:ENABLE_SOURCE_FRESHNESS"
     try:
         _fresh02_enabled, _fresh02_src = _yureeka_llm_flag_effective_v1("ENABLE_SOURCE_FRESHNESS_TIEBREAK")
+        _fresh01_enabled, _fresh01_src = _yureeka_llm_flag_effective_v1("ENABLE_SOURCE_FRESHNESS")
     except Exception:
         try:
             _fresh02_enabled = bool(globals().get("ENABLE_SOURCE_FRESHNESS_TIEBREAK"))
         except Exception:
             _fresh02_enabled = False
+        try:
+            _fresh01_enabled = bool(globals().get("ENABLE_SOURCE_FRESHNESS", True))
+        except Exception:
+            _fresh01_enabled = True
+    if not _fresh01_enabled:
+        _fresh02_enabled = False
+        _fresh02_src = "disabled_by:ENABLE_SOURCE_FRESHNESS(" + str(_fresh01_src or "") + ")"
 
     _fresh02_url2meta = {}
     _fresh02_sources_indexed = 0
@@ -36283,6 +36452,97 @@ try:
 except Exception:
     pass
 
+
+
+
+
+
+# NLP42: patch tracker entry
+try:
+    if isinstance(PATCH_TRACKER_V1, list):
+        _pid = "NLP42"
+        _existing_i = None
+        for _i, _e in enumerate(list(PATCH_TRACKER_V1)):
+            if isinstance(_e, dict) and str(_e.get("patch_id") or "") == _pid:
+                _existing_i = _i
+                break
+        _ent = {
+            "patch_id": _pid,
+            "date": "2026-02-20",
+            "title": "Endstate checks expose freshness enablement state (diagnostic-only)",
+            "summary": [
+                "Add a compact freshness flag beacon into _yureeka_endstate_check_v1: freshness_enabled, tiebreak_requested, and tiebreak_enabled (effective).",
+                "Helps triage by distinguishing intentional feature disablement from regressions, without changing deterministic selection/diff behavior."
+            ],
+            "risk": "low"
+        }
+        if _existing_i is None:
+            PATCH_TRACKER_V1.insert(0, dict(_ent))
+        else:
+            try:
+                _ex = PATCH_TRACKER_V1[_existing_i]
+                _auto = str((_ex or {}).get("summary") or "").strip()
+                if (not (_ex or {}).get("title")):
+                    _ex["title"] = _ent.get("title")
+                if (not (_ex or {}).get("date")):
+                    _ex["date"] = _ent.get("date")
+                if (not (_ex or {}).get("risk")):
+                    _ex["risk"] = _ent.get("risk")
+                if (_auto == "(auto) head normalized to code version") or (_auto == ""):
+                    _ex["summary"] = _ent.get("summary")
+                PATCH_TRACKER_V1[_existing_i] = _ex
+            except Exception:
+                pass
+        try:
+            _yureeka_patch_tracker_ensure_head_v1(_pid, {"patch_id": _pid})
+        except Exception:
+            pass
+except Exception:
+    pass
+
+# NLP41: patch tracker entry
+try:
+    if isinstance(PATCH_TRACKER_V1, list):
+        _pid = "NLP41"
+        _existing_i = None
+        for _i, _e in enumerate(list(PATCH_TRACKER_V1)):
+            if isinstance(_e, dict) and str(_e.get("patch_id") or "") == _pid:
+                _existing_i = _i
+                break
+        _ent = {
+            "patch_id": _pid,
+            "date": "2026-02-20",
+            "title": "Add master freshness kill-switch + UI toggles (attach + strict tie-break), preserve conservative gates",
+            "summary": [
+                "Introduce ENABLE_SOURCE_FRESHNESS (default ON) as a master switch to disable all publish-date hint caching + freshness scoring/attachment when desired.",
+                "Expose Streamlit UI toggles (tab1 Advanced + evolution sidebar) for ENABLE_SOURCE_FRESHNESS and ENABLE_SOURCE_FRESHNESS_TIEBREAK; defaults preserve current behavior.",
+                "Ensure strict freshness tie-break only engages when BOTH ENABLE_SOURCE_FRESHNESS_TIEBREAK and ENABLE_SOURCE_FRESHNESS are enabled; keeps conservative thresholds unchanged and preserves REFACTOR206 frozen winners/values when assist flags are OFF."
+            ],
+            "risk": "low"
+        }
+        if _existing_i is None:
+            PATCH_TRACKER_V1.insert(0, dict(_ent))
+        else:
+            try:
+                _ex = PATCH_TRACKER_V1[_existing_i]
+                _auto = str((_ex or {}).get("summary") or "").strip()
+                if (not (_ex or {}).get("title")):
+                    _ex["title"] = _ent.get("title")
+                if (not (_ex or {}).get("date")):
+                    _ex["date"] = _ent.get("date")
+                if (not (_ex or {}).get("risk")):
+                    _ex["risk"] = _ent.get("risk")
+                if (_auto == "(auto) head normalized to code version") or (_auto == ""):
+                    _ex["summary"] = _ent.get("summary")
+                PATCH_TRACKER_V1[_existing_i] = _ex
+            except Exception:
+                pass
+        try:
+            _yureeka_patch_tracker_ensure_head_v1(_pid, {"patch_id": _pid})
+        except Exception:
+            pass
+except Exception:
+    pass
 
 
 # NLP39: patch tracker entry
