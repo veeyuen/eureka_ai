@@ -458,7 +458,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "NLP44"
+_YUREEKA_CODE_VERSION_LOCK = "NLP46"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 # REFACTOR206: Release Candidate freeze (no pipeline behavior change).
 YUREEKA_RELEASE_CANDIDATE_V1 = False
@@ -5185,14 +5185,37 @@ def _yureeka_endstate_check_v1(stage: str, analysis_wrapper: dict = None, evolut
             except Exception:
                 inj_hits = 0
 
+
             dbg_inj = None
             dbg_suppress = None
+            dbg_inj_urls_sample = []
             try:
-                _dbg = (ew or {}).get("debug")
-                if not isinstance(_dbg, dict):
-                    rr = (ew or {}).get("results")
-                    _dbg = rr.get("debug") if isinstance(rr, dict) else None
-                if isinstance(_dbg, dict):
+                # Prefer inner results.debug (runtime beacons) over outer wrapper debug (often hyperparams-only).
+                _dbg_candidates = []
+                _d0 = (ew or {}).get("debug")
+                if isinstance(_d0, dict):
+                    _dbg_candidates.append(_d0)
+
+                rr = (ew or {}).get("results")
+                if isinstance(rr, dict):
+                    _d1 = rr.get("debug")
+                    if isinstance(_d1, dict):
+                        _dbg_candidates.append(_d1)
+                    rr2 = rr.get("results")
+                    if isinstance(rr2, dict):
+                        _d2 = rr2.get("debug")
+                        if isinstance(_d2, dict):
+                            _dbg_candidates.append(_d2)
+
+                _dbg = {}
+                for _d in _dbg_candidates:
+                    try:
+                        if isinstance(_d, dict):
+                            _dbg.update(_d)
+                    except Exception:
+                        pass
+
+                if isinstance(_dbg, dict) and _dbg:
                     # injection present
                     try:
                         rt = _dbg.get("run_timing_v1")
@@ -5214,12 +5237,29 @@ def _yureeka_endstate_check_v1(stage: str, analysis_wrapper: dict = None, evolut
                             dbg_inj = bool(rdg.get("injection_run"))
                         if isinstance(rdg, dict) and rdg.get("injection_run_force_blank_rows") is not None:
                             dbg_suppress = bool(int(rdg.get("injection_run_force_blank_rows") or 0) > 0)
+                        try:
+                            _samp = rdg.get("inj_urls_sample") if isinstance(rdg, dict) else None
+                            if isinstance(_samp, (list, tuple)):
+                                dbg_inj_urls_sample = [str(u or "").strip() for u in _samp if str(u or "").strip()]
+                        except Exception:
+                            pass
                     except Exception:
                         pass
+
+                # If debug provides a concrete injected URL sample, prefer it for hinting (without requiring callers to pass injected_url)
+                try:
+                    if (dbg_inj is True) and (not inj_norm) and dbg_inj_urls_sample:
+                        _u0 = str(dbg_inj_urls_sample[0] or "").strip()
+                        if _u0:
+                            inj_target = _normalize_url(_u0)
+                except Exception:
+                    pass
             except Exception:
                 pass
 
-            checks["injected_url_hint_present"] = bool(inj_norm)
+            # In injection runs, injected_url may not be passed into this helper; treat the active target as the hint.
+            _inj_hint = bool(inj_norm) or ((dbg_inj is True) and bool(inj_target))
+            checks["injected_url_hint_present"] = bool(_inj_hint)
             checks["injected_url_target_norm"] = inj_target or ""
             checks["injected_url_detected_hits"] = int(inj_hits)
             checks["injected_url_detected_ratio"] = (inj_hits / len(urls)) if urls else 0.0
@@ -26791,7 +26831,8 @@ def render_source_anchored_results(results, query: str):
     except Exception:
         _delta_unch = None
 
-    col3.metric("Stability score", _fmt_pct(stability), delta=_delta_unch)
+    _stab_label = "Stability score" if (not is_injection_run) else "Stability score (incl injected)"
+    col3.metric(_stab_label, _fmt_pct(stability), delta=_delta_unch)
     _sum_eff = results.get("summary_effective") if isinstance(results.get("summary_effective"), dict) else {}
     metrics_inj = _safe_int(_sum_eff.get("metrics_injected"), injected_rows_total)
     if is_injection_run:
@@ -26805,6 +26846,13 @@ def render_source_anchored_results(results, query: str):
 
     if message:
         st.caption(message)
+
+    if is_injection_run and injected_rows_total > 0:
+        try:
+            if abs(float(stability) - 100.0) < 0.05:
+                st.caption("Injection mode is active; Stability is 100% (no value changes vs baseline). This is expected if your injected values match the baseline.")
+        except Exception:
+            pass
 
     if is_injection_run:
         if production_rows_total > 0 and (effective_stability is not None):
@@ -37087,6 +37135,96 @@ try:
                 "When injection-mode prod-only stability caption is shown, also include prod-only unchanged % when available."
             ],
             "risk": "Low: UI/reporting-only; deterministic selection/diff logic unchanged."
+        }
+        if _existing_i is None:
+            PATCH_TRACKER_V1.insert(0, dict(_ent))
+        else:
+            try:
+                _ex = PATCH_TRACKER_V1[_existing_i]
+                _auto = str((_ex or {}).get("summary") or "").strip()
+                if (not (_ex or {}).get("title")):
+                    _ex["title"] = _ent.get("title")
+                if (not (_ex or {}).get("date")):
+                    _ex["date"] = _ent.get("date")
+                if (not (_ex or {}).get("risk")):
+                    _ex["risk"] = _ent.get("risk")
+                if (_auto == "(auto) head normalized to code version") or (_auto == ""):
+                    _ex["summary"] = _ent.get("summary")
+                PATCH_TRACKER_V1[_existing_i] = _ex
+            except Exception:
+                pass
+        try:
+            _yureeka_patch_tracker_ensure_head_v1(_pid, {"patch_id": _pid})
+        except Exception:
+            pass
+except Exception:
+    pass
+
+
+
+# NLP45: patch tracker entry
+try:
+    if isinstance(PATCH_TRACKER_V1, list):
+        _pid = "NLP45"
+        _existing_i = None
+        for _i, _e in enumerate(list(PATCH_TRACKER_V1)):
+            if isinstance(_e, dict) and str(_e.get("patch_id") or "") == _pid:
+                _existing_i = _i
+                break
+        _ent = {
+            "patch_id": _pid,
+            "date": "2026-02-20",
+            "title": "Diagnostics: robust injection detection in endstate_check + clearer stability label in injection runs",
+            "summary": [
+                "Fix endstate_check_v1 injection detection by merging inner results.debug buckets (which contain row_delta_gating/fastpath beacons) instead of relying on outer wrapper debug (often hyperparams-only). This makes assumed_injected_mode reliable even when injected_url isn\'t passed into the helper.",
+                "In Evolution UI, label stability as '(incl injected)' during injection runs and add a small caption when injection mode is active but stability is 100% (expected if injected values match baseline)."
+            ],
+            "risk": "Low: diagnostics/UI-only; deterministic selection/diff logic unchanged."
+        }
+        if _existing_i is None:
+            PATCH_TRACKER_V1.insert(0, dict(_ent))
+        else:
+            try:
+                _ex = PATCH_TRACKER_V1[_existing_i]
+                _auto = str((_ex or {}).get("summary") or "").strip()
+                if (not (_ex or {}).get("title")):
+                    _ex["title"] = _ent.get("title")
+                if (not (_ex or {}).get("date")):
+                    _ex["date"] = _ent.get("date")
+                if (not (_ex or {}).get("risk")):
+                    _ex["risk"] = _ent.get("risk")
+                if (_auto == "(auto) head normalized to code version") or (_auto == ""):
+                    _ex["summary"] = _ent.get("summary")
+                PATCH_TRACKER_V1[_existing_i] = _ex
+            except Exception:
+                pass
+        try:
+            _yureeka_patch_tracker_ensure_head_v1(_pid, {"patch_id": _pid})
+        except Exception:
+            pass
+except Exception:
+    pass
+
+
+
+# NLP46: patch tracker entry
+try:
+    if isinstance(PATCH_TRACKER_V1, list):
+        _pid = "NLP46"
+        _existing_i = None
+        for _i, _e in enumerate(list(PATCH_TRACKER_V1)):
+            if isinstance(_e, dict) and str(_e.get("patch_id") or "") == _pid:
+                _existing_i = _i
+                break
+        _ent = {
+            "patch_id": _pid,
+            "date": "2026-02-20",
+            "title": "Patch hygiene: bump version + patch tracker head alignment (no behavior change)",
+            "summary": [
+                "Bump CODE_VERSION to NLP46 and add patch tracker entry.",
+                "No changes to selection, scoring, thresholds, freshness, or LLM/NLP sidecar logic."
+            ],
+            "risk": "None: patch hygiene only."
         }
         if _existing_i is None:
             PATCH_TRACKER_V1.insert(0, dict(_ent))
