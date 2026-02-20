@@ -458,7 +458,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "NLP38"
+_YUREEKA_CODE_VERSION_LOCK = "NLP40"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 # REFACTOR206: Release Candidate freeze (no pipeline behavior change).
 YUREEKA_RELEASE_CANDIDATE_V1 = False
@@ -9027,16 +9027,33 @@ def _refactor116_apply_effective_timing_and_row_deltas_v1(evo_obj: Any, previous
                         return False
 
                 _rows_prod = [r for r in _rows_all if not _is_injected_row_v1(r)]
-                _tmp = {"metric_changes": _rows_prod}
-                _refactor13_recompute_summary_and_stability_v1(_tmp)
 
-                _eff_stab = _tmp.get("stability_score")
-                if _eff_stab is None:
-                    _eff_stab = 100.0 if not _rows_prod else 0.0
+                _raw_stab = res.get("stability_score")
+                _raw_summary = res.get("summary") if isinstance(res.get("summary"), dict) else {}
 
-                res["stability_score_effective"] = round(float(_eff_stab), 1)
+                _eff_mode = "prod_only"
+                _eff_stab = None
+                _eff_summary = {}
 
-                _eff_summary = _tmp.get("summary") if isinstance(_tmp.get("summary"), dict) else {}
+                if _rows_prod:
+                    _tmp = {"metric_changes": _rows_prod}
+                    _refactor13_recompute_summary_and_stability_v1(_tmp)
+                    _eff_stab = _tmp.get("stability_score")
+                    if _eff_stab is None:
+                        _eff_stab = 0.0
+                    _eff_summary = _tmp.get("summary") if isinstance(_tmp.get("summary"), dict) else {}
+                else:
+                    # All rows are injected; "prod-only" stability is not meaningful.
+                    # Avoid emitting a misleading 100% in stability_score_effective.
+                    _eff_mode = "raw_all_injected"
+                    _eff_stab = _raw_stab if _raw_stab is not None else 0.0
+                    _eff_summary = dict(_raw_summary) if isinstance(_raw_summary, dict) else {}
+
+                try:
+                    res["stability_score_effective"] = round(float(_eff_stab), 1)
+                except Exception:
+                    res["stability_score_effective"] = _eff_stab
+
                 # Annotate effective summary with injection counters (for UI + audit).
                 _eff_summary["metrics_injected"] = int(gating.get("injected_rows_total") or 0)
                 _eff_summary["metrics_production"] = int(gating.get("production_rows_total") or 0)
@@ -9048,6 +9065,8 @@ def _refactor116_apply_effective_timing_and_row_deltas_v1(evo_obj: Any, previous
                 try:
                     dbg["injection_stability_adjust_v1"] = {
                         "injection_run": True,
+                        "effective_mode": _eff_mode,
+                        "all_rows_injected": (not bool(_rows_prod)),
                         "raw_stability_score": res.get("stability_score"),
                         "effective_stability_score": res.get("stability_score_effective"),
                         "raw_summary": res.get("summary"),
@@ -36265,6 +36284,75 @@ except Exception:
     pass
 
 
+
+# NLP39: patch tracker entry
+try:
+    if isinstance(PATCH_TRACKER_V1, list):
+        _pid = "NLP39"
+        _existing_i = None
+        for _i, _e in enumerate(list(PATCH_TRACKER_V1)):
+            if isinstance(_e, dict) and str(_e.get("patch_id") or "") == _pid:
+                _existing_i = _i
+                break
+        _ent = {
+            "patch_id": _pid,
+            "date": "2026-02-20",
+            "title": "Injection-mode stability JSON fix: avoid misleading 100% when all rows are injected",
+            "summary": [
+                "When running evolution in injection mode and production_rows_total==0, set stability_score_effective and summary_effective to mirror the raw stability/summary (instead of forcing 100% / 0 deltas).",
+                "Retains production-only effective stability/summary when production rows exist; always keeps injected/prod counters for auditability.",
+                "Reporting-only change: no impact to deterministic winners/values, strict freshness gates, or REFACTOR206 frozen behavior when assist flags are OFF."
+            ],
+            "risk": "low"
+        }
+        if _existing_i is None:
+            PATCH_TRACKER_V1.insert(0, dict(_ent))
+        else:
+            try:
+                _ex = PATCH_TRACKER_V1[_existing_i]
+                _auto = str((_ex or {}).get("summary") or "").strip()
+                if (not (_ex or {}).get("title")):
+                    _ex["title"] = _ent.get("title")
+                if (not (_ex or {}).get("date")):
+                    _ex["date"] = _ent.get("date")
+                if (not (_ex or {}).get("risk")):
+                    _ex["risk"] = _ent.get("risk")
+                if (_auto == "(auto) head normalized to code version") or (_auto == ""):
+                    _ex["summary"] = _ent.get("summary")
+                PATCH_TRACKER_V1[_existing_i] = _ex
+            except Exception:
+                pass
+        try:
+            _yureeka_patch_tracker_ensure_head_v1(_pid, {"patch_id": _pid})
+        except Exception:
+            pass
+except Exception:
+    pass
+
+
+# NLP38: patch tracker entry
+try:
+    if isinstance(PATCH_TRACKER_V1, list):
+        _pid = "NLP38"
+        _existing_i = None
+        for _i, _e in enumerate(list(PATCH_TRACKER_V1)):
+            if isinstance(_e, dict) and str(_e.get("patch_id") or "") == _pid:
+                _existing_i = _i
+                break
+        if _existing_i is None:
+            PATCH_TRACKER_V1.insert(0, {
+                "patch_id": "NLP38",
+                "date": "2026-02-20",
+                "title": "NLP38 Triad cadence run: patch hygiene/version bump for scheduled triad",
+                "summary": [
+                    "No functional changes beyond bumping CODE_VERSION to NLP38 and registering this patch in the tracker (triad cadence patch)."
+                ],
+                "risk": "low"
+            })
+except Exception:
+    pass
+
+
 # NLP37: patch tracker entry
 try:
     if isinstance(PATCH_TRACKER_V1, list):
@@ -36575,6 +36663,51 @@ try:
 except Exception:
     pass
 
+
+
+
+# NLP40: patch tracker entry
+try:
+    if isinstance(PATCH_TRACKER_V1, list):
+        _pid = "NLP40"
+        _existing_i = None
+        for _i, _e in enumerate(list(PATCH_TRACKER_V1)):
+            if isinstance(_e, dict) and str(_e.get("patch_id") or "") == _pid:
+                _existing_i = _i
+                break
+        _ent = {
+            "patch_id": _pid,
+            "date": "2026-02-20",
+            "title": "NLP40 Triad cadence run: version bump + patch tracker hygiene (no behavior change)",
+            "summary": [
+                "No functional changes beyond bumping CODE_VERSION to NLP40 and registering this patch in the tracker.",
+                "Scheduled triad cadence patch (every-two-patch) following the NLP39 injection-mode stability JSON reporting fix."
+            ],
+            "risk": "Low: patch hygiene only; deterministic selection/diff logic unchanged."
+        }
+        if _existing_i is None:
+            PATCH_TRACKER_V1.insert(0, dict(_ent))
+        else:
+            try:
+                _ex = PATCH_TRACKER_V1[_existing_i]
+                _auto = str((_ex or {}).get("summary") or "").strip()
+                if (not (_ex or {}).get("title")):
+                    _ex["title"] = _ent.get("title")
+                if (not (_ex or {}).get("date")):
+                    _ex["date"] = _ent.get("date")
+                if (not (_ex or {}).get("risk")):
+                    _ex["risk"] = _ent.get("risk")
+                if (_auto == "(auto) head normalized to code version") or (_auto == ""):
+                    _ex["summary"] = _ent.get("summary")
+                PATCH_TRACKER_V1[_existing_i] = _ex
+            except Exception:
+                pass
+        try:
+            _yureeka_patch_tracker_ensure_head_v1(_pid, {"patch_id": _pid})
+        except Exception:
+            pass
+except Exception:
+    pass
 
 # PATCH_TRACKER tail normalization (v1) — ensure head matches CODE_VERSION after all patch tracker inserts
 # (Additive; preserves existing entries and does not affect deterministic selection/diff logic.)
