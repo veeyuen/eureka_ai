@@ -458,7 +458,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "NLP34"
+_YUREEKA_CODE_VERSION_LOCK = "NLP36"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 # REFACTOR206: Release Candidate freeze (no pipeline behavior change).
 YUREEKA_RELEASE_CANDIDATE_V1 = False
@@ -16375,6 +16375,18 @@ def _fresh01_compute_source_freshness_v2(text: str, fetched_at: str = "", url: s
                 conf = min(float(conf), 0.55)
         except Exception:
             pass
+
+        # NLP35: Unambiguous numeric dates (e.g., 19.02.2026) extracted from text are structurally strong.
+        # If they land in regex_v1 with base confidence, promote to the strict gate floor (0.75) without relaxing thresholds.
+        try:
+            _knd35 = str(best.get("kind") or "").strip().lower()
+            if _knd35 in ("dmy_num", "mdy_num") and float(conf) < 0.75:
+                conf = 0.75
+                if str(out.get("freshness_method") or "") == "regex_v1" and not out.get("freshness_method_detail"):
+                    out["freshness_method_detail"] = "regex_unambig_num_v1"
+        except Exception:
+            pass
+
         out["freshness_date_confidence"] = round(conf, 3)
 
         # NLP14: confidence label bucket (high/med/low)
@@ -36191,6 +36203,76 @@ except Exception:
 
 
 
+
+
+
+# NLP36: patch tracker entry
+try:
+    if isinstance(PATCH_TRACKER_V1, list):
+        _pid = "NLP36"
+        _existing_i = None
+        for _i, _e in enumerate(list(PATCH_TRACKER_V1)):
+            if isinstance(_e, dict) and str(_e.get("patch_id") or "") == _pid:
+                _existing_i = _i
+                break
+        _ent = {
+            "patch_id": _pid,
+            "date": "2026-02-20",
+            "title": "NLP36 Triad cadence run: version bump (NLP35 confidence-floor behavior already included) + patch tracker hygiene",
+            "summary": [
+                "No functional changes beyond bumping CODE_VERSION to NLP36 and registering this patch in the tracker.",
+                "This patch is intended for the scheduled triad run to validate that NLP35's unambiguous numeric-date confidence floor removes the last strict score-tie low-confidence blocker."
+            ],
+            "risk": "Low: patch hygiene only; no selection/diff logic changes."
+        }
+        if _existing_i is None:
+            PATCH_TRACKER_V1.insert(0, dict(_ent))
+        else:
+            try:
+                _ex = PATCH_TRACKER_V1[_existing_i]
+                # Upgrade placeholder / auto entries without stomping human-written content.
+                _auto = str((_ex or {}).get("summary") or "").strip()
+                if (not (_ex or {}).get("title")):
+                    _ex["title"] = _ent.get("title")
+                if (not (_ex or {}).get("date")):
+                    _ex["date"] = _ent.get("date")
+                if (not (_ex or {}).get("risk")):
+                    _ex["risk"] = _ent.get("risk")
+                if (_auto == "(auto) head normalized to code version") or (_auto == ""):
+                    _ex["summary"] = _ent.get("summary")
+                PATCH_TRACKER_V1[_existing_i] = _ex
+            except Exception:
+                pass
+        try:
+            _yureeka_patch_tracker_ensure_head_v1(_pid, {"patch_id": _pid})
+        except Exception:
+            pass
+except Exception:
+    pass
+
+
+
+
+
+
+
+
+# NLP35: patch tracker entry
+try:
+    if isinstance(PATCH_TRACKER_V1, list) and not any(str(e.get("patch_id") or "") == "NLP35" for e in PATCH_TRACKER_V1 if isinstance(e, dict)):
+        PATCH_TRACKER_V1.insert(0, {
+            "patch_id": "NLP35",
+            "date": "2026-02-20",
+            "title": "NLP35 Freshness confidence: promote unambiguous numeric text dates to strict gate floor (0.75) for tie-break eligibility",
+            "summary": [
+                "When a source publish date is extracted via regex as an unambiguous numeric D/M/Y or M/D/Y (e.g., 19.02.2026), promote confidence to the strict minimum (0.75) even without nearby labels.",
+                "Adds method detail tag regex_unambig_num_v1 for transparency; does not relax strict tie-break thresholds or affect non-unambiguous date patterns.",
+                "Patch hygiene: bump CODE_VERSION and register patch tracker entry."
+            ],
+            "risk": "Low: deterministic, narrowly-scoped confidence correction for structurally unambiguous numeric dates only."
+        })
+except Exception:
+    pass
 
 
 # NLP34: patch tracker entry
