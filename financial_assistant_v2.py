@@ -458,7 +458,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "NLP46"
+_YUREEKA_CODE_VERSION_LOCK = "NLP48"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 # REFACTOR206: Release Candidate freeze (no pipeline behavior change).
 YUREEKA_RELEASE_CANDIDATE_V1 = False
@@ -493,6 +493,11 @@ ENABLE_NLP_QUERY_BOOST = False
 # - LLM_BYPASS_CACHE: ignore disk/mem cache to verify live calls (may change snippet ranking output).
 # - ENABLE_LLM_SMOKE_TEST: run a one-shot provider connectivity check and attach non-sensitive diag.
 LLM_BYPASS_CACHE = False
+
+# NLP48: Replay-only mode (default OFF)
+# - When enabled, live LLM calls are disabled; assists use cache hits only (replay/audit).
+LLM_CACHE_REPLAY_ONLY = False
+
 ENABLE_LLM_SMOKE_TEST = False
 
 # LLM29/LLM30: One-run-only cache refresh (default OFF)
@@ -693,6 +698,7 @@ def _yureeka_llm_flags_snapshot_v1() -> dict:
         "ENABLE_LLM_ANOMALY_FLAGS",
         "ENABLE_LLM_DATASET_LOGGING",
         "LLM_BYPASS_CACHE",
+        "LLM_CACHE_REPLAY_ONLY",
         "ENABLE_LLM_SMOKE_TEST",
         "LLM_FORCE_REFRESH_ONCE",
     ):
@@ -705,6 +711,13 @@ def _yureeka_llm_flags_snapshot_v1() -> dict:
     try:
         _bypass, _src = _yureeka_llm_flag_effective_v1("LLM_BYPASS_CACHE")
         out["cache_bypass"] = {"enabled": bool(_bypass), "source": str(_src)[:80]}
+    except Exception:
+        pass
+
+    # NLP48: surface replay-only state (non-sensitive).
+    try:
+        _ro, _src = _yureeka_llm_flag_effective_v1("LLM_CACHE_REPLAY_ONLY")
+        out["cache_replay_only"] = {"enabled": bool(_ro), "source": str(_src)[:80]}
     except Exception:
         pass
 
@@ -1626,6 +1639,54 @@ def _yureeka_llm_force_refresh_once_should_bypass_v1(key: str) -> bool:
     except Exception:
         return False
 
+
+# NLP48: non-sensitive cache-miss ledger (replayability diagnostics)
+def _yureeka_llm_cache_miss_ledger_v1() -> dict:
+    """Mutable per-run cache-miss ledger (hash-only keys; bounded)."""
+    try:
+        led = globals().get("_YUREEKA_LLM_CACHE_MISS_LEDGER_V1")
+        if not isinstance(led, dict):
+            led = {"v": "llm_cache_miss_ledger_v1", "misses": 0, "keys": [], "where": {}}
+            globals()["_YUREEKA_LLM_CACHE_MISS_LEDGER_V1"] = led
+        return led
+    except Exception:
+        return {"v": "llm_cache_miss_ledger_v1", "misses": 0, "keys": [], "where": {}}
+
+def _yureeka_llm_cache_note_miss_v1(key: str, where: str = "") -> None:
+    try:
+        if not key:
+            return
+        led = _yureeka_llm_cache_miss_ledger_v1()
+        try:
+            led["misses"] = int(led.get("misses") or 0) + 1
+        except Exception:
+            led["misses"] = 1
+        w = str(where or "")[:60]
+        if w:
+            try:
+                ww = led.get("where")
+                if not isinstance(ww, dict):
+                    ww = {}
+                    led["where"] = ww
+                ww[w] = int(ww.get(w) or 0) + 1
+            except Exception:
+                pass
+        try:
+            ks = led.get("keys")
+            if not isinstance(ks, list):
+                ks = []
+                led["keys"] = ks
+            ksn = str(key)[:80]
+            if ksn and (ksn not in ks):
+                ks.append(ksn)
+            # cap
+            if len(ks) > 20:
+                led["keys"] = ks[-20:]
+        except Exception:
+            pass
+    except Exception:
+        return
+
 def get_cached_llm_response(key: str) -> Any:
     """Return cached LLM payload for key, or None if missing/unreadable."""
     if not key:
@@ -1660,8 +1721,16 @@ def get_cached_llm_response(key: str) -> Any:
     path = _llm_cache_path_v1(key)
     try:
         if not path or not os.path.exists(path):
+            try:
+                _yureeka_llm_cache_note_miss_v1(key, where="disk_missing")
+            except Exception:
+                pass
             return None
     except Exception:
+        try:
+            _yureeka_llm_cache_note_miss_v1(key, where="disk_exists_check_error")
+        except Exception:
+            pass
         return None
 
     try:
@@ -1673,6 +1742,10 @@ def get_cached_llm_response(key: str) -> Any:
         _llm_cache__mem_touch_v1(key)
         return payload
     except Exception:
+        try:
+            _yureeka_llm_cache_note_miss_v1(key, where="disk_read_or_parse_error")
+        except Exception:
+            pass
         return None
 
 def cache_llm_response(key: str, payload: Any) -> bool:
@@ -1718,6 +1791,8 @@ def cache_llm_response(key: str, payload: Any) -> bool:
         except Exception:
             pass
         return False
+
+
 
 def _yureeka_llm_text_hash_v1(text: str) -> str:
     """Stable short hash for large text (do NOT store raw text in logs)."""
@@ -2532,6 +2607,19 @@ def _yureeka_call_openai_chat_json_v1(
         pass
 
 
+    # NLP48: replay-only policy (cache hits only; disable live provider calls).
+    try:
+        _ro, _ro_src = _yureeka_llm_flag_effective_v1("LLM_CACHE_REPLAY_ONLY")
+        diag["cache_replay_only"] = bool(_ro)
+        diag["cache_replay_only_source"] = str(_ro_src)[:80]
+        if bool(_ro):
+            diag["reason"] = "cache_replay_only"
+            diag["hint"] = "Replay-only: live LLM calls disabled; use cache or disable LLM_CACHE_REPLAY_ONLY."
+            return (None, diag)
+    except Exception:
+        pass
+
+
     # LLM05: run-scope circuit breaker + call budget guard (non-behavioral; only affects failing/disabled calls).
     try:
         _is_open, _cb = _yureeka_llm_circuit_is_open_v1()
@@ -3006,6 +3094,23 @@ def _yureeka_llm_health_snapshot_v1(stage: str = "") -> dict:
         out["provider"] = _llm01_provider_status_v1()
     except Exception:
         pass
+    # NLP48: replay-only + cache-miss ledger snapshot (non-sensitive).
+    try:
+        _ro, _src = _yureeka_llm_flag_effective_v1("LLM_CACHE_REPLAY_ONLY")
+        out["cache_replay_only"] = {"enabled": bool(_ro), "source": str(_src)[:80]}
+    except Exception:
+        pass
+    try:
+        led = globals().get("_YUREEKA_LLM_CACHE_MISS_LEDGER_V1")
+        if isinstance(led, dict):
+            out["cache_miss_ledger_v1"] = {
+                "misses": int(led.get("misses") or 0),
+                "keys": list(led.get("keys") or [])[:20],
+                "where": dict(led.get("where") or {}),
+            }
+    except Exception:
+        pass
+
     try:
         agg = globals().get("_YUREEKA_LLM_RUN_AGG_V1")
         if isinstance(agg, dict):
@@ -9149,6 +9254,73 @@ def _refactor116_apply_effective_timing_and_row_deltas_v1(evo_obj: Any, previous
                         "injected_rows_total": int(gating.get("injected_rows_total") or 0),
                         "production_rows_total": int(gating.get("production_rows_total") or 0),
                     }
+
+                    # NLP47: Injection impact sanity beacon (reporting-only).
+                    # Helps explain "suspicious" 100% injection stability cases by showing whether the injected URL
+                    # was fetched and whether it won any schema metric rows.
+                    try:
+                        _inj_urls = []
+                        _inj_u0 = dbg.get("injected_urls_v1")
+                        if not _inj_u0:
+                            _inj_u0 = dbg.get("fix2d65b_injected_urls")
+                        if isinstance(_inj_u0, str):
+                            _inj_urls = [_inj_u0]
+                        elif isinstance(_inj_u0, list):
+                            _inj_urls = [u for u in _inj_u0 if isinstance(u, str) and u.strip()]
+                        _inj_set = set()
+                        for _u in (_inj_urls or []):
+                            try:
+                                _inj_set.add(_normalize_url(_u))
+                            except Exception:
+                                pass
+
+                        _src_urls = []
+                        try:
+                            _sr = res.get("source_results") or []
+                            if isinstance(_sr, list):
+                                for _s in _sr:
+                                    if isinstance(_s, dict) and isinstance(_s.get("url"), str):
+                                        _src_urls.append(_normalize_url(_s.get("url")))
+                        except Exception:
+                            _src_urls = []
+
+                        _inj_source_present = bool(_inj_set and any(u in _inj_set for u in _src_urls))
+
+                        _inj_rows = []
+                        try:
+                            _mc = res.get("metric_changes") or []
+                            if isinstance(_mc, list) and _inj_set:
+                                for _r in _mc:
+                                    if isinstance(_r, dict) and _normalize_url(str(_r.get("source_url") or "")) in _inj_set:
+                                        _inj_rows.append(_r)
+                        except Exception:
+                            _inj_rows = []
+
+                        _inj_won = len(_inj_rows)
+                        _inj_keys = []
+                        try:
+                            _inj_keys = [str(r.get("canonical_key") or "") for r in _inj_rows if isinstance(r, dict)]
+                            _inj_keys = [k for k in _inj_keys if k]
+                        except Exception:
+                            _inj_keys = []
+
+                        _raw_sum = res.get("summary") if isinstance(res.get("summary"), dict) else {}
+                        _raw_unch = int((_raw_sum or {}).get("metrics_unchanged") or 0) if isinstance(_raw_sum, dict) else 0
+                        _raw_tot = int((_raw_sum or {}).get("total_metrics") or 0) if isinstance(_raw_sum, dict) else 0
+                        _inj_match_baseline = bool(_inj_won > 0 and _raw_tot > 0 and _raw_unch == _raw_tot)
+                        _susp_no_wins = bool(_inj_source_present and _inj_won == 0)
+
+                        dbg["inj01_injection_impact_v1"] = {
+                            "injection_run": True,
+                            "injected_urls": list(_inj_urls or [])[:3],
+                            "injected_source_present": _inj_source_present,
+                            "injected_metrics_won_count": int(_inj_won),
+                            "injected_metric_keys_sample": list(_inj_keys)[:6],
+                            "injected_values_match_baseline": bool(_inj_match_baseline),
+                            "suspicious_no_injected_winners": bool(_susp_no_wins),
+                        }
+                    except Exception:
+                        pass
                 except Exception:
                     pass
 
@@ -9158,6 +9330,7 @@ def _refactor116_apply_effective_timing_and_row_deltas_v1(evo_obj: Any, previous
                         _dbg2 = res["results"].get("debug")
                         if isinstance(_dbg2, dict):
                             _dbg2["injection_stability_adjust_v1"] = dbg.get("injection_stability_adjust_v1")
+                            _dbg2["inj01_injection_impact_v1"] = dbg.get("inj01_injection_impact_v1")
                 except Exception:
                     pass
         except Exception:
@@ -26854,6 +27027,23 @@ def render_source_anchored_results(results, query: str):
         except Exception:
             pass
 
+    # NLP47: If injection URL was fetched but did not win any schema metric row, surface an explicit hint.
+    # (This often explains a "suspiciously stable" injection run.)
+    if is_injection_run:
+        try:
+            _imp = {}
+            _dbg_ui = results.get("debug") if isinstance(results.get("debug"), dict) else {}
+            if isinstance(_dbg_ui, dict) and isinstance(_dbg_ui.get("inj01_injection_impact_v1"), dict):
+                _imp = _dbg_ui.get("inj01_injection_impact_v1") or {}
+            if isinstance(_imp, dict) and _imp.get("suspicious_no_injected_winners"):
+                st.caption("⚠️ Injection URL was fetched but did not override any schema metric (0 injected winners). "
+                           "This can happen if injected-content doesn't include the schema keys, or if strict gates rejected the injected candidates. "
+                           "Check injected_urls_v1 and per-row source_url in the Metric Changes table.")
+            if isinstance(_imp, dict) and _imp.get("injected_values_match_baseline"):
+                st.caption("🧪 Injected values match baseline for all injected metrics (no deltas).")
+        except Exception:
+            pass
+
     if is_injection_run:
         if production_rows_total > 0 and (effective_stability is not None):
             _pct_unch_eff = results.get("stability_pct_unchanged_effective")
@@ -29050,6 +29240,8 @@ def main():
             st.markdown("**Diagnostics**")
             _llm_ui_checkbox("ENABLE_LLM_SMOKE_TEST", "Run LLM smoke test (connectivity)", default=False, help="Records non-sensitive status in the JSON debug.")
             _llm_ui_checkbox("LLM_BYPASS_CACHE", "Bypass LLM cache (debug)", default=False, help="Forces live calls; turn OFF for cached/replayable runs.")
+
+            _llm_ui_checkbox("LLM_CACHE_REPLAY_ONLY", "Replay-only (no live LLM calls)", default=False, help="When ON, the sidecar will use cache hits only; live calls are skipped and recorded as cache_replay_only.")
 
         # ✅ REFACTOR99: Evolution baseline MUST be an Analysis payload (exclude evolution reports) and default to latest.
         history_all = get_history() or []
@@ -37249,6 +37441,93 @@ try:
             pass
 except Exception:
     pass
+
+
+
+# NLP47: patch tracker entry
+try:
+    if isinstance(PATCH_TRACKER_V1, list):
+        _pid = "NLP47"
+        _existing_i = None
+        for _i, _e in enumerate(list(PATCH_TRACKER_V1)):
+            if isinstance(_e, dict) and str(_e.get("patch_id") or "") == _pid:
+                _existing_i = _i
+                break
+        _ent = {
+            "patch_id": _pid,
+            "date": "2026-02-20",
+            "title": "Injection-run stability sanity beacon (reporting-only)",
+            "summary": [
+                "Add debug.inj01_injection_impact_v1 to evolution results to explain 'suspicious' injection stability cases (whether injected URL was fetched and whether it won any schema metric rows).",
+                "In Streamlit evolution header, surface a short caption when injection URL is fetched but produces 0 injected winners, and when injected values exactly match baseline.",
+                "No changes to deterministic metric winner/value selection, strict thresholds, freshness tiebreak logic, or LLM/NLP sidecar behavior."
+            ],
+            "risk": "Low: reporting-only; no selection/scoring changes."
+        }
+        if _existing_i is None:
+            PATCH_TRACKER_V1.insert(0, dict(_ent))
+        else:
+            try:
+                _ex = PATCH_TRACKER_V1[_existing_i]
+                _auto = str((_ex or {}).get("summary") or "").strip()
+                if (not (_ex or {}).get("title")):
+                    _ex["title"] = _ent.get("title")
+                if (not (_ex or {}).get("date")):
+                    _ex["date"] = _ent.get("date")
+                if (not (_ex or {}).get("risk")):
+                    _ex["risk"] = _ent.get("risk")
+                if (_auto == "(auto placeholder)"):
+                    _ex["summary"] = _ent.get("summary")
+            except Exception:
+                pass
+except Exception:
+    pass
+
+
+# NLP48: patch tracker entry
+try:
+    if isinstance(PATCH_TRACKER_V1, list):
+        _pid = "NLP48"
+        _existing_i = None
+        for _i, _e in enumerate(list(PATCH_TRACKER_V1)):
+            if isinstance(_e, dict) and str(_e.get("patch_id") or "") == _pid:
+                _existing_i = _i
+                break
+        _ent = {
+            "patch_id": _pid,
+            "date": "2026-02-20",
+            "title": "LLM cache replay-only mode + cache-miss ledger (auditability; no live drift)",
+            "summary": [
+                "Add LLM_CACHE_REPLAY_ONLY (default OFF): when enabled, the LLM sidecar will not perform live provider calls and will only serve cached responses (reason=cache_replay_only on cache miss).",
+                "Add a bounded, non-sensitive cache-miss ledger (hash-only cache keys + where-counts) surfaced in llm_sidecar_health_v1 for prewarming/replay diagnostics.",
+                "Expose a Streamlit checkbox for LLM_CACHE_REPLAY_ONLY under LLM Sidecar diagnostics; strict thresholds, deterministic winners/values, and REFACTOR206 frozen behavior remain unchanged when assist flags are OFF."
+            ],
+            "risk": "Low: policy/diagnostic-only; does not change selection/diff engines."
+        }
+        if _existing_i is None:
+            PATCH_TRACKER_V1.insert(0, dict(_ent))
+        else:
+            try:
+                _ex = PATCH_TRACKER_V1[_existing_i]
+                _auto = str((_ex or {}).get("summary") or "").strip()
+                if (not (_ex or {}).get("title")):
+                    _ex["title"] = _ent.get("title")
+                if (not (_ex or {}).get("date")):
+                    _ex["date"] = _ent.get("date")
+                if (not (_ex or {}).get("risk")):
+                    _ex["risk"] = _ent.get("risk")
+                if (_auto == "(auto placeholder)") or (_auto == ""):
+                    _ex["summary"] = _ent.get("summary")
+                PATCH_TRACKER_V1[_existing_i] = _ex
+            except Exception:
+                pass
+        try:
+            _yureeka_patch_tracker_ensure_head_v1(_pid, {"patch_id": _pid})
+        except Exception:
+            pass
+except Exception:
+    pass
+
 
 # PATCH_TRACKER tail normalization (v1) — ensure head matches CODE_VERSION after all patch tracker inserts
 # (Additive; preserves existing entries and does not affect deterministic selection/diff logic.)
