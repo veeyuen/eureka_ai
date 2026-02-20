@@ -458,7 +458,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "NLP48"
+_YUREEKA_CODE_VERSION_LOCK = "NLP50"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 # REFACTOR206: Release Candidate freeze (no pipeline behavior change).
 YUREEKA_RELEASE_CANDIDATE_V1 = False
@@ -1115,6 +1115,53 @@ def _llm03__deterministic_query_frame_v1(query: str, base_signals: Optional[Dict
         "confidence": 0.55,
         "source": "deterministic",
     }
+
+
+# NLP50: Deterministic query-frame fingerprint (assist-only; no pipeline behavior change)
+# - Always computes a small, deterministic semantic frame (no LLM calls) and a stable hash.
+# - Used for auditability + later NLP/LLM sidecar alignment (cache-first, replayable).
+_YUREEKA_NLP50_QUERY_FINGERPRINT_V1 = ""
+_YUREEKA_NLP50_QUERY_FRAME_HASH_V1 = ""
+
+
+def _nlp50_query_frame_debug_v1(query: str, base_signals: Optional[Dict[str, Any]] = None) -> dict:
+    """Return a compact deterministic query-frame + stable hashes for JSON debug."""
+    q_raw = (query or "").strip()
+    try:
+        det = _llm03__deterministic_query_frame_v1(q_raw, base_signals=base_signals, nlp01_families=None)
+    except Exception:
+        det = {}
+    # Stable hashes (no raw text in global state)
+    try:
+        frame_hash = str(_yureeka_llm_text_hash_v1(_yureeka__stable_json_dumps_v1(det)))
+    except Exception:
+        frame_hash = ""
+    try:
+        q_norm = re.sub(r"\s+", " ", q_raw.lower()).strip()
+        q_hash = str(_yureeka_llm_text_hash_v1(q_norm))
+    except Exception:
+        q_hash = ""
+    try:
+        fp_payload = {"q_hash": q_hash, "frame_hash": frame_hash, "frame": det}
+        fp = str(_yureeka_llm_text_hash_v1(_yureeka__stable_json_dumps_v1(fp_payload)))
+    except Exception:
+        fp = ""
+
+    # Update globals for cross-beacon visibility (best-effort)
+    try:
+        globals()["_YUREEKA_NLP50_QUERY_FINGERPRINT_V1"] = str(fp or "")
+        globals()["_YUREEKA_NLP50_QUERY_FRAME_HASH_V1"] = str(frame_hash or "")
+    except Exception:
+        pass
+
+    return {
+        "v": "nlp50_query_frame_det_v1",
+        "query_hash_v1": q_hash,
+        "frame_hash_v1": frame_hash,
+        "fingerprint_v1": fp,
+        "frame": det,
+    }
+
 
 def _llm03__validate_query_frame_v1(frame: Any) -> Tuple[bool, str]:
     """Strict validator for LLM query frame proposals."""
@@ -3142,6 +3189,17 @@ def _yureeka_llm_health_snapshot_v1(stage: str = "") -> dict:
     # LLM29/LLM30: include one-shot refresh state (non-sensitive).
     try:
         out["force_refresh_once"] = _yureeka_llm_force_refresh_once_state_v1()
+    except Exception:
+        pass
+
+    # NLP50: surface deterministic query fingerprint (hash-only) for replayable triads.
+    try:
+        _fp = str(globals().get("_YUREEKA_NLP50_QUERY_FINGERPRINT_V1") or "")
+        _fh = str(globals().get("_YUREEKA_NLP50_QUERY_FRAME_HASH_V1") or "")
+        if _fp:
+            out["query_fingerprint_v1"] = _fp[:160]
+        if _fh:
+            out["query_frame_hash_v1"] = _fh[:160]
     except Exception:
         pass
 
@@ -5389,9 +5447,47 @@ def _yureeka_endstate_check_v1(stage: str, analysis_wrapper: dict = None, evolut
 
             # If we have an injected_url target, report hit stats (informational)
             if inj_target:
-                checks["injected_url"] = (inj if inj else (globals().get("INJECTED_URL") or ""))
+                # Prefer explicit injected_url arg; fallback to global; else use the normalized target hint.
+                try:
+                    _inj_raw = (inj if inj else (globals().get("INJECTED_URL") or ""))
+                except Exception:
+                    _inj_raw = ""
+                checks["injected_url"] = (_inj_raw if _inj_raw else (inj_target or ""))
+
+                # Winner-hit stats (inferred from metric_changes rows).
                 checks["injected_url_hit_count"] = int(inj_hits)
                 checks["injected_url_hit_ratio"] = (inj_hits / len(urls)) if urls else 0.0
+
+                # Fetch-hit stats (inferred from source_results urls, even if the injected URL won zero rows).
+                try:
+                    _sr = None
+                    if isinstance((ew or {}).get("source_results"), list):
+                        _sr = (ew or {}).get("source_results")
+                    elif isinstance((ew or {}).get("results"), dict) and isinstance(((ew or {}).get("results") or {}).get("source_results"), list):
+                        _sr = ((ew or {}).get("results") or {}).get("source_results")
+                    elif isinstance((ew or {}).get("results"), dict) and isinstance((((ew or {}).get("results") or {}).get("results") or {}), dict) and isinstance(((((ew or {}).get("results") or {}).get("results") or {}).get("source_results")), list):
+                        _sr = ((((ew or {}).get("results") or {}).get("results") or {}).get("source_results"))
+
+                    _fetched = []
+                    if isinstance(_sr, list):
+                        for _s in _sr:
+                            if isinstance(_s, dict) and isinstance(_s.get("url"), str):
+                                _fetched.append(str(_s.get("url") or "").strip())
+                    _f_norm = []
+                    for _u in (_fetched or []):
+                        try:
+                            _f_norm.append(_normalize_url(_u))
+                        except Exception:
+                            pass
+                    _hit = 0
+                    for _u in (_f_norm or []):
+                        if _u and inj_target and (_u == inj_target):
+                            _hit += 1
+                    checks["injected_url_fetched_hit_count"] = int(_hit)
+                    checks["injected_url_fetched_hit_ratio"] = (_hit / len(_f_norm)) if _f_norm else 0.0
+                    checks["injected_url_fetched_present"] = bool(_hit > 0)
+                except Exception:
+                    pass
 
             # Stability (if present)
             try:
@@ -17126,17 +17222,52 @@ def _yureeka_humanize_seconds_v1(delta_seconds) -> str:
 def _refactor13_get_metric_change_rows_v1(out: dict):
     """
     Return canonical-first diff rows.
-    Prefer metric_changes; fallback to metric_changes_v2 for backwards compatibility.
+
+    Wrapper-aware (NLP49):
+      - Callers may pass either the evolution 'results' dict OR the full wrapper.
+      - Prefer metric_changes; fallback to metric_changes_v2 for backwards compatibility.
+
     Returned list is safe (always list).
     """
     try:
         if isinstance(out, dict):
+            # Wrapper-shape aware getter (preferred).
+            try:
+                _fn = globals().get("_yureeka_get_metric_changes_v1")
+                if callable(_fn):
+                    _rows = _fn(out)
+                    if isinstance(_rows, list):
+                        return _rows
+            except Exception:
+                pass
+
             rows = out.get("metric_changes")
             if isinstance(rows, list):
                 return rows
+
+            rr = out.get("results")
+            rr2 = None
+            if isinstance(rr, dict):
+                rows = rr.get("metric_changes")
+                if isinstance(rows, list):
+                    return rows
+                rr2 = rr.get("results")
+                if isinstance(rr2, dict):
+                    rows = rr2.get("metric_changes")
+                    if isinstance(rows, list):
+                        return rows
+
             rows = out.get("metric_changes_v2")
             if isinstance(rows, list) and rows:
                 return rows
+            if isinstance(rr, dict):
+                rows = rr.get("metric_changes_v2")
+                if isinstance(rows, list) and rows:
+                    return rows
+            if isinstance(rr2, dict):
+                rows = rr2.get("metric_changes_v2")
+                if isinstance(rows, list) and rows:
+                    return rows
     except Exception:
         pass
     return []
@@ -28936,6 +29067,15 @@ def main():
             except Exception:
                 pass
 
+            # NLP50: attach deterministic query-frame debug + fingerprint (assist-only; no LLM calls)
+            try:
+                if isinstance(output.get("debug"), dict):
+                    # base_signals available from earlier classify/categorize pipeline
+                    _qf_dbg = _nlp50_query_frame_debug_v1(str(output.get("question") or ""), base_signals=question_signals if isinstance(question_signals, dict) else None)
+                    output["debug"]["nlp50_query_frame_det_v1"] = _qf_dbg
+            except Exception:
+                pass
+
             try:
                 if isinstance(output.get("primary_response"), dict):
                     output["primary_response"]["code_version"] = _yureeka_get_code_version()
@@ -30007,6 +30147,15 @@ def main():
 
                     _yureeka_attach_build_meta_v1(evolution_output, stage="evolution", injected_url=inj_url)
                     _yureeka_attach_endstate_check_v1(evolution_output, stage="evolution", analysis_wrapper=baseline_data, injected_url=inj_url)
+                except Exception:
+                    pass
+
+
+                # NLP50: attach deterministic query-frame debug + fingerprint on evolution wrapper (assist-only; no LLM calls)
+                try:
+                    evolution_output.setdefault("debug", {})
+                    if isinstance(evolution_output.get("debug"), dict):
+                        evolution_output["debug"]["nlp50_query_frame_det_v1"] = _nlp50_query_frame_debug_v1(str(evolution_output.get("question") or ""), base_signals=None)
                 except Exception:
                     pass
 
@@ -37529,11 +37678,103 @@ except Exception:
     pass
 
 
+
+
+# NLP49: patch tracker entry
+try:
+    if isinstance(PATCH_TRACKER_V1, list):
+        _pid = "NLP49"
+        _existing_i = None
+        for _i, _e in enumerate(list(PATCH_TRACKER_V1)):
+            if isinstance(_e, dict) and str(_e.get("patch_id") or "") == _pid:
+                _existing_i = _i
+                break
+        _ent = {
+            "patch_id": _pid,
+            "date": "2026-02-20",
+            "title": "Wrapper-aware stability computation + injected URL fetch beacons (UI correctness; no policy changes)",
+            "summary": [
+                "Make REFACTOR13 diff-row getter wrapper-shape aware so UI recompute of summary/stability works even when the full evolution wrapper (with nested results.metric_changes) is passed; fixes 'suspicious 100% stability' cases caused by empty-row reads.",
+                "Improve debug.endstate_check_v1 injection reporting: ensure checks.injected_url is never blank when a target hint is present, and add injected_url_fetched_hit_count/ratio/present derived from source_results (distinguish 'injected fetched' vs 'injected won rows')."
+            ],
+            "risk": "Low: reporting/UI-only; does not change deterministic selection/diff engines."
+        }
+        if _existing_i is None:
+            PATCH_TRACKER_V1.insert(0, dict(_ent))
+        else:
+            try:
+                _ex = PATCH_TRACKER_V1[_existing_i]
+                _auto = str((_ex or {}).get("summary") or "").strip()
+                if (not (_ex or {}).get("title")):
+                    _ex["title"] = _ent.get("title")
+                if (not (_ex or {}).get("date")):
+                    _ex["date"] = _ent.get("date")
+                if (not (_ex or {}).get("risk")):
+                    _ex["risk"] = _ent.get("risk")
+                if (_auto == "(auto placeholder)") or (_auto == ""):
+                    _ex["summary"] = _ent.get("summary")
+                PATCH_TRACKER_V1[_existing_i] = _ex
+            except Exception:
+                pass
+        try:
+            _yureeka_patch_tracker_ensure_head_v1(_pid, {"patch_id": _pid})
+        except Exception:
+            pass
+except Exception:
+    pass
+
 # PATCH_TRACKER tail normalization (v1) — ensure head matches CODE_VERSION after all patch tracker inserts
 # (Additive; preserves existing entries and does not affect deterministic selection/diff logic.)
 try:
     _cv = str(_yureeka_get_code_version() or "").strip()
     if _cv:
         _yureeka_patch_tracker_ensure_head_v1(_cv, {"patch_id": _cv})
+except Exception:
+    pass
+
+
+
+
+# NLP50: patch tracker entry
+try:
+    if isinstance(PATCH_TRACKER_V1, list):
+        _pid = "NLP50"
+        _existing_i = None
+        for _i, _e in enumerate(list(PATCH_TRACKER_V1)):
+            if isinstance(_e, dict) and str(_e.get("patch_id") or "") == _pid:
+                _existing_i = _i
+                break
+        _ent = {
+            "patch_id": _pid,
+            "date": "2026-02-20",
+            "title": "Deterministic query-frame fingerprint beacons (towards NLP/LLM end-state; assist-only)",
+            "summary": [
+                "Attach a deterministic, no-LLM query-frame to analysis and evolution wrappers as debug.nlp50_query_frame_det_v1 (metric_families/geo/time/years/unit prefs) plus stable hashes (query_hash/frame_hash/fingerprint) to support later semantic alignment and cache-replay audit.",
+                "Surface query_fingerprint_v1 and query_frame_hash_v1 in llm_sidecar_health_v1 (hash-only) so triads can confirm semantic stability without leaking raw prompts or adding network behavior."
+            ],
+            "risk": "Low: diagnostics/beacons only; deterministic selection, thresholds, and network behavior unchanged."
+        }
+        if _existing_i is None:
+            PATCH_TRACKER_V1.append(_ent)
+        else:
+            try:
+                _ex = PATCH_TRACKER_V1[_existing_i]
+                if isinstance(_ex, dict):
+                    _auto = str((_ex.get("summary") or "") if not isinstance(_ex.get("summary"), list) else "")
+                    if not (_ex.get("title")):
+                        _ex["title"] = _ent.get("title")
+                    if not (_ex.get("date")):
+                        _ex["date"] = _ent.get("date")
+                    if not (_ex or {}).get("risk"):
+                        _ex["risk"] = _ent.get("risk")
+                    if (_auto == "(auto placeholder)") or (_auto == ""):
+                        _ex["summary"] = _ent.get("summary")
+                    PATCH_TRACKER_V1[_existing_i] = _ex
+            except Exception:
+                pass
+        try:
+            _yureeka_patch_tracker_ensure_head_v1(_pid, {"patch_id": _pid})
+        except Exception:
+            pass
 except Exception:
     pass
