@@ -458,7 +458,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "NLP36"
+_YUREEKA_CODE_VERSION_LOCK = "NLP38"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 # REFACTOR206: Release Candidate freeze (no pipeline behavior change).
 YUREEKA_RELEASE_CANDIDATE_V1 = False
@@ -26635,21 +26635,26 @@ def render_source_anchored_results(results, query: str):
     sources_checked = _safe_int(results.get("sources_checked"), 0)
     sources_fetched = _safe_int(results.get("sources_fetched"), 0)
     # NLP05: Prefer injection-aware (production-only) stability/summary when running against injected URLs.
+    # NLP37: In injection mode, show *raw* stability (includes injected rows) to avoid a misleading 100%
+    # when production_rows_total == 0. Keep the "effective" (production-only) stability as a secondary caption.
     dbg = results.get("debug") or {}
     inj_gate = dbg.get("row_delta_gating_v4") if isinstance(dbg, dict) else None
     is_injection_run = bool(isinstance(inj_gate, dict) and inj_gate.get("injection_run"))
 
     summary = results.get("summary") or {}
-    if is_injection_run and isinstance(results.get("summary_effective"), dict):
-        summary = results.get("summary_effective") or summary
     if not isinstance(summary, dict):
         summary = {}
 
-    stability = None
-    if is_injection_run:
-        stability = _safe_float(results.get("stability_score_effective"), None)
-    if stability is None:
-        stability = _safe_float(results.get("stability_score"), 0.0)
+    raw_stability = _safe_float(results.get("stability_score"), 0.0)
+    effective_stability = _safe_float(results.get("stability_score_effective"), None)
+
+    production_rows_total = 0
+    injected_rows_total = 0
+    if isinstance(inj_gate, dict):
+        production_rows_total = _safe_int(inj_gate.get("production_rows_total"), 0)
+        injected_rows_total = _safe_int(inj_gate.get("injected_rows_total"), 0)
+
+    stability = raw_stability
 
     metrics_inc = _safe_int(summary.get("metrics_increased"), 0)
     metrics_dec = _safe_int(summary.get("metrics_decreased"), 0)
@@ -26659,7 +26664,8 @@ def render_source_anchored_results(results, query: str):
     col1.metric("Sources Checked", sources_checked)
     col2.metric("Sources Fetched", sources_fetched)
     col3.metric("Stability", _fmt_pct(stability))
-    metrics_inj = _safe_int(summary.get("metrics_injected"), 0)
+    _sum_eff = results.get("summary_effective") if isinstance(results.get("summary_effective"), dict) else {}
+    metrics_inj = _safe_int(_sum_eff.get("metrics_injected"), injected_rows_total)
     if is_injection_run:
         col4.info(f"🧪 Injection Mode ({metrics_inj} injected)")
     elif metrics_inc > metrics_dec:
@@ -26671,6 +26677,12 @@ def render_source_anchored_results(results, query: str):
 
     if message:
         st.caption(message)
+
+    if is_injection_run:
+        if production_rows_total > 0 and (effective_stability is not None):
+            st.caption(f"Prod-only stability (excluding injected rows): {_fmt_pct(effective_stability)}")
+        else:
+            st.caption("Prod-only stability (excluding injected rows): n/a (0 production rows)")
 
     st.markdown("---")
 
@@ -36204,6 +36216,78 @@ except Exception:
 
 
 
+
+
+
+
+
+# NLP38: patch tracker entry
+try:
+    if isinstance(PATCH_TRACKER_V1, list):
+        _pid = "NLP38"
+        _existing_i = None
+        for _i, _e in enumerate(list(PATCH_TRACKER_V1)):
+            if isinstance(_e, dict) and str(_e.get("patch_id") or "") == _pid:
+                _existing_i = _i
+                break
+        _ent = {
+            "patch_id": _pid,
+            "date": "2026-02-20",
+            "title": "NLP38 Triad cadence run: version bump + patch tracker hygiene (no behavior change)",
+            "summary": [
+                "No functional changes beyond bumping CODE_VERSION to NLP38 and registering this patch in the tracker.",
+                "This patch is intended for the scheduled triad run (every-two-patch cadence) following the NLP37 UI-only stability display fix."
+            ],
+            "risk": "Low: patch hygiene only; deterministic selection/diff logic unchanged."
+        }
+        if _existing_i is None:
+            PATCH_TRACKER_V1.insert(0, dict(_ent))
+        else:
+            try:
+                _ex = PATCH_TRACKER_V1[_existing_i]
+                _auto = str((_ex or {}).get("summary") or "").strip()
+                if (not (_ex or {}).get("title")):
+                    _ex["title"] = _ent.get("title")
+                if (not (_ex or {}).get("date")):
+                    _ex["date"] = _ent.get("date")
+                if (not (_ex or {}).get("risk")):
+                    _ex["risk"] = _ent.get("risk")
+                if (_auto == "(auto) head normalized to code version") or (_auto == ""):
+                    _ex["summary"] = _ent.get("summary")
+                PATCH_TRACKER_V1[_existing_i] = _ex
+            except Exception:
+                pass
+        try:
+            _yureeka_patch_tracker_ensure_head_v1(_pid, {"patch_id": _pid})
+        except Exception:
+            pass
+except Exception:
+    pass
+
+
+# NLP37: patch tracker entry
+try:
+    if isinstance(PATCH_TRACKER_V1, list):
+        _pid = "NLP37"
+        _existing_i = None
+        for _i, _e in enumerate(list(PATCH_TRACKER_V1)):
+            if isinstance(_e, dict) and str(_e.get("patch_id") or "") == _pid:
+                _existing_i = _i
+                break
+        if _existing_i is None:
+            PATCH_TRACKER_V1.insert(0, {
+                "patch_id": "NLP37",
+                "date": "2026-02-20",
+                "title": "Fix injection-mode stability display (show raw + label prod-only)",
+                "summary": [
+                    "In the Streamlit evolution header, display raw stability_score during injection runs so the headline stability reflects injected deltas (avoids misleading 100% when production_rows_total==0).",
+                    "Retain stability_score_effective/summary_effective for audit; show an explicit 'Prod-only stability' caption (or n/a when no production rows).",
+                    "No changes to deterministic metric winner/value selection; strict freshness tiebreak logic unchanged; REFACTOR206 frozen behavior preserved when assist flags are OFF."
+                ],
+                "risk": "low"
+            })
+except Exception:
+    pass
 
 
 # NLP36: patch tracker entry
