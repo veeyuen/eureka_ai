@@ -458,7 +458,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "NLP22"
+_YUREEKA_CODE_VERSION_LOCK = "NLP24"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 # REFACTOR206: Release Candidate freeze (no pipeline behavior change).
 YUREEKA_RELEASE_CANDIDATE_V1 = False
@@ -15808,6 +15808,7 @@ def _fresh01_extract_url_date_candidates_v1(url: str) -> list:
         return []
     u = url.strip()
     out = []
+    qpos = u.find('?')
     try:
         # YYYY-MM-DD / YYYY/MM/DD (also matches inside query strings)
         for m in re.finditer(r"(20\d{2})[-/](\d{1,2})[-/](\d{1,2})", u):
@@ -15821,7 +15822,8 @@ def _fresh01_extract_url_date_candidates_v1(url: str) -> list:
             dt = _fresh01__make_dt_v1(yy, mm, dd)
             if not dt:
                 continue
-            out.append({"dt": dt, "pos": 0, "raw": m.group(0), "kind": "url", "ctx": "url"})
+            ctx = "released" if (qpos == -1 or m.start() < qpos) else "url"
+            out.append({"dt": dt, "pos": 0, "raw": m.group(0), "kind": "url", "ctx": ctx})
 
         # Compact YYYYMMDD (common in blog paths): .../20260217/...
         for m in re.finditer(r"(?<!\d)(20\d{2})(\d{2})(\d{2})(?!\d)", u):
@@ -15835,7 +15837,8 @@ def _fresh01_extract_url_date_candidates_v1(url: str) -> list:
             dt = _fresh01__make_dt_v1(yy, mm, dd)
             if not dt:
                 continue
-            out.append({"dt": dt, "pos": 0, "raw": m.group(0), "kind": "url_compact", "ctx": "url"})
+            ctx = "released" if (qpos == -1 or m.start() < qpos) else "url"
+            out.append({"dt": dt, "pos": 0, "raw": m.group(0), "kind": "url_compact", "ctx": ctx})
     except Exception:
         return out
     return out[:6]
@@ -33122,6 +33125,12 @@ def _refactor28_schema_only_rebuild_authoritative_v1(
                         "published_at": "",
                         "freshness_bucket": "",
 
+                        "freshness_date_confidence": None,
+                        "freshness_method": "",
+                        "freshness_method_detail": "",
+                        "freshness_hint_kind": "",
+                        "freshness_confidence_label": "",
+                        "published_at_hint_kind": "",
                     }
 
                     _u = str(_sum.get("url") or "").strip()
@@ -33133,6 +33142,12 @@ def _refactor28_schema_only_rebuild_authoritative_v1(
                             _sum["freshness_age_days"] = _fm.get("freshness_age_days")
                             _sum["published_at"] = _fm.get("published_at") or ""
                             _sum["freshness_bucket"] = _fm.get("freshness_bucket") or ""
+                            _sum["freshness_date_confidence"] = _fm.get("freshness_date_confidence")
+                            _sum["freshness_method"] = _fm.get("freshness_method") or ""
+                            _sum["freshness_method_detail"] = _fm.get("freshness_method_detail") or ""
+                            _sum["freshness_hint_kind"] = _fm.get("freshness_hint_kind") or ""
+                            _sum["freshness_confidence_label"] = _fm.get("freshness_confidence_label") or ""
+                            _sum["published_at_hint_kind"] = _fm.get("published_at_hint_kind") or ""
                     except Exception:
                         pass
                     _replaced = False
@@ -33756,6 +33771,8 @@ def _refactor28_schema_only_rebuild_authoritative_v1(
                                 _ftb["tie_count"] = int(_fresh11_ftb_override.get("tie_count") or 0)
                                 _ftb["changed_winner"] = bool(_fresh11_ftb_override.get("changed_winner"))
                                 _ftb["reason"] = str(_fresh11_ftb_override.get("reason") or _ftb.get("reason") or "")
+                                _ftb["blocked_reason"] = str(_fresh11_ftb_override.get("blocked_reason") or "")
+                                _ftb["min_confidence"] = _fresh11_ftb_override.get("min_confidence")
                         except Exception:
                             pass
 
@@ -33770,6 +33787,13 @@ def _refactor28_schema_only_rebuild_authoritative_v1(
                             _ftb["a_age_days"] = a0.get("freshness_age_days")
                             _ftb["b_age_days"] = b0.get("freshness_age_days")
 
+                            _ftb["a_confidence"] = a0.get("freshness_date_confidence")
+                            _ftb["b_confidence"] = b0.get("freshness_date_confidence")
+                            _ftb["min_confidence"] = _ftb.get("min_confidence")  # keep if already set by strict override
+                            _ftb["a_method"] = a0.get("freshness_method") or ""
+                            _ftb["b_method"] = b0.get("freshness_method") or ""
+                            _ftb["a_method_detail"] = a0.get("freshness_method_detail") or ""
+                            _ftb["b_method_detail"] = b0.get("freshness_method_detail") or ""
                             # NLP07: alias age-days fields for grep/compat (keep existing a_age_days/b_age_days)
                             try:
                                 if _ftb.get("a_freshness_age_days") is None:
@@ -35718,6 +35742,43 @@ except Exception:
     pass
 
 
+
+
+
+# NLP23: patch tracker entry
+try:
+    if isinstance(PATCH_TRACKER_V1, list) and not any(str(e.get("patch_id") or "") == "NLP23" for e in PATCH_TRACKER_V1 if isinstance(e, dict)):
+        PATCH_TRACKER_V1.insert(0, {
+            "patch_id": "NLP23",
+            "date": "2026-02-20",
+            "title": "Enrich year-anchor top3 candidates with freshness confidence/method; extend fresh_tiebreak beacon diagnostics",
+            "summary": [
+                "Attach freshness_date_confidence, freshness_method, and method detail fields to selection_year_anchor_v1.top3 entries from the stable source cache (baseline_sources_cache).",
+                "Populate per-metric fresh_tiebreak_v1 with a_confidence/b_confidence and method fields so low-confidence blocks are fully explainable in diagnostics (no behavior change unless strict tie-break already had sufficient data).",
+                "Keeps deterministic winner/value invariants when NLP/LLM flags are OFF; sidecar assist remains diagnostic-only except within existing score-tie freshness logic.",
+            ],
+            "risk": "low",
+        })
+except Exception:
+    pass
+
+
+# NLP24: patch tracker entry
+try:
+    if isinstance(PATCH_TRACKER_V1, list) and not any(str(e.get("patch_id") or "") == "NLP24" for e in PATCH_TRACKER_V1 if isinstance(e, dict)):
+        PATCH_TRACKER_V1.insert(0, {
+            "patch_id": "NLP24",
+            "date": "2026-02-20",
+            "title": "Upgrade URL-date confidence when date is in path (not query) to reduce low-confidence strict tiebreak blocks",
+            "summary": [
+                "Classify full YYYY/MM/DD, YYYY-MM-DD, YYYY.MM.DD, YYYY_MM_DD and compact YYYYMMDD URL dates as higher-confidence only when they occur in the URL path (before '?').",
+                "Keep query-string URL dates conservative (low-confidence) to avoid unsafe promotions.",
+                "This is a confidence upgrade only; strict tiebreak gates remain unchanged and deterministic winners/values are unaffected when NLP/LLM flags are OFF.",
+            ],
+            "risk": "Low: affects freshness confidence only; may allow strict tiebreak to engage more often for true score-ties.",
+        })
+except Exception:
+    pass
 
 
 # NLP22: patch tracker entry
