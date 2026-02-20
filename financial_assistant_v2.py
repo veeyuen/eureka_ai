@@ -458,7 +458,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "NLP18"
+_YUREEKA_CODE_VERSION_LOCK = "NLP20"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 # REFACTOR206: Release Candidate freeze (no pipeline behavior change).
 YUREEKA_RELEASE_CANDIDATE_V1 = False
@@ -4949,6 +4949,7 @@ def _fresh11_summarize_strict_tiebreaks_from_pmc_v1(pmc: dict) -> dict:
             "changed_winner_count": int(changed),
             "resolved_by_freshness_count": int(resolved),
             "missing_freshness_fallback_count": int(missing_fb),
+            "score_tie_blocked_low_confidence": int(by_reason.get("score_tie_blocked_low_confidence") or 0),
             "reasons": dict(sorted(by_reason.items(), key=lambda kv: (-int(kv[1] or 0), str(kv[0] or "")) )) if by_reason else {},
             "examples": list(examples),
             "derived_from": "primary_metrics_canonical.provenance.fresh_tiebreak_v1",
@@ -4957,6 +4958,47 @@ def _fresh11_summarize_strict_tiebreaks_from_pmc_v1(pmc: dict) -> dict:
     except Exception:
         return {}
 
+
+def _fresh04_low_confidence_blocks_v1(pmc: dict, max_examples: int = 12) -> dict:
+    """Extract examples where strict freshness tiebreak was blocked by low confidence."""
+    try:
+        if not isinstance(pmc, dict) or not pmc:
+            return {"blocked_count": 0, "examples": [], "derived_from": "primary_metrics_canonical.provenance.fresh_tiebreak_v1"}
+        blocked = 0
+        ex = []
+        for ck, vv in pmc.items():
+            if not isinstance(vv, dict):
+                continue
+            prov = vv.get("provenance") if isinstance(vv.get("provenance"), dict) else {}
+            ftb = prov.get("fresh_tiebreak_v1") if isinstance(prov, dict) else None
+            if not isinstance(ftb, dict):
+                continue
+            if str(ftb.get("reason") or "") != "score_tie_blocked_low_confidence":
+                continue
+            blocked += 1
+            if len(ex) < int(max_examples or 12):
+                ex.append({
+                    "canonical_key": str(ck),
+                    "reason": str(ftb.get("reason") or ""),
+                    "base_url": str(ftb.get("base_url") or ""),
+                    "winner_url": str(ftb.get("winner_url") or ""),
+                    "a_age_days": ftb.get("a_age_days"),
+                    "b_age_days": ftb.get("b_age_days"),
+                    "min_confidence": ftb.get("min_confidence"),
+                    "a_confidence": ftb.get("a_confidence"),
+                    "b_confidence": ftb.get("b_confidence"),
+                    "a_method": str(ftb.get("a_method") or ""),
+                    "b_method": str(ftb.get("b_method") or ""),
+                    "a_method_detail": str(ftb.get("a_method_detail") or ""),
+                    "b_method_detail": str(ftb.get("b_method_detail") or ""),
+                })
+        return {
+            "blocked_count": int(blocked),
+            "examples": list(ex),
+            "derived_from": "primary_metrics_canonical.provenance.fresh_tiebreak_v1",
+        }
+    except Exception:
+        return {}
 
 def _fresh11_attach_run_strict_tiebreak_summary_v1(wrapper: dict, default_path: str = "analysis") -> None:
     """Attach NLP11 strict tiebreak summary into the durable debug bucket (analysis/evolution)."""
@@ -4974,9 +5016,13 @@ def _fresh11_attach_run_strict_tiebreak_summary_v1(wrapper: dict, default_path: 
             return
         if not isinstance(dbg.get("fresh11_strict_tiebreak_summary_v1"), dict):
             dbg["fresh11_strict_tiebreak_summary_v1"] = summary
+        try:
+            if not isinstance(dbg.get("fresh04_low_confidence_blocks_v1"), dict):
+                dbg["fresh04_low_confidence_blocks_v1"] = _fresh04_low_confidence_blocks_v1(pmc)
+        except Exception:
+            pass
     except Exception:
         return
-
 
 
 def _yureeka_endstate_check_v1(stage: str, analysis_wrapper: dict = None, evolution_wrapper: dict = None, injected_url: str = "") -> dict:
@@ -15842,6 +15888,55 @@ def _fresh01_score_from_age_days_v1(age_days: Optional[int]) -> Optional[float]:
     except Exception:
         return None
 
+def _fresh03_method_counts_v1(sources: list) -> dict:
+    """Return a compact method/confidence histogram for published_at extraction.
+
+    Purely diagnostic + deterministic. Used to judge whether strict tiebreak can engage more often
+    without relaxing safety guarantees.
+    """
+    try:
+        if not isinstance(sources, list) or not sources:
+            return {
+                "sources_total": 0,
+                "sources_with_published_at": 0,
+                "by_method": {},
+                "by_method_detail": {},
+                "by_hint_kind": {},
+                "by_confidence_label": {},
+            }
+        total = 0
+        with_pub = 0
+        by_method = {}
+        by_detail = {}
+        by_hint = {}
+        by_conf = {}
+        for s in sources:
+            if not isinstance(s, dict):
+                continue
+            total += 1
+            pub = str(s.get("published_at") or s.get("source_published_at") or "").strip()
+            if pub:
+                with_pub += 1
+            mm = str(s.get("freshness_method") or "").strip() or "unknown"
+            md = str(s.get("freshness_method_detail") or "").strip() or "unknown"
+            hk = str(s.get("freshness_hint_kind") or s.get("published_at_hint_kind") or "").strip() or "unknown"
+            cl = str(s.get("freshness_confidence_label") or "").strip() or "unknown"
+            by_method[mm] = int(by_method.get(mm) or 0) + 1
+            by_detail[md] = int(by_detail.get(md) or 0) + 1
+            by_hint[hk] = int(by_hint.get(hk) or 0) + 1
+            by_conf[cl] = int(by_conf.get(cl) or 0) + 1
+        return {
+            "sources_total": int(total),
+            "sources_with_published_at": int(with_pub),
+            "by_method": dict(sorted(by_method.items(), key=lambda kv: (-int(kv[1] or 0), str(kv[0] or "")))) if by_method else {},
+            "by_method_detail": dict(sorted(by_detail.items(), key=lambda kv: (-int(kv[1] or 0), str(kv[0] or "")))) if by_detail else {},
+            "by_hint_kind": dict(sorted(by_hint.items(), key=lambda kv: (-int(kv[1] or 0), str(kv[0] or "")))) if by_hint else {},
+            "by_confidence_label": dict(sorted(by_conf.items(), key=lambda kv: (-int(kv[1] or 0), str(kv[0] or "")))) if by_conf else {},
+            "derived_from": "baseline_sources_cache[*].freshness_method/_detail/_hint_kind/_confidence_label",
+        }
+    except Exception:
+        return {}
+
 
 def _fresh01_bucket_from_age_days_v1(age_days: Optional[int]) -> str:
     """Deterministic freshness bucket label from age in days (LLM37 param-driven)."""
@@ -19025,6 +19120,11 @@ def attach_source_snapshots_to_analysis(analysis: dict, web_context: dict) -> di
                 analysis["debug"]["fresh01_source_freshness_v1"] = _f01
                 try:
                     analysis["debug"]["fresh12_confidence_summary_v1"] = _f01
+                except Exception:
+                    pass
+
+                try:
+                    analysis["debug"]["fresh03_method_counts_v1"] = _fresh03_method_counts_v1(baseline_sources_cache or [])
                 except Exception:
                     pass
 
@@ -32331,6 +32431,12 @@ def _refactor28_schema_only_rebuild_authoritative_v1(
                 "published_at": _s.get("published_at") or _s.get("source_published_at") or "",
                 "freshness_bucket": _s.get("freshness_bucket") or "",
                 "freshness_method": _s.get("freshness_method") or "",
+                "freshness_date_confidence": conf,
+                "freshness_confidence_label": _s.get("freshness_confidence_label") or "",
+                "freshness_method_detail": _s.get("freshness_method_detail") or "",
+                "freshness_hint_kind": _s.get("freshness_hint_kind") or _s.get("published_at_hint_kind") or "",
+                "published_at_hint_kind": _s.get("published_at_hint_kind") or "",
+                "freshness_candidate_kind": _s.get("freshness_candidate_kind") or "",
             }
             _fresh02_sources_indexed += 1
     except Exception:
@@ -32870,6 +32976,13 @@ def _refactor28_schema_only_rebuild_authoritative_v1(
                     'published_at': _meta11.get('published_at') or '',
                     'freshness_bucket': _meta11.get('freshness_bucket') or '',
                     'freshness_method': _meta11.get('freshness_method') or '',
+'freshness_date_confidence': _meta11.get('freshness_date_confidence'),
+'freshness_confidence_label': _meta11.get('freshness_confidence_label') or '',
+'freshness_method_detail': _meta11.get('freshness_method_detail') or '',
+'freshness_hint_kind': _meta11.get('freshness_hint_kind') or _meta11.get('published_at_hint_kind') or '',
+'published_at_hint_kind': _meta11.get('published_at_hint_kind') or '',
+'freshness_candidate_kind': _meta11.get('freshness_candidate_kind') or '',
+
                 })
                 _fresh11_pool.sort(key=lambda _p: _p.get('tie'))
                 if len(_fresh11_pool) > int(_fresh11_pool_max or 8):
@@ -35511,6 +35624,41 @@ try:
         })
 except Exception:
     pass
+
+# NLP19: patch tracker entry
+try:
+    if isinstance(PATCH_TRACKER_V1, list) and not any(str(e.get("patch_id") or "") == "NLP19" for e in PATCH_TRACKER_V1 if isinstance(e, dict)):
+        PATCH_TRACKER_V1.insert(0, {
+            "patch_id": "NLP19",
+            "date": "2026-02-19",
+            "title": "NLP19 Freshness confidence & coverage: higher-confidence date channels + diagnostics",
+            "summary": [
+                "Expand published_at extraction confidence channels (JSON-LD + meta tags + <time datetime>) while keeping strict gating unchanged.",
+                "Add diagnostics: fresh03_method_counts_v1 histogram and fresh04_low_confidence_blocks_v1 examples to target score_tie_blocked_low_confidence.",
+                "Propagate freshness confidence/method fields into strict tiebreak pool so confidence gating reflects real extraction (no drift when flags OFF).",
+            ],
+            "risk": "Low: deterministic-only; no winner/value changes unless already a score-tie under strict freshness rules.",
+        })
+except Exception:
+    pass
+
+# NLP20: patch tracker entry
+try:
+    if isinstance(PATCH_TRACKER_V1, list) and not any(str(e.get("patch_id") or "") == "NLP20" for e in PATCH_TRACKER_V1 if isinstance(e, dict)):
+        PATCH_TRACKER_V1.insert(0, {
+            "patch_id": "NLP20",
+            "date": "2026-02-19",
+            "title": "NLP20 Strict tiebreak confidence plumbing + method histogram beacons (no gate relaxation)",
+            "summary": [
+                "Ensure freshness_date_confidence and method diagnostics are plumbed into _fresh02_url2meta and _fresh11_pool for strict tiebreak gating.",
+                "Attach run-scope beacons: fresh03_method_counts_v1 and fresh04_low_confidence_blocks_v1 alongside existing fresh11_strict_tiebreak_summary_v1.",
+                "Expand conservative URL date patterns (YYYY.MM.DD / YYYY_MM_DD) with low confidence; keep strict threshold unchanged.",
+            ],
+            "risk": "Low: deterministic-only; strict gate unchanged; winners unchanged unless already a deterministic score-tie.",
+        })
+except Exception:
+    pass
+
 
 # NLP17: patch tracker entry
 try:
