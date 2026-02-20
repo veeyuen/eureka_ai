@@ -458,7 +458,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "NLP24"
+_YUREEKA_CODE_VERSION_LOCK = "NLP26"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 # REFACTOR206: Release Candidate freeze (no pipeline behavior change).
 YUREEKA_RELEASE_CANDIDATE_V1 = False
@@ -10413,7 +10413,7 @@ def fetch_web_context(
                         except Exception:
                             pass
                         try:
-                            need = (meta.get("freshness_age_days") is None) or (meta.get("published_at") in (None, ""))
+                            need = (meta.get("freshness_age_days") is None) or (meta.get("published_at") in (None, "")) or (meta.get("freshness_date_confidence") is None)
                             if need:
                                 _ref_fetched_at = meta.get("fallback_snapshot_fetched_at") or (_prev.get("fetched_at") if isinstance(_prev, dict) else "") or ""
                                 _ct = meta.get("clean_text") or meta.get("content") or ""
@@ -11375,7 +11375,7 @@ def source_freshness_score_v1(sources: Any, web_context: dict) -> Optional[float
                             continue
                         # Compute missing freshness fields once (no refetch; uses scraped_content + fetched_at).
                         try:
-                            need = (meta.get("freshness_age_days") is None) or (meta.get("published_at") in (None, ""))
+                            need = (meta.get("freshness_age_days") is None) or (meta.get("published_at") in (None, "")) or (meta.get("freshness_date_confidence") is None)
                             if need:
                                 content = ""
                                 try:
@@ -15839,6 +15839,58 @@ def _fresh01_extract_url_date_candidates_v1(url: str) -> list:
                 continue
             ctx = "released" if (qpos == -1 or m.start() < qpos) else "url"
             out.append({"dt": dt, "pos": 0, "raw": m.group(0), "kind": "url_compact", "ctx": ctx})
+        # Numeric Year-Month in URL path: .../2025-11/... or .../2025/11/... (low-confidence, day=01)
+        # NOTE: Only consider when a full day is NOT present at the same position.
+        try:
+            # Avoid matching year-month-day again: negative lookahead for sep+dd
+            for m in re.finditer(r"(20\d{2})[-/._](\d{1,2})(?![-/._]\d{1,2})", u):
+                # Only trust path portion more than query
+                if qpos != -1 and m.start() > qpos:
+                    continue
+                yy = _fresh01__safe_int_v1(m.group(1))
+                mm = _fresh01__safe_int_v1(m.group(2))
+                if not yy or not mm:
+                    continue
+                if mm < 1 or mm > 12:
+                    continue
+                dt = _fresh01__make_dt_v1(yy, mm, 1)
+                if not dt:
+                    continue
+                ctx = "released" if (qpos == -1 or m.start() < qpos) else "url"
+                out.append({"dt": dt, "pos": 0, "raw": m.group(0), "kind": "url_ym", "ctx": ctx})
+        except Exception:
+            pass
+
+        # Month-Year in URL slug: .../november-2025/... or .../2025/november/... (low-confidence, day=01)
+        try:
+            mon_re2 = r"jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t|tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?"
+            # november-2025 / nov_2025 / nov2025
+            for m in re.finditer(rf"\b({mon_re2})[-_ ]?(20\d{{2}})\b", u, flags=re.I):
+                mon_s = (m.group(1) or '').lower()[:3]
+                yy = _fresh01__safe_int_v1(m.group(2))
+                mm = _FRESH01_MONTHS.get(mon_s, None)
+                if not yy or not mm:
+                    continue
+                dt = _fresh01__make_dt_v1(yy, mm, 1)
+                if not dt:
+                    continue
+                ctx = "released" if (qpos == -1 or m.start() < qpos) else "url"
+                out.append({"dt": dt, "pos": 0, "raw": m.group(0), "kind": "url_mon_yr", "ctx": ctx})
+
+            # 2025-november / 2025/november
+            for m in re.finditer(rf"\b(20\d{{2}})[-/_]({mon_re2})\b", u, flags=re.I):
+                yy = _fresh01__safe_int_v1(m.group(1))
+                mon_s = (m.group(2) or '').lower()[:3]
+                mm = _FRESH01_MONTHS.get(mon_s, None)
+                if not yy or not mm:
+                    continue
+                dt = _fresh01__make_dt_v1(yy, mm, 1)
+                if not dt:
+                    continue
+                ctx = "released" if (qpos == -1 or m.start() < qpos) else "url"
+                out.append({"dt": dt, "pos": 0, "raw": m.group(0), "kind": "url_mon_yr", "ctx": ctx})
+        except Exception:
+            pass
     except Exception:
         return out
     return out[:6]
@@ -16085,6 +16137,8 @@ def _fresh01_compute_source_freshness_v2(text: str, fetched_at: str = "", url: s
         cands = _fresh01_extract_date_candidates_v1(text, max_scan=5200)
         if not cands:
             cands = _fresh01_extract_date_candidates_v1(text, max_scan=20000)
+        if not cands:
+            cands = _fresh01_extract_date_candidates_v1(text, max_scan=60000)
         # URL fallback (full YYYY/MM/DD patterns only)
         if url:
             try:
@@ -16195,6 +16249,10 @@ def _fresh01_compute_source_freshness_v2(text: str, fetched_at: str = "", url: s
             out["freshness_candidate_kind"] = _k
             if _k == "url":
                 out["freshness_method_detail"] = "url_fallback_v1"
+            elif _k == "url_mon_yr":
+                out["freshness_method_detail"] = "url_month_year_v1"
+            elif _k == "url_ym":
+                out["freshness_method_detail"] = "url_year_month_v1"
             elif _k == "cache" and not out.get("freshness_method_detail"):
                 out["freshness_method_detail"] = "cached_prev_v1"
         except Exception:
@@ -16203,6 +16261,14 @@ def _fresh01_compute_source_freshness_v2(text: str, fetched_at: str = "", url: s
         # confidence from heuristics used in deterministic selection
         heur = int(best.get("_heur") or 0)
         conf = float(_fresh01_confidence_from_heur_v1(heur))
+        # NLP25: month-year URL dates are coarse; keep conservative confidence so strict tiebreak will not engage.
+        try:
+            if str(best.get("kind") or "") == "url_mon_yr":
+                conf = min(float(conf), 0.55)
+            elif str(best.get("kind") or "") == "url_ym":
+                conf = min(float(conf), 0.55)
+        except Exception:
+            pass
         out["freshness_date_confidence"] = round(conf, 3)
 
         # NLP14: confidence label bucket (high/med/low)
@@ -32475,6 +32541,40 @@ def _refactor28_schema_only_rebuild_authoritative_v1(
                 _un = str(_u).strip().lower()
             age = _s.get("freshness_age_days")
             conf = _s.get("freshness_date_confidence")
+            # NLP25: backfill missing confidence deterministically so strict tiebreak diagnostics are actionable.
+            if conf is None:
+                try:
+                    cl = str(_s.get("freshness_confidence_label") or "").strip().lower()
+                    if cl == "high":
+                        conf = 0.95
+                    elif cl == "med":
+                        conf = 0.82
+                    elif cl == "low":
+                        conf = 0.75
+                except Exception:
+                    conf = None
+            if conf is None:
+                try:
+                    mm = str(_s.get("freshness_method") or "").strip().lower()
+                    md = str(_s.get("freshness_method_detail") or "").strip().lower()
+                    if md == "url_month_year_v1":
+                        conf = 0.55
+                    elif md.startswith("url_"):
+                        conf = 0.70
+                    elif mm == "html_hint_v1":
+                        conf = 0.90
+                    elif mm == "regex_v1":
+                        conf = 0.75
+                except Exception:
+                    conf = None
+            if conf is None:
+                try:
+                    # If we have a published_at string but no confidence, keep conservative default.
+                    pub0 = str(_s.get("published_at") or _s.get("source_published_at") or "").strip()
+                    if pub0:
+                        conf = 0.70
+                except Exception:
+                    conf = None
             sc = _s.get("freshness_score")
             # Compute score fallback from age+confidence if needed.
             sc_f = None
@@ -35776,6 +35876,44 @@ try:
                 "This is a confidence upgrade only; strict tiebreak gates remain unchanged and deterministic winners/values are unaffected when NLP/LLM flags are OFF.",
             ],
             "risk": "Low: affects freshness confidence only; may allow strict tiebreak to engage more often for true score-ties.",
+        })
+except Exception:
+    pass
+
+
+
+# NLP25: patch tracker entry
+try:
+    if isinstance(PATCH_TRACKER_V1, list) and not any(str(e.get("patch_id") or "") == "NLP25" for e in PATCH_TRACKER_V1 if isinstance(e, dict)):
+        PATCH_TRACKER_V1.insert(0, {
+            "patch_id": "NLP25",
+            "date": "2026-02-20",
+            "title": "NLP25 Backfill missing freshness confidence in URL->meta map; add conservative month-year URL fallback for coverage",
+            "summary": [
+                "Backfill freshness_date_confidence in the stable URL->freshness meta map (_fresh02_url2meta) when older caches have published_at but missing confidence, using deterministic defaults derived from method/label.",
+                "Add a conservative month-year URL date extractor (e.g., 'november-2025') producing YYYY-MM-01 with low confidence (0.55) so it improves published_at coverage without enabling strict tiebreak.",
+                "Widen regex scan once (up to 60k chars) to reduce false 'no date found' cases for long pages, while preserving determinism and existing safety gates.",
+            ],
+            "risk": "low",
+        })
+except Exception:
+    pass
+
+
+
+# NLP26: patch tracker entry
+try:
+    if isinstance(PATCH_TRACKER_V1, list) and not any(str(e.get("patch_id") or "") == "NLP26" for e in PATCH_TRACKER_V1 if isinstance(e, dict)):
+        PATCH_TRACKER_V1.insert(0, {
+            "patch_id": "NLP26",
+            "date": "2026-02-20",
+            "title": "NLP26 Add conservative numeric YYYY-MM URL fallback (day=01) and wire method_detail + confidence cap",
+            "summary": [
+                "Adds low-confidence numeric Year-Month URL parsing (YYYY-MM / YYYY/MM / YYYY.MM) using day=01 for coverage without enabling strict tiebreak.",
+                "Maps kind=url_ym into freshness_method_detail=url_year_month_v1 and caps confidence at 0.55 (same as month-name URL fallback).",
+                "Preserves deterministic behavior and keeps strict gate unchanged; winners remain unchanged unless already in an exact score-tie path.",
+            ],
+            "risk": "Low: adds conservative URL candidate class; confidence remains low so strict tiebreak will not engage from this signal alone.",
         })
 except Exception:
     pass
