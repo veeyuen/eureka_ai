@@ -458,7 +458,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "NLP30"
+_YUREEKA_CODE_VERSION_LOCK = "NLP32"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 # REFACTOR206: Release Candidate freeze (no pipeline behavior change).
 YUREEKA_RELEASE_CANDIDATE_V1 = False
@@ -33619,6 +33619,12 @@ def _refactor28_schema_only_rebuild_authoritative_v1(
                                     agei = int(_p.get("freshness_age_days"))
                                 except Exception:
                                     agei = 999999
+                                # If score missing but age exists, synthesize a comparable score.
+                                if scq is None and agei != 999999:
+                                    try:
+                                        scq = _fresh11_quant_score(max(0.0, 100.0 - float(agei)))
+                                    except Exception:
+                                        scq = None
                                 # Higher score is better; smaller age is better; tie is stable fallback
                                 return (-(scq if scq is not None else 0.0), agei, _p.get("tie"))
 
@@ -33626,6 +33632,9 @@ def _refactor28_schema_only_rebuild_authoritative_v1(
                             _winp = _grp_sorted[0] if _grp_sorted else None
                             _win_c = (_winp or {}).get("cand") if isinstance(_winp, dict) else None
                             _win_url = str((_winp or {}).get("url") or "").strip()
+
+                            _block_reason = ""
+                            _min_conf = None
 
                             _changed = False
                             try:
@@ -33636,10 +33645,11 @@ def _refactor28_schema_only_rebuild_authoritative_v1(
 
                             if _changed and isinstance(_win_c, dict):
                                 # NLP14: value-invariance + confidence guard (strict tiebreak)
+                                _base_best_cand = best
                                 _allow_swap = True
                                 _block_reason = ""
                                 try:
-                                    # Confidence threshold (require both base + winner have >= 0.82)
+                                    # Confidence threshold (require both base + winner have >= min_confidence)
                                     def _f14_conf(_p):
                                         try:
                                             return float((_p or {}).get("freshness_date_confidence") or 0.0)
@@ -33654,7 +33664,19 @@ def _refactor28_schema_only_rebuild_authoritative_v1(
                                     except Exception:
                                         _base_p = None
                                     _c_base = _f14_conf(_base_p)
+                                    try:
+                                        if (_c_base <= 0.0) and _base_url:
+                                            _c_base = float(((_fresh02_url2meta.get(_normalize_url(_base_url)) or {}) if isinstance(_fresh02_url2meta, dict) else {}).get("freshness_date_confidence") or _c_base)
+                                    except Exception:
+                                        pass
+
                                     _c_win = _f14_conf(_winp)
+                                    try:
+                                        if (_c_win <= 0.0) and _win_url:
+                                            _c_win = float(((_fresh02_url2meta.get(_normalize_url(_win_url)) or {}) if isinstance(_fresh02_url2meta, dict) else {}).get("freshness_date_confidence") or _c_win)
+                                    except Exception:
+                                        pass
+
                                     _min_conf = 0.82
                                     try:
                                         _min_conf = float(_yureeka_hp_get_v1("freshness.tiebreak.min_confidence", 0.82) or 0.82)
@@ -33687,6 +33709,9 @@ def _refactor28_schema_only_rebuild_authoritative_v1(
                                         _base_c = (_base_p or {}).get("cand") if isinstance(_base_p, dict) else None
                                     except Exception:
                                         _base_c = None
+                                    if not isinstance(_base_c, dict):
+                                        _base_c = _base_best_cand if isinstance(_base_best_cand, dict) else None
+
                                     _v_base = _f14_val(_base_c)
                                     _v_win = _f14_val(_win_c)
                                     if (_v_base is not None) and (_v_win is not None):
@@ -33700,7 +33725,16 @@ def _refactor28_schema_only_rebuild_authoritative_v1(
                                     pass
 
                                 if not _allow_swap:
+                                    # Do NOT apply the swap if guard blocks it.
                                     _changed = False
+                                    try:
+                                        best = _base_best_cand
+                                    except Exception:
+                                        pass
+                                    try:
+                                        _win_url = _base_url
+                                    except Exception:
+                                        pass
                                     try:
                                         if isinstance(_FRESH14_GUARD_V1, dict):
                                             _FRESH14_GUARD_V1["blocked_swap_count"] = int(_FRESH14_GUARD_V1.get("blocked_swap_count") or 0) + 1
@@ -33708,7 +33742,7 @@ def _refactor28_schema_only_rebuild_authoritative_v1(
                                                 _FRESH14_GUARD_V1["blocked_low_confidence_count"] = int(_FRESH14_GUARD_V1.get("blocked_low_confidence_count") or 0) + 1
                                             if _block_reason == "score_tie_blocked_value_invariance":
                                                 _FRESH14_GUARD_V1["blocked_value_mismatch_count"] = int(_FRESH14_GUARD_V1.get("blocked_value_mismatch_count") or 0) + 1
-                                            ex = {"canonical_key": str(canonical_key or ""), "base_url": str(_base_url or ""), "winner_url": str(_win_url or ""), "reason": _block_reason}
+                                            ex = {"canonical_key": str(canonical_key or ""), "base_url": str(_base_url or ""), "attempted_winner_url": str(_win_url or ""), "reason": _block_reason}
                                             try:
                                                 if isinstance(_FRESH14_GUARD_V1.get("examples"), list) and len(_FRESH14_GUARD_V1["examples"]) < 5:
                                                     _FRESH14_GUARD_V1["examples"].append(ex)
@@ -33716,14 +33750,14 @@ def _refactor28_schema_only_rebuild_authoritative_v1(
                                                 pass
                                     except Exception:
                                         pass
-
-                                best = _win_c
-                                if _ref100_required_years:
-                                    try:
-                                        _ref100_winner_years = list((_winp or {}).get("years") or [])
-                                        _ref100_winner_has_all_years = True
-                                    except Exception:
-                                        pass
+                                else:
+                                    best = _win_c
+                                    if _ref100_required_years:
+                                        try:
+                                            _ref100_winner_years = list((_winp or {}).get("years") or [])
+                                            _ref100_winner_has_all_years = True
+                                        except Exception:
+                                            pass
 
                             _f17_block_reason = ""
                             try:
@@ -36114,6 +36148,41 @@ except Exception:
 
 
 
+
+# NLP32: patch tracker entry
+try:
+    if isinstance(PATCH_TRACKER_V1, list) and not any(str(e.get("patch_id") or "") == "NLP32" for e in PATCH_TRACKER_V1 if isinstance(e, dict)):
+        PATCH_TRACKER_V1.insert(0, {
+            "patch_id": "NLP32",
+            "date": "2026-02-20",
+            "title": "NLP32 Strict tiebreak beacon correctness: reset per-metric guard variables",
+            "summary": [
+                "Fix a Python function-scope leakage bug where _block_reason/_min_conf could persist across metrics when no swap was attempted, causing false score_tie_blocked_low_confidence beacons and inflated blocked counts.",
+                "Initialize guard variables per metric before computing changed_winner; this restores strict tiebreak auditability without relaxing gates or altering deterministic winners/values (except within legitimate score-tie paths already governed by the strict tie-break).",
+                "Patch hygiene: bump CODE_VERSION and register patch tracker entry."
+            ],
+            "risk": "Low: beacon correctness + auditability fix; strict tiebreak decision thresholds unchanged."
+        })
+except Exception:
+    pass
+
+# NLP31: patch tracker entry
+try:
+    if isinstance(PATCH_TRACKER_V1, list) and not any(str(e.get("patch_id") or "") == "NLP31" for e in PATCH_TRACKER_V1 if isinstance(e, dict)):
+        PATCH_TRACKER_V1.insert(0, {
+            "patch_id": "NLP31",
+            "date": "2026-02-20",
+            "title": "NLP31 Strict tiebreak safety: prevent blocked swaps + robust confidence fallback",
+            "summary": [
+                "Fix strict tiebreak guard so swaps are only applied when allowed; blocked swaps (low-confidence/value-invariance) now correctly retain the base deterministic winner.",
+                "When base candidate is not found inside the strict tie group, fall back to normalized freshness meta for confidence (reduces false low-confidence blocks).",
+                "In strict sorting, synthesize freshness_score from age_days when score is missing (deterministic, improves ordering without refetch).",
+                "Patch hygiene: bump CODE_VERSION and register patch tracker entry."
+            ],
+            "risk": "Low: affects only score-tie strict tiebreak path; makes behavior more conservative and restores auditability."
+        })
+except Exception:
+    pass
 
 # NLP30: patch tracker entry
 try:
