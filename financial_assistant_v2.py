@@ -458,7 +458,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "NLP26"
+_YUREEKA_CODE_VERSION_LOCK = "NLP28"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 # REFACTOR206: Release Candidate freeze (no pipeline behavior change).
 YUREEKA_RELEASE_CANDIDATE_V1 = False
@@ -15457,6 +15457,10 @@ def _fresh01_extract_pub_hint_from_html_v1(html: str, max_chars: int = 250000) -
                 "og:published_time": 60,
                 "og:updated_time": 70,
                 "og:modified_time": 75,
+                "og:article:published_time": 60,
+                "og:article:modified_time": 70,
+                "og:article:updated_time": 70,
+                "twitter:label1": 10,
                 "rnews:datepublished": 80,
                 "rnews:datemodified": 85,
             }
@@ -15475,6 +15479,14 @@ def _fresh01_extract_pub_hint_from_html_v1(html: str, max_chars: int = 250000) -
                 "datemodified": 80,
                 "last-modified": 80,
                 "lastmodified": 80,
+                "lastmod": 80,
+                "last-modified": 80,
+                "article:published": 75,
+                "article:modified": 80,
+                "article:updated": 80,
+                "pdate": 65,
+                "ptime": 55,
+                "dateissued": 65,
                 "modified": 70,
                 "updated": 70,
                 "parsely-pub-date": 85,
@@ -15586,16 +15598,29 @@ def _fresh01_extract_pub_hint_from_html_v1(html: str, max_chars: int = 250000) -
                         cur = stack.pop()
                         if isinstance(cur, dict):
                             for k, v in list(cur.items()):
-                                kl = str(k or "")
-                                if kl in ("datePublished", "dateModified"):
+                                kl = str(k or "").strip()
+                                kll = kl.lower()
+                                # Accept common JSON-LD date keys case-insensitively
+                                if kll in ("datepublished", "datemodified", "datecreated", "uploaddate"):
+                                    # value can be string or list of strings
                                     if isinstance(v, str) and v.strip():
-                                        _add(f"ldjson:{kl}", v.strip(), 65 if kl == "datePublished" else 85, "ldjson")
+                                        vs = v.strip()
+                                        wt = 65 if kll == "datepublished" else (85 if kll == "datemodified" else 70)
+                                        _add(f"ldjson:{kl}", vs, wt, "ldjson")
+                                    elif isinstance(v, list):
+                                        for itv in v:
+                                            if isinstance(itv, str) and itv.strip():
+                                                vs = itv.strip()
+                                                wt = 65 if kll == "datepublished" else (85 if kll == "datemodified" else 70)
+                                                _add(f"ldjson:{kl}", vs, wt, "ldjson")
+                                                break
                                 if isinstance(v, (dict, list)):
                                     stack.append(v)
                         elif isinstance(cur, list):
                             for it in cur:
                                 if isinstance(it, (dict, list)):
                                     stack.append(it)
+
                 except Exception:
                     continue
         except Exception:
@@ -16452,6 +16477,121 @@ def _fresh01_backfill_freshness_scores_v1(baseline_sources_cache: Any) -> Any:
 # - Goal: ensure row-level injection gating can reliably attribute a current metric
 #   to its source URL (production vs injected), even when source_url lives only
 #   inside evidence/provenance structures.
+
+
+
+
+def _fresh01_normalize_freshness_meta_v1(baseline_sources_cache: Any) -> Any:
+    """In-place deterministic normalization for freshness metadata fields.
+
+    Purpose:
+      - Keep strict tiebreak + diagnostics consistent even when snapshots/caches
+        were produced before newer freshness fields existed.
+      - Do NOT relax strict gating; only fill missing fields conservatively.
+
+    Fills (only when missing):
+      - freshness_date_confidence
+      - freshness_confidence_label
+      - freshness_method_detail
+      - freshness_hint_kind
+      - freshness_candidate_kind
+    """
+    try:
+        pool = baseline_sources_cache
+        if not isinstance(pool, list):
+            return baseline_sources_cache
+
+        for s in pool:
+            if not isinstance(s, dict):
+                continue
+            pub = s.get("published_at")
+            if pub in (None, "", []):
+                continue
+
+            method = str(s.get("freshness_method") or "").strip() or "unknown"
+
+            # Confidence: backfill conservatively based on method family
+            conf = s.get("freshness_date_confidence")
+            try:
+                conf = float(conf) if conf not in (None, "", []) else None
+            except Exception:
+                conf = None
+
+            if conf is None:
+                if method in ("jsonld_v1", "meta_v1", "time_v1"):
+                    conf = 0.90
+                elif method.startswith("url_") or method in ("url_v1",):
+                    conf = 0.55
+                elif method in ("regex_v1",):
+                    conf = 0.70
+                else:
+                    # Published date exists but method is unknown; keep conservative.
+                    conf = 0.65
+                s["freshness_date_confidence"] = conf
+
+            # Confidence label
+            if not str(s.get("freshness_confidence_label") or "").strip():
+                _lbl = "low"
+                try:
+                    if conf >= 0.85:
+                        _lbl = "high"
+                    elif conf >= 0.70:
+                        _lbl = "med"
+                    else:
+                        _lbl = "low"
+                except Exception:
+                    _lbl = "low"
+                s["freshness_confidence_label"] = _lbl
+
+            # Method detail
+            if not str(s.get("freshness_method_detail") or "").strip():
+                if method == "jsonld_v1":
+                    s["freshness_method_detail"] = "jsonld_fields_v1"
+                elif method == "meta_v1":
+                    s["freshness_method_detail"] = "html_meta_tags_v1"
+                elif method == "time_v1":
+                    s["freshness_method_detail"] = "time_datetime_v1"
+                elif method == "regex_v1":
+                    s["freshness_method_detail"] = "regex_date_v1"
+                elif method.startswith("url_"):
+                    s["freshness_method_detail"] = f"{method}_v1"
+                else:
+                    s["freshness_method_detail"] = "unknown"
+
+            # Hint kind
+            if not str(s.get("freshness_hint_kind") or "").strip():
+                hk = str(s.get("published_at_hint_kind") or "").strip()
+                if hk:
+                    s["freshness_hint_kind"] = hk
+                else:
+                    if method == "jsonld_v1":
+                        s["freshness_hint_kind"] = "jsonld"
+                    elif method == "meta_v1":
+                        s["freshness_hint_kind"] = "meta"
+                    elif method == "time_v1":
+                        s["freshness_hint_kind"] = "time"
+                    elif method == "regex_v1":
+                        s["freshness_hint_kind"] = "regex"
+                    elif method.startswith("url_"):
+                        s["freshness_hint_kind"] = "url"
+                    else:
+                        s["freshness_hint_kind"] = "unknown"
+
+            # Candidate kind (coarse family)
+            if not str(s.get("freshness_candidate_kind") or "").strip():
+                if method in ("jsonld_v1", "meta_v1", "time_v1"):
+                    s["freshness_candidate_kind"] = "structured"
+                elif method.startswith("url_"):
+                    s["freshness_candidate_kind"] = "url"
+                elif method == "regex_v1":
+                    s["freshness_candidate_kind"] = "regex"
+                else:
+                    s["freshness_candidate_kind"] = "unknown"
+
+    except Exception:
+        pass
+    return baseline_sources_cache
+
 
 def _refactor26_extract_metric_source_url_v1(_m: dict):
     """Best-effort extraction of a metric's source URL without changing schema."""
@@ -19252,6 +19392,11 @@ def attach_source_snapshots_to_analysis(analysis: dict, web_context: dict) -> di
 
                 try:
                     _fresh01_backfill_freshness_scores_v1(_pool)
+                except Exception:
+                    pass
+
+                try:
+                    _fresh01_normalize_freshness_meta_v1(_pool)
                 except Exception:
                     pass
 
@@ -35914,6 +36059,42 @@ try:
                 "Preserves deterministic behavior and keeps strict gate unchanged; winners remain unchanged unless already in an exact score-tie path.",
             ],
             "risk": "Low: adds conservative URL candidate class; confidence remains low so strict tiebreak will not engage from this signal alone.",
+        })
+except Exception:
+    pass
+
+
+
+# NLP27: patch tracker entry
+# NLP28: patch tracker overlay
+try:
+    if isinstance(PATCH_TRACKER_V1, list) and not any(str(e.get("patch_id") or "") == "NLP28" for e in PATCH_TRACKER_V1 if isinstance(e, dict)):
+        PATCH_TRACKER_V1.insert(0, {
+            "patch_id": "NLP28",
+            "date": "2026-02-20",
+            "title": "NLP28 Normalize freshness meta fields for diagnostics + strict gating consistency",
+            "summary": [
+                "Add deterministic normalization/backfill for freshness_method_detail, freshness_hint_kind, freshness_confidence_label, and freshness_date_confidence when published_at is present.",
+                "Invoke normalization before freshness aggregation + method histogram beacons so diagnostics no longer show 'unknown' when legacy snapshots omit fields."
+            ],
+            "risk": "low"
+        })
+except Exception:
+    pass
+
+
+try:
+    if isinstance(PATCH_TRACKER_V1, list) and not any(str(e.get("patch_id") or "") == "NLP27" for e in PATCH_TRACKER_V1 if isinstance(e, dict)):
+        PATCH_TRACKER_V1.insert(0, {
+            "patch_id": "NLP27",
+            "date": "2026-02-20",
+            "title": "NLP27 Expand HTML publish-date hint extraction (meta + JSON-LD) and harden JSON-LD key matching",
+            "summary": [
+                "Broaden high-confidence HTML meta extraction to include additional common fields (og/article + dc/dcterms/parsely/sailthru + lastmod variants) while keeping deterministic parsing.",
+                "Harden JSON-LD traversal by matching datePublished/dateModified/dateCreated/uploadDate keys case-insensitively, and by accepting list-valued date strings when present.",
+                "No changes to strict tiebreak gates; freshness confidence labeling remains conservative. Winners/values unchanged unless already in an exact score-tie path.",
+            ],
+            "risk": "Low: improves published_at coverage via stronger hint channels; does not loosen any deterministic selection rules.",
         })
 except Exception:
     pass
