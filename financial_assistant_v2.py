@@ -458,7 +458,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "NLP66"
+_YUREEKA_CODE_VERSION_LOCK = "NLP68"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 # REFACTOR206: Release Candidate freeze (no pipeline behavior change).
 YUREEKA_RELEASE_CANDIDATE_V1 = False
@@ -1788,6 +1788,36 @@ def _yureeka_llm_cache_probe_v1(
         if cache_key_fallback:
             p2 = _llm_cache_path_v1(cache_key_fallback)
             out["disk_exists_fallback"] = bool(p2) and os.path.exists(p2)
+    except Exception:
+        pass
+
+    # NLP67: dataset event logging for cache probes (hash-only; best-effort)
+    try:
+        _agg = globals().get("_YUREEKA_LLM_RUN_AGG_V1")
+        _stg = str((_agg or {}).get("stage") or "")[:40]
+        _qh = str((_agg or {}).get("question_hash_v1") or "")[:80]
+        if _stg and _qh:
+            _hit = bool(out.get("disk_exists")) or bool(out.get("disk_exists_fallback"))
+            _cd = {
+                "ok": True,
+                "cache_miss": (not _hit),
+                "network_call_made": False,
+                "network_call_blocked": False,
+                "reason": "cache_probe",
+                "status": None,
+                "model": str(out.get("model") or "")[:80],
+                "cache_key": str(out.get("cache_key") or "")[:120],
+                "cache_key_fallback": str(out.get("cache_key_fallback") or "")[:120],
+                "where": "cache_probe",
+                "request_fingerprint_v1": "",
+            }
+            _dataset_emit_llm_event_v1(
+                feature=str(out.get("feature") or "llm_cache_probe") + "_probe",
+                call_diag=_cd,
+                cache_hit=_hit,
+                stage=_stg,
+                question_hash=_qh,
+            )
     except Exception:
         pass
     return out
@@ -4858,41 +4888,42 @@ def _yureeka_llm_reset_run_state_v1(stage: str = "", question: str = "") -> None
     except Exception:
         pass
 
-# NLP65: capture question hash for dataset/event logging (non-sensitive; hash-only)
-try:
-    _agg = globals().get("_YUREEKA_LLM_RUN_AGG_V1")
-    if isinstance(_agg, dict):
-        _qh = ""
-        try:
-            if question:
-                _qh = str(_yureeka_question_hash_v1(str(question) or ""))[:64]
-        except Exception:
+    # NLP67: ensure per-run question hash is available for dataset/event logging (hash-only)
+    try:
+        _agg = globals().get("_YUREEKA_LLM_RUN_AGG_V1")
+        if isinstance(_agg, dict):
             _qh = ""
-        _agg["question_hash_v1"] = str(_qh or "")
-except Exception:
-    pass
+            try:
+                if question:
+                    _qh = str(_yureeka_question_hash_v1(str(question) or ""))[:64]
+            except Exception:
+                _qh = ""
+            _agg["question_hash_v1"] = str(_qh or "")
+    except Exception:
+        pass
 
-# NLP65: reset per-run dataset-event counters (kept separate from export counts)
-try:
-    _stg = str(stage or "") or "stage"
-    _dataset_state_update_v1(_stg, {
-        "events_records_written": 0,
-        "events_bytes_written": 0,
-        "events_path": "",
-        "events_effective_path": "",
-        "events_rollover_used": False,
-        "events_part_index": 0,
-        "events_reason": "",
-        "events_error": "",
-    })
-except Exception:
-    pass
+    # NLP67: reset per-run dataset-event counters (kept separate from export counts)
+    try:
+        _stg = str(stage or "") or "stage"
+        _dataset_state_update_v1(_stg, {
+            "events_records_written": 0,
+            "events_bytes_written": 0,
+            "events_path": "",
+            "events_effective_path": "",
+            "events_rollover_used": False,
+            "events_part_index": 0,
+            "events_reason": "",
+            "events_error": "",
+        })
+    except Exception:
+        pass
 
-    # NLP18: reset per-run acceptance ledger
+    # NLP67: reset per-run acceptance ledger (avoid cross-run leakage)
     try:
         globals()["_YUREEKA_LLM_ACCEPT_V1"] = {}
     except Exception:
         pass
+
 
 def _yureeka_llm_global_agg_update_v1(feature: str, call_diag: dict, *, cache_hit: bool = False) -> None:
     """Global (run-scope) call aggregation; does not store prompts/outputs."""
@@ -6390,6 +6421,36 @@ def _llm01_attach_evidence_snippets_to_pmc_v1(
             }
     except Exception:
         pass
+    # NLP68: Roll up LLM01 evidence snippet behavior for easy triage (diagnostics only).
+    try:
+        if isinstance(out_debug, dict):
+            out_debug["nlp68_llm01_evidence_snippets_rollup_v1"] = {
+                "applied": int(applied),
+                "skipped": int(skipped),
+                "cache_hits": int(cache_hits),
+                "llm_calls": int(llm_calls),
+                "llm_accepts": int(llm_accepts),
+                "llm_agrees": int(llm_agrees),
+                "llm_rejects": int(llm_rejects),
+                "flag_enabled": bool(_yureeka_llm_flag_bool_v1("ENABLE_LLM_EVIDENCE_SNIPPETS")),
+                "allow_network_calls": bool(_yureeka_llm_flag_bool_v1("LLM_ALLOW_NETWORK_CALLS")),
+                "cache_hit_only_effective": bool((not bool(_yureeka_llm_flag_bool_v1("LLM_ALLOW_NETWORK_CALLS"))) and bool(_yureeka_llm_flag_bool_v1("ENABLE_LLM_EVIDENCE_SNIPPETS"))),
+            }
+    except Exception:
+        pass
+
+    # NLP68: Hash-only dataset acceptance logging for LLM01 (best-effort; gated by ENABLE_LLM_DATASET_LOGGING).
+    try:
+        # Record whether the LLM assist affected snippet selection (accepts) vs agreed/rejected.
+        _yureeka_llm_record_acceptance_v1(
+            "llm01_evidence_snippets",
+            used_for=[str(x)[:120] for x in (schema_keys or [])[:4]] + [str(stage or "")[:40]],
+            accepted=bool(llm_accepts > 0),
+            reason=("accepts=%s agrees=%s rejects=%s" % (int(llm_accepts), int(llm_agrees), int(llm_rejects)))[:120],
+        )
+    except Exception:
+        pass
+
     return {
         "applied": int(applied),
         "llm_used": int(llm_used),
@@ -38915,6 +38976,31 @@ except Exception:
 
 
 
+
+
+# NLP67: patch tracker overlay (dataset logging: fix run-state reset + emit cache-probe events)
+try:
+    if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "NLP67" for e in PATCH_TRACKER_V1):
+        PATCH_TRACKER_V1.insert(0, {
+            "patch_id": "NLP67",
+            "scope": "llm-dataset",
+            "summary": "Fix _yureeka_llm_reset_run_state_v1 to always set question_hash_v1 and reset dataset-event counters/acceptance ledger per run (was accidentally top-level / exception-only). Also emit hash-only dataset events for LLM cache probes so events logs populate even when LLM features are OFF (replay-only audit). No winner/value changes; no new network behavior.",
+            "risk": "low",
+        })
+except Exception:
+    pass
+
+# NLP68: patch tracker overlay (LLM01 evidence snippets: rollup beacon + dataset acceptance logging)
+try:
+    if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "NLP68" for e in PATCH_TRACKER_V1):
+        PATCH_TRACKER_V1.insert(0, {
+            "patch_id": "NLP68",
+            "scope": "llm01-evidence",
+            "summary": "Add nlp68_llm01_evidence_snippets_rollup_v1 diagnostics beacon and hash-only acceptance logging for evidence snippet selection (no winner/value impact; gated; deterministic).",
+            "risk": "low",
+        })
+except Exception:
+    pass
 
 # NLP66: patch tracker overlay (hotfix: acceptance logger syntax + robustness)
 try:
