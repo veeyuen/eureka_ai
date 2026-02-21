@@ -458,7 +458,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "NLP64"
+_YUREEKA_CODE_VERSION_LOCK = "NLP66"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 # REFACTOR206: Release Candidate freeze (no pipeline behavior change).
 YUREEKA_RELEASE_CANDIDATE_V1 = False
@@ -3250,6 +3250,172 @@ def _dataset_state_snapshot_v1(stage: str) -> dict:
     except Exception:
         return {}
 
+
+
+# NLP65: dataset event logging (LLM call diagnostics; hash-only; gated by ENABLE_LLM_DATASET_LOGGING)
+def _dataset_event_log_path_from_hash_v1(*, question_hash: str, stage: str) -> str:
+    """Path for per-run LLM event logs (JSONL). Uses question_hash; never stores raw prompts."""
+    try:
+        base_dir = str(os.environ.get("LLM_DATASET_LOG_DIR") or os.environ.get("YUREEKA_LLM_DATASET_LOG_DIR") or LLM_DATASET_LOG_DIR_DEFAULT_V1)
+    except Exception:
+        base_dir = str(LLM_DATASET_LOG_DIR_DEFAULT_V1)
+    try:
+        stg = _dataset_safe_token_v1(stage or "", default="stage")
+    except Exception:
+        stg = "stage"
+    try:
+        qh = str(question_hash or "") or "unknown"
+        qh = _dataset_safe_token_v1(qh, default="unknown")
+    except Exception:
+        qh = "unknown"
+    try:
+        fn = f"yureeka_llm_events_{qh}_{stg}.jsonl"
+        return os.path.join(base_dir, fn)
+    except Exception:
+        return ""
+
+def _dataset_emit_llm_event_v1(*, feature: str, call_diag: dict, cache_hit: bool, stage: str, question_hash: str) -> dict:
+    """Write a single LLM call event (hash-only; best-effort). Returns small write summary."""
+    out = {"ok": False, "reason": "", "records_written": 0, "bytes_written": 0, "path": "", "effective_path": ""}
+    try:
+        on, _src = _yureeka_llm_flag_effective_v1("ENABLE_LLM_DATASET_LOGGING")
+        if not bool(on):
+            out["reason"] = "flag_off"
+            return out
+    except Exception:
+        out["reason"] = "flag_eval_failed"
+        return out
+
+    try:
+        f = str(feature or "unknown")[:80]
+        stg = str(stage or "") or "stage"
+        qh = str(question_hash or "") or ""
+        cv = _yureeka_get_code_version()
+        # keep minimal + safe; no raw text, only hashes / small strings
+        rec = {
+            "v": "yureeka_llm_event_v1",
+            "record_type": "llm_call_diag_v1",
+            "stage": stg,
+            "code_version": str(cv or ""),
+            "question_hash": str(qh or ""),
+            "feature": f,
+            "ok": bool(call_diag.get("ok")) if isinstance(call_diag, dict) else False,
+            "cache_hit": bool(cache_hit),
+            "cache_miss": bool(call_diag.get("cache_miss")) if isinstance(call_diag, dict) else False,
+            "network_call_made": bool(call_diag.get("network_call_made")) if isinstance(call_diag, dict) else False,
+            "network_call_blocked": bool(call_diag.get("network_call_blocked")) if isinstance(call_diag, dict) else False,
+            "reason": _dataset_text_sanitize_v1(str((call_diag or {}).get("reason") or ""), max_len=140),
+            "status": (call_diag or {}).get("status") if isinstance(call_diag, dict) else None,
+            "model": str((call_diag or {}).get("model") or "")[:80],
+            "cache_key": str((call_diag or {}).get("cache_key") or "")[:120],
+            "cache_key_fallback": str((call_diag or {}).get("cache_key_fallback") or "")[:120],
+            "where": str((call_diag or {}).get("where") or "")[:80],
+            "request_fingerprint_v1": str((call_diag or {}).get("request_fingerprint_v1") or "")[:80],
+        }
+        rec["record_id"] = _dataset_record_id_v1(rec)
+
+        # per-run cap (avoid unbounded writes)
+        try:
+            st_state = _dataset_state_snapshot_v1(stg)
+            emitted = int(st_state.get("events_records_written") or 0)
+            if emitted >= int(LLM_DATASET_LOG_MAX_RECORDS_PER_RUN_V1):
+                out["reason"] = "max_events_guard"
+                return out
+        except Exception:
+            pass
+
+        path = _dataset_event_log_path_from_hash_v1(question_hash=qh, stage=stg)
+        out["path"] = path
+        w = _dataset_safe_append_jsonl_v1(path, [rec])
+        out.update({k: w.get(k) for k in ["ok", "records_written", "bytes_written", "effective_path"] if isinstance(w, dict)})
+        out["reason"] = str((w or {}).get("reason") or "")
+
+        # update state (cumulative per-run)
+        try:
+            prev = _dataset_state_snapshot_v1(stg)
+            _dataset_state_update_v1(stg, {
+                "events_path": str(path or ""),
+                "events_effective_path": str((w or {}).get("effective_path") or ""),
+                "events_rollover_used": bool((w or {}).get("rollover_used")),
+                "events_part_index": int((w or {}).get("part_index") or 0),
+                "events_records_written": int(prev.get("events_records_written") or 0) + int((w or {}).get("records_written") or 0),
+                "events_bytes_written": int(prev.get("events_bytes_written") or 0) + int((w or {}).get("bytes_written") or 0),
+                "events_reason": str((w or {}).get("reason") or ""),
+                "events_error": str((w or {}).get("error") or ""),
+            })
+        except Exception:
+            pass
+
+        return out
+    except Exception as e:
+        out["reason"] = "exception"
+        out["error"] = str(e)[:200]
+        return out
+
+def _dataset_emit_llm_accept_event_v1(*, feature: str, used_for: list, accepted: bool, reason: str, stage: str, question_hash: str) -> None:
+    """Write an LLM acceptance decision event (hash-only; best-effort)."""
+    try:
+        on, _src = _yureeka_llm_flag_effective_v1("ENABLE_LLM_DATASET_LOGGING")
+        if not bool(on):
+            return
+    except Exception:
+        return
+    try:
+        f = str(feature or "unknown")[:80]
+        stg = str(stage or "") or "stage"
+        qh = str(question_hash or "") or ""
+        cv = _yureeka_get_code_version()
+        uf = []
+        try:
+            uf = [str(x)[:80] for x in (used_for or []) if x is not None and str(x).strip()]
+        except Exception:
+            uf = []
+        rec = {
+            "v": "yureeka_llm_event_v1",
+            "record_type": "llm_acceptance_v1",
+            "stage": stg,
+            "code_version": str(cv or ""),
+            "question_hash": str(qh or ""),
+            "feature": f,
+            "accepted": bool(accepted),
+            "used_for": uf,
+            "reason": _dataset_text_sanitize_v1(str(reason or ""), max_len=140),
+        }
+        rec["record_id"] = _dataset_record_id_v1(rec)
+        path = _dataset_event_log_path_from_hash_v1(question_hash=qh, stage=stg)
+        w = _dataset_safe_append_jsonl_v1(path, [rec])
+        try:
+            prev = _dataset_state_snapshot_v1(stg)
+            _dataset_state_update_v1(stg, {
+                "events_path": str(path or ""),
+                "events_effective_path": str((w or {}).get("effective_path") or ""),
+                "events_rollover_used": bool((w or {}).get("rollover_used")),
+                "events_part_index": int((w or {}).get("part_index") or 0),
+                "events_records_written": int(prev.get("events_records_written") or 0) + int((w or {}).get("records_written") or 0),
+                "events_bytes_written": int(prev.get("events_bytes_written") or 0) + int((w or {}).get("bytes_written") or 0),
+                "events_reason": str((w or {}).get("reason") or ""),
+                "events_error": str((w or {}).get("error") or ""),
+            })
+        except Exception:
+            pass
+    except Exception:
+        return
+
+def _yureeka_llm_dataset_events_snapshot_v1(stage: str = "") -> dict:
+    """Small manifest-friendly snapshot for dataset event logs (hash-only)."""
+    stg = str(stage or "") or "stage"
+    snap = _dataset_state_snapshot_v1(stg)
+    return {
+        "enabled": bool(snap.get("enabled")),
+        "events_path": str(snap.get("events_path") or ""),
+        "events_effective_path": str(snap.get("events_effective_path") or ""),
+        "events_rollover_used": bool(snap.get("events_rollover_used")),
+        "events_part_index": int(snap.get("events_part_index") or 0),
+        "events_records_written": int(snap.get("events_records_written") or 0),
+        "events_bytes_written": int(snap.get("events_bytes_written") or 0),
+        "events_reason": str(snap.get("events_reason") or ""),
+    }
+
 def _dataset_export_from_pmc_v1(*, pmc: dict, question: str, stage: str) -> list:
     """Create a compact per-metric dataset record list from primary_metrics_canonical."""
     out = []
@@ -3315,7 +3481,13 @@ def _dataset_export_from_pmc_v1(*, pmc: dict, question: str, stage: str) -> list
     return out
 
 def _yureeka_dataset_logging_apply_v1(*, wrapper: dict, stage: str) -> dict:
-    """Apply dataset logging to a wrapper (analysis/evolution). Returns summary beacon."""
+    """Apply dataset logging to a wrapper (analysis/evolution). Returns summary beacon.
+
+    Notes:
+    - Writes sanitized per-metric JSONL records from primary_metrics_canonical.
+    - Also captures stat-only inventory + rollover/effective-path fields for auditability.
+    - Logging is gated by ENABLE_LLM_DATASET_LOGGING (OFF by default unless enabled via env/secrets/UI).
+    """
     on, src = _yureeka_llm_flag_effective_v1("ENABLE_LLM_DATASET_LOGGING")
     stg = str(stage or "") or "stage"
     summary = {
@@ -3334,8 +3506,25 @@ def _yureeka_dataset_logging_apply_v1(*, wrapper: dict, stage: str) -> dict:
         "reason": "",
         "error": "",
     }
+
     if not bool(on):
-        _dataset_state_update_v1(stg, {"enabled": False, "enabled_source": summary["enabled_source"], "records_written": 0, "bytes_written": 0, "path": "", "effective_path": "", "rollover_used": False, "part_index": 0, "inventory": {}})
+        try:
+            _dataset_state_update_v1(stg, {
+                "enabled": False,
+                "enabled_source": summary["enabled_source"],
+                "records_written": 0,
+                "bytes_written": 0,
+                "path": "",
+                "effective_path": "",
+                "rollover_used": False,
+                "part_index": 0,
+                "inventory": {},
+                "reason": "flag_off",
+                "error": "",
+            })
+        except Exception:
+            pass
+        summary["reason"] = "flag_off"
         return summary
 
     try:
@@ -3344,17 +3533,49 @@ def _yureeka_dataset_logging_apply_v1(*, wrapper: dict, stage: str) -> dict:
             q = str((wrapper or {}).get("question") or "")
         except Exception:
             q = ""
+
         pmc = _yureeka_get_pmc_v1(wrapper or {})
         recs = _dataset_export_from_pmc_v1(pmc=pmc, question=q, stage=stg)
         summary["records_buffered"] = int(len(recs))
+
         path = _dataset_log_path_v1(question=q, stage=stg)
         summary["path"] = path
+
         w = _dataset_safe_append_jsonl_v1(path, recs)
-        summary["records_written"] = int(w.get("records_written") or 0)
-        summary["bytes_written"] = int(w.get("bytes_written") or 0)
-        summary["reason"] = str(w.get("reason") or "")
-        summary["error"] = str(w.get("error") or "")
-        _dataset_state_update_v1(stg, {"enabled": True, "enabled_source": summary["enabled_source"], "records_written": summary["records_written"], "bytes_written": summary["bytes_written"], "path": path, "reason": summary["reason"]})
+        summary["records_written"] = int((w or {}).get("records_written") or 0)
+        summary["bytes_written"] = int((w or {}).get("bytes_written") or 0)
+        summary["effective_path"] = str((w or {}).get("effective_path") or "")
+        summary["rollover_used"] = bool((w or {}).get("rollover_used"))
+        summary["part_index"] = int((w or {}).get("part_index") or 0)
+        summary["reason"] = str((w or {}).get("reason") or "")
+        summary["error"] = str((w or {}).get("error") or "")
+
+        # Stat-only inventory of dataset dir (no reads; non-sensitive)
+        try:
+            base_dir = os.path.dirname(str(summary.get("effective_path") or summary.get("path") or "")) or str(LLM_DATASET_LOG_DIR_DEFAULT_V1)
+            inv = _dataset_inventory_v1(str(base_dir or ""))
+            if isinstance(inv, dict):
+                summary["inventory"] = inv
+        except Exception:
+            pass
+
+        try:
+            _dataset_state_update_v1(stg, {
+                "enabled": True,
+                "enabled_source": summary["enabled_source"],
+                "records_written": summary["records_written"],
+                "bytes_written": summary["bytes_written"],
+                "path": summary["path"],
+                "effective_path": summary["effective_path"],
+                "rollover_used": summary["rollover_used"],
+                "part_index": summary["part_index"],
+                "inventory": summary["inventory"],
+                "reason": summary["reason"],
+                "error": summary["error"],
+            })
+        except Exception:
+            pass
+
         # Also expose in st.session_state.debug for quick UI inspection (cap)
         try:
             st.session_state.setdefault("debug", {})
@@ -3367,12 +3588,29 @@ def _yureeka_dataset_logging_apply_v1(*, wrapper: dict, stage: str) -> dict:
                         dbg["llm_dataset_v1"] = dbg["llm_dataset_v1"][-200:]
         except Exception:
             pass
+
         return summary
     except Exception as e:
         summary["reason"] = "exception"
         summary["error"] = str(e)
-        _dataset_state_update_v1(stg, {"enabled": True, "enabled_source": summary["enabled_source"], "records_written": 0, "bytes_written": 0, "path": summary.get("path") or "", "reason": summary["reason"], "error": summary["error"]})
+        try:
+            _dataset_state_update_v1(stg, {
+                "enabled": True,
+                "enabled_source": summary["enabled_source"],
+                "records_written": 0,
+                "bytes_written": 0,
+                "path": summary.get("path") or "",
+                "effective_path": summary.get("effective_path") or "",
+                "rollover_used": bool(summary.get("rollover_used")),
+                "part_index": int(summary.get("part_index") or 0),
+                "inventory": summary.get("inventory") if isinstance(summary.get("inventory"), dict) else {},
+                "reason": summary["reason"],
+                "error": summary["error"],
+            })
+        except Exception:
+            pass
         return summary
+
 
 def _yureeka_llm_dataset_feature_snapshot_v1(stage: str = "") -> dict:
     """Small manifest-friendly snapshot."""
@@ -3388,7 +3626,17 @@ def _yureeka_llm_dataset_feature_snapshot_v1(stage: str = "") -> dict:
         "records_written": int(snap.get("records_written") or 0),
         "bytes_written": int(snap.get("bytes_written") or 0),
         "reason": str(snap.get("reason") or ""),
+        # NLP65: event-log sidecar
+        "events_path": str(snap.get("events_path") or ""),
+        "events_effective_path": str(snap.get("events_effective_path") or ""),
+        "events_rollover_used": bool(snap.get("events_rollover_used")),
+        "events_part_index": int(snap.get("events_part_index") or 0),
+        "events_records_written": int(snap.get("events_records_written") or 0),
+        "events_bytes_written": int(snap.get("events_bytes_written") or 0),
+        "events_reason": str(snap.get("events_reason") or ""),
     }
+
+
 
 def debug_llm_dataset_v1(
     *,
@@ -4585,7 +4833,7 @@ def _yureeka_llm_hint_from_diag_v1(diag: dict) -> str:
         pass
     return ""
 
-def _yureeka_llm_reset_run_state_v1(stage: str = "") -> None:
+def _yureeka_llm_reset_run_state_v1(stage: str = "", question: str = "") -> None:
     """Reset per-run LLM diagnostics + circuit breaker state (best-effort)."""
     try:
         globals()["_YUREEKA_LLM_RUN_AGG_V1"] = {
@@ -4609,6 +4857,36 @@ def _yureeka_llm_reset_run_state_v1(stage: str = "") -> None:
         globals()["_YUREEKA_LLM_CIRCUIT_V1"] = {"open_until": 0.0, "status": None, "reason": "", "hint": ""}
     except Exception:
         pass
+
+# NLP65: capture question hash for dataset/event logging (non-sensitive; hash-only)
+try:
+    _agg = globals().get("_YUREEKA_LLM_RUN_AGG_V1")
+    if isinstance(_agg, dict):
+        _qh = ""
+        try:
+            if question:
+                _qh = str(_yureeka_question_hash_v1(str(question) or ""))[:64]
+        except Exception:
+            _qh = ""
+        _agg["question_hash_v1"] = str(_qh or "")
+except Exception:
+    pass
+
+# NLP65: reset per-run dataset-event counters (kept separate from export counts)
+try:
+    _stg = str(stage or "") or "stage"
+    _dataset_state_update_v1(_stg, {
+        "events_records_written": 0,
+        "events_bytes_written": 0,
+        "events_path": "",
+        "events_effective_path": "",
+        "events_rollover_used": False,
+        "events_part_index": 0,
+        "events_reason": "",
+        "events_error": "",
+    })
+except Exception:
+    pass
 
     # NLP18: reset per-run acceptance ledger
     try:
@@ -4758,6 +5036,19 @@ def _yureeka_llm_global_agg_update_v1(feature: str, call_diag: dict, *, cache_hi
                 })
                 if len(le) > 25:
                     del le[:-25]
+            except Exception:
+                pass
+            # NLP65: dataset event logging (hash-only) for each LLM call/no-op.
+            try:
+                _stg = str((agg or {}).get("stage") or "")[:40]
+                _qh = str((agg or {}).get("question_hash_v1") or "")
+                _dataset_emit_llm_event_v1(
+                    feature=f,
+                    call_diag=(call_diag or {}),
+                    cache_hit=bool(cache_hit),
+                    stage=_stg,
+                    question_hash=_qh,
+                )
             except Exception:
                 pass
         except Exception:
@@ -4915,6 +5206,24 @@ def _yureeka_llm_record_acceptance_v1(feature: str, used_for: list, accepted: bo
             acc = {}
             globals()["_YUREEKA_LLM_ACCEPT_V1"] = acc
         acc[f] = rec
+
+        # NLP65/NLP66: also emit acceptance decision into dataset event logs (hash-only; best-effort)
+        try:
+            _emit = globals().get("_dataset_emit_llm_accept_event_v1")
+            if callable(_emit):
+                _agg = globals().get("_YUREEKA_LLM_RUN_AGG_V1")
+                _stg = str((_agg or {}).get("stage") or "")[:40]
+                _qh = str((_agg or {}).get("question_hash_v1") or "")
+                _emit(
+                    feature=f,
+                    used_for=uf,
+                    accepted=bool(accepted),
+                    reason=str(reason or ""),
+                    stage=_stg,
+                    question_hash=_qh,
+                )
+        except Exception:
+            pass
     except Exception:
         pass
 
@@ -30903,7 +31212,7 @@ def main():
 
             # LLM05: reset per-run LLM diagnostics
             try:
-                _yureeka_llm_reset_run_state_v1(stage="analysis")
+                _yureeka_llm_reset_run_state_v1(stage="analysis", question=query)
             except Exception:
                 pass
 
@@ -31259,6 +31568,7 @@ def main():
                     output["debug"]["nlp56_llm_cache_policy_summary_v1"] = _yureeka_llm_cache_policy_summary_v1(stage="analysis")
                     output["debug"]["nlp57_llm_cache_validation_summary_v1"] = _yureeka_llm_cache_validation_summary_v1(stage="analysis")
                     output["debug"]["nlp63_dataset_logging_summary_v1"] = _yureeka_dataset_logging_apply_v1(wrapper=output, stage="analysis")
+                    output["debug"]["nlp65_llm_dataset_events_summary_v1"] = _yureeka_llm_dataset_events_snapshot_v1(stage="analysis")
                     output["debug"]["nlp58_llm_feature_manifest_v1"] = _yureeka_llm_feature_manifest_v1(stage="analysis")
                     output["debug"]["nlp62_llm_cache_io_health_v1"] = _yureeka_llm_cache_io_health_v1(stage="analysis")
                     output["debug"]["nlp59_llm_cache_write_summary_v1"] = _yureeka_llm_cache_write_summary_v1(stage="analysis")
@@ -31770,7 +32080,7 @@ def main():
 
                 # LLM05: reset per-run LLM diagnostics
                 try:
-                    _yureeka_llm_reset_run_state_v1(stage="evolution")
+                    _yureeka_llm_reset_run_state_v1(stage="evolution", question=evolution_query)
                 except Exception:
                     pass
 
@@ -32267,6 +32577,7 @@ def main():
                         _dbg["nlp56_llm_cache_policy_summary_v1"] = _yureeka_llm_cache_policy_summary_v1(stage="evolution")
                         _dbg["nlp57_llm_cache_validation_summary_v1"] = _yureeka_llm_cache_validation_summary_v1(stage="evolution")
                         _dbg["nlp63_dataset_logging_summary_v1"] = _yureeka_dataset_logging_apply_v1(wrapper=evolution_output, stage="evolution")
+                        _dbg["nlp65_llm_dataset_events_summary_v1"] = _yureeka_llm_dataset_events_snapshot_v1(stage="evolution")
                         _dbg["nlp58_llm_feature_manifest_v1"] = _yureeka_llm_feature_manifest_v1(stage="evolution")
                         _dbg["nlp62_llm_cache_io_health_v1"] = _yureeka_llm_cache_io_health_v1(stage="evolution")
                         _dbg["nlp59_llm_cache_write_summary_v1"] = _yureeka_llm_cache_write_summary_v1(stage="evolution")
@@ -38586,9 +38897,36 @@ try:
 except Exception:
     pass
 
+# NLP65: patch tracker overlay (dataset logging: fix beacon + add LLM event logs)
+try:
+    if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "NLP65" for e in PATCH_TRACKER_V1):
+        PATCH_TRACKER_V1.insert(0, {
+            "patch_id": "NLP65",
+            "scope": "llm-dataset",
+            "summary": "Dataset logging completion: fix nlp63_dataset_logging_summary_v1 to populate effective_path/rollover/inventory and persist these into the manifest snapshot. Add hash-only LLM event logging (JSONL) for cache hits/misses and blocked-network no-ops, plus acceptance decisions, gated by ENABLE_LLM_DATASET_LOGGING. No behavior changes when logging is OFF.",
+            "risk": "low",
+        })
+except Exception:
+    pass
 
 
 
+
+
+
+
+
+# NLP66: patch tracker overlay (hotfix: acceptance logger syntax + robustness)
+try:
+    if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "NLP66" for e in PATCH_TRACKER_V1):
+        PATCH_TRACKER_V1.insert(0, {
+            "patch_id": "NLP66",
+            "scope": "llm-dataset",
+            "summary": "Hotfix: repair indentation/syntax in _yureeka_llm_record_acceptance_v1 and keep acceptance→dataset-event emission best-effort and hash-only. No winner/value logic changes; no new network behavior; dataset logging remains gated by ENABLE_LLM_DATASET_LOGGING.",
+            "risk": "low",
+        })
+except Exception:
+    pass
 
 # LLM38: patch tracker entry
 try:
