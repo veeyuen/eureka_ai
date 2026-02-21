@@ -458,7 +458,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "NLP60"
+_YUREEKA_CODE_VERSION_LOCK = "NLP62"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 # REFACTOR206: Release Candidate freeze (no pipeline behavior change).
 YUREEKA_RELEASE_CANDIDATE_V1 = False
@@ -2377,6 +2377,111 @@ def _yureeka_llm_cache_inventory_v1(stage: str = "", *, max_files: int = 2000, s
 
 
 # NLP58: per-feature manifest beacon (effective flags + policy + counters + cache validation; non-sensitive).
+
+# NLP62: cache IO aggregation + health beacon (non-sensitive; read/write success/miss/fail counts).
+def _yureeka_llm_cache_io_agg_v1() -> dict:
+    """Mutable per-run cache IO aggregation (non-sensitive)."""
+    try:
+        agg = globals().get("_YUREEKA_LLM_CACHE_IO_AGG_V1")
+        if not isinstance(agg, dict):
+            agg = {
+                "v": "llm_cache_io_agg_v1",
+                "attempts": 0,
+                "mem_hits": 0,
+                "disk_hits": 0,
+                "misses": 0,
+                "skips": 0,
+                "fails": 0,
+                "bytes_read": 0,
+                "reasons": {},
+            }
+            globals()["_YUREEKA_LLM_CACHE_IO_AGG_V1"] = agg
+        return agg
+    except Exception:
+        return {
+            "v": "llm_cache_io_agg_v1",
+            "attempts": 0,
+            "mem_hits": 0,
+            "disk_hits": 0,
+            "misses": 0,
+            "skips": 0,
+            "fails": 0,
+            "bytes_read": 0,
+            "reasons": {},
+        }
+
+
+def _yureeka_llm_cache_io_record_v1(kind: str, where: str = "", bytes_read: int = 0) -> None:
+    """Record a cache IO event (non-sensitive).
+
+    kind: mem_hit | disk_hit | miss | skip | fail
+    where: compact reason bucket (e.g., disk_missing, disk_ok, disk_read_or_parse_error)
+    """
+    try:
+        agg = _yureeka_llm_cache_io_agg_v1()
+        agg["attempts"] = int(agg.get("attempts") or 0) + 1
+
+        k = str(kind or "")[:24]
+        if k == "mem_hit":
+            agg["mem_hits"] = int(agg.get("mem_hits") or 0) + 1
+        elif k == "disk_hit":
+            agg["disk_hits"] = int(agg.get("disk_hits") or 0) + 1
+        elif k == "miss":
+            agg["misses"] = int(agg.get("misses") or 0) + 1
+        elif k == "skip":
+            agg["skips"] = int(agg.get("skips") or 0) + 1
+        else:
+            agg["fails"] = int(agg.get("fails") or 0) + 1
+
+        try:
+            if bytes_read:
+                agg["bytes_read"] = int(agg.get("bytes_read") or 0) + int(bytes_read)
+        except Exception:
+            pass
+
+        r = str(where or "")[:80]
+        if r:
+            rs = agg.get("reasons")
+            if not isinstance(rs, dict):
+                rs = {}
+                agg["reasons"] = rs
+            rs[r] = int(rs.get(r) or 0) + 1
+    except Exception:
+        return
+
+
+def _yureeka_llm_cache_io_health_v1(stage: str = "") -> dict:
+    """Compact cache IO health beacon for triad grepping (non-sensitive)."""
+    out = {"v": "nlp62_llm_cache_io_health_v1", "stage": str(stage or "")[:40]}
+    try:
+        agg = _yureeka_llm_cache_io_agg_v1()
+        out["attempts"] = int(agg.get("attempts") or 0)
+        out["mem_hits"] = int(agg.get("mem_hits") or 0)
+        out["disk_hits"] = int(agg.get("disk_hits") or 0)
+        out["misses"] = int(agg.get("misses") or 0)
+        out["skips"] = int(agg.get("skips") or 0)
+        out["fails"] = int(agg.get("fails") or 0)
+        out["bytes_read"] = int(agg.get("bytes_read") or 0)
+        try:
+            rs = agg.get("reasons")
+            if isinstance(rs, dict) and rs:
+                items = sorted(((str(k), int(v)) for k, v in rs.items()), key=lambda kv: (-kv[1], kv[0]))[:8]
+                out["top_reasons"] = {k: v for k, v in items}
+        except Exception:
+            pass
+    except Exception:
+        out.update({"attempts": 0, "mem_hits": 0, "disk_hits": 0, "misses": 0, "skips": 0, "fails": 0, "bytes_read": 0})
+
+    # Context: disk persistence flag (read-only)
+    try:
+        on, src = _yureeka_llm_flag_effective_v1("LLM_CACHE_PERSIST_TO_DISK")
+    except Exception:
+        on, src = (bool(globals().get("LLM_CACHE_PERSIST_TO_DISK")), "code:LLM_CACHE_PERSIST_TO_DISK")
+    out["persist_to_disk_enabled"] = bool(on)
+    out["persist_to_disk_source"] = str(src or "")[:120]
+    return out
+
+
 def _yureeka_llm_feature_manifest_v1(stage: str = "") -> dict:
     """Compact per-feature diagnostics manifest for triad grepping (non-sensitive)."""
     out = {"v": "nlp58_llm_feature_manifest_v1", "stage": str(stage or "")[:40], "policy": {}, "flags": {}, "features": {}}
@@ -2384,6 +2489,12 @@ def _yureeka_llm_feature_manifest_v1(stage: str = "") -> dict:
     # NLP60: include cache inventory snapshot (non-sensitive; no reads) for quick triad greps
     try:
         out["cache_inventory"] = _yureeka_llm_cache_inventory_v1(stage=stage)
+    except Exception:
+        pass
+
+    # NLP62: include cache IO health beacon (non-sensitive)
+    try:
+        out["cache_io_health"] = _yureeka_llm_cache_io_health_v1(stage=stage)
     except Exception:
         pass
 
@@ -2523,6 +2634,10 @@ def get_cached_llm_response(key: str, *, validator=None, feature: str = "", diag
                 globals()["_YUREEKA_LLM_CACHE_BYPASS_STATUS_V1"] = {"enabled": True, "source": str(_src)[:80]}
             except Exception:
                 pass
+            try:
+                _yureeka_llm_cache_io_record_v1("skip", where="bypass_cache")
+            except Exception:
+                pass
             return None
     except Exception:
         pass
@@ -2530,6 +2645,10 @@ def get_cached_llm_response(key: str, *, validator=None, feature: str = "", diag
     # LLM29/LLM30: one-run-only force refresh (consume once on first eligible cache-hit key).
     try:
         if _yureeka_llm_force_refresh_once_should_bypass_v1(key):
+            try:
+                _yureeka_llm_cache_io_record_v1("skip", where="force_refresh_once")
+            except Exception:
+                pass
             return None
     except Exception:
         pass
@@ -2545,6 +2664,10 @@ def get_cached_llm_response(key: str, *, validator=None, feature: str = "", diag
                     pass
                 try:
                     _LLM_CACHE_MEM_V1.pop(key, None)
+                except Exception:
+                    pass
+                try:
+                    _yureeka_llm_cache_io_record_v1("fail", where="mem_invalid_basic")
                 except Exception:
                     pass
                 return None
@@ -2568,6 +2691,10 @@ def get_cached_llm_response(key: str, *, validator=None, feature: str = "", diag
                             diag["llm_cache_validation_reject_reason"] = str(r or "invalid")[:120]
                     except Exception:
                         pass
+                    try:
+                        _yureeka_llm_cache_io_record_v1("fail", where="mem_payload_rejected")
+                    except Exception:
+                        pass
                     return None
             try:
                 _yureeka_llm_cache_record_validation_v1(feature, True, "ok")
@@ -2579,6 +2706,10 @@ def get_cached_llm_response(key: str, *, validator=None, feature: str = "", diag
             except Exception:
                 pass
             _llm_cache__mem_touch_v1(key)
+            try:
+                _yureeka_llm_cache_io_record_v1("mem_hit", where="mem_ok")
+            except Exception:
+                pass
             return payload
     except Exception:
         pass
@@ -2590,8 +2721,16 @@ def get_cached_llm_response(key: str, *, validator=None, feature: str = "", diag
                 _yureeka_llm_cache_note_miss_v1(key, where="disk_missing")
             except Exception:
                 pass
+            try:
+                _yureeka_llm_cache_io_record_v1("miss", where="disk_missing")
+            except Exception:
+                pass
             return None
     except Exception:
+        try:
+            _yureeka_llm_cache_io_record_v1("fail", where="disk_exists_check_error")
+        except Exception:
+            pass
         try:
             _yureeka_llm_cache_note_miss_v1(key, where="disk_exists_check_error")
         except Exception:
@@ -2617,6 +2756,10 @@ def get_cached_llm_response(key: str, *, validator=None, feature: str = "", diag
                     diag["llm_cache_validation_reject_reason"] = "disk_too_large"
             except Exception:
                 pass
+            try:
+                _yureeka_llm_cache_io_record_v1("miss", where="disk_too_large")
+            except Exception:
+                pass
             return None
     except Exception:
         pass
@@ -2635,6 +2778,10 @@ def get_cached_llm_response(key: str, *, validator=None, feature: str = "", diag
                 pass
             try:
                 _yureeka_llm_cache_record_validation_v1(feature, False, "invalid_basic:" + str(r_basic or "invalid"))
+            except Exception:
+                pass
+            try:
+                _yureeka_llm_cache_io_record_v1("fail", where="disk_payload_not_jsonish")
             except Exception:
                 pass
             return None
@@ -2659,6 +2806,10 @@ def get_cached_llm_response(key: str, *, validator=None, feature: str = "", diag
                         diag["llm_cache_validation_reject_reason"] = str(r or "invalid")[:120]
                 except Exception:
                     pass
+                try:
+                    _yureeka_llm_cache_io_record_v1("fail", where="disk_payload_rejected")
+                except Exception:
+                    pass
                 return None
 
         try:
@@ -2671,12 +2822,26 @@ def get_cached_llm_response(key: str, *, validator=None, feature: str = "", diag
         except Exception:
             pass
 
+        try:
+            _bsz = 0
+            try:
+                _bsz = int(os.path.getsize(path)) if path and os.path.exists(path) else 0
+            except Exception:
+                _bsz = 0
+            _yureeka_llm_cache_io_record_v1("disk_hit", where="disk_ok", bytes_read=int(_bsz) if _bsz else 0)
+        except Exception:
+            pass
+
         _LLM_CACHE_MEM_V1[key] = payload
         _llm_cache__mem_touch_v1(key)
         return payload
     except Exception:
         try:
             _yureeka_llm_cache_note_miss_v1(key, where="disk_read_or_parse_error")
+        except Exception:
+            pass
+        try:
+            _yureeka_llm_cache_io_record_v1("fail", where="disk_read_or_parse_error")
         except Exception:
             pass
         return None
@@ -6187,6 +6352,45 @@ def _yureeka_get_debug_bucket_v1(wrapper: dict, default_path: str = "analysis") 
 
 
 
+def _fresh__effective_flags_v1() -> dict:
+    """Return effective freshness + tiebreak enablement with sources (diagnostics-only)."""
+    out = {
+        "freshness_enabled_effective": True,
+        "freshness_enabled_effective_source": "",
+        "tiebreak_enabled_effective": False,
+        "tiebreak_enabled_effective_source": "",
+    }
+    try:
+        fn, fn_src = _yureeka_llm_flag_effective_v1("ENABLE_SOURCE_FRESHNESS")
+    except Exception:
+        try:
+            fn = bool(globals().get("ENABLE_SOURCE_FRESHNESS", True))
+        except Exception:
+            fn = True
+        fn_src = "code:ENABLE_SOURCE_FRESHNESS"
+    try:
+        ft, ft_src = _yureeka_llm_flag_effective_v1("ENABLE_SOURCE_FRESHNESS_TIEBREAK")
+    except Exception:
+        try:
+            ft = bool(globals().get("ENABLE_SOURCE_FRESHNESS_TIEBREAK"))
+        except Exception:
+            ft = False
+        ft_src = "code:ENABLE_SOURCE_FRESHNESS_TIEBREAK"
+
+    out["freshness_enabled_effective"] = bool(fn)
+    out["freshness_enabled_effective_source"] = str(fn_src or "")[:120]
+
+    # If freshness is disabled, tiebreak is effectively disabled too.
+    if not bool(fn):
+        out["tiebreak_enabled_effective"] = False
+        out["tiebreak_enabled_effective_source"] = "disabled_by:ENABLE_SOURCE_FRESHNESS(" + str(fn_src or "")[:80] + ")"
+    else:
+        out["tiebreak_enabled_effective"] = bool(ft)
+        out["tiebreak_enabled_effective_source"] = str(ft_src or "")[:120]
+    return out
+
+
+
 def _fresh02_summarize_tiebreaks_from_pmc_v1(pmc: dict) -> dict:
     """Summarize per-metric fresh_tiebreak_v1 beacons into a run-scope block.
 
@@ -6253,33 +6457,69 @@ def _fresh02_summarize_tiebreaks_from_pmc_v1(pmc: dict) -> dict:
 
 
 def _fresh02_attach_run_tiebreak_summary_v1(wrapper: dict, default_path: str = "analysis") -> None:
-    """Attach run-scope FRESH02 summary into the durable debug bucket (analysis/evolution)."""
+    """Attach run-scope FRESH02 summary into the durable debug bucket (analysis/evolution).
+
+    NLP61: also annotate the summary with the *effective* freshness/tiebreak flag state so
+    downstream greps don't confuse "no per-metric beacons" with "flag disabled/regressed".
+    """
     try:
         if not isinstance(wrapper, dict):
             return
-        pmc = _yureeka_get_pmc_v1(wrapper)
-        if not isinstance(pmc, dict) or not pmc:
-            return
-        summary = _fresh02_summarize_tiebreaks_from_pmc_v1(pmc)
-        if not isinstance(summary, dict) or not summary:
-            return
+
         dbg = _yureeka_get_debug_bucket_v1(wrapper, default_path=default_path)
         if not isinstance(dbg, dict):
             return
 
-        # Only overwrite if missing/non-dict (additive + stable)
-        if not isinstance(dbg.get("fresh02_freshness_tiebreak_summary_v1"), dict):
-            dbg["fresh02_freshness_tiebreak_summary_v1"] = summary
-        if not isinstance(dbg.get("fresh02_freshness_tiebreak_v1"), dict):
-            dbg["fresh02_freshness_tiebreak_v1"] = {
-                "enabled": bool(summary.get("flag_enabled_any")),
-                "metrics_with_beacon_count": int(summary.get("metrics_with_beacon_count") or 0),
-                "used_count": int(summary.get("used_count") or 0),
-                "changed_winner_count": int(summary.get("changed_winner_count") or 0),
-                "note": "derived_from_primary_metrics_canonical",
-            }
+        # Prefer existing summary if already attached; otherwise derive from PMC (when available).
+        pmc = _yureeka_get_pmc_v1(wrapper)
+        derived = {}
+        try:
+            if isinstance(pmc, dict) and pmc:
+                derived = _fresh02_summarize_tiebreaks_from_pmc_v1(pmc)
+        except Exception:
+            derived = {}
+
+        summary = dbg.get("fresh02_freshness_tiebreak_summary_v1")
+        if not isinstance(summary, dict):
+            if isinstance(derived, dict) and derived:
+                dbg["fresh02_freshness_tiebreak_summary_v1"] = derived
+                summary = derived
+            else:
+                summary = None
+
+        # Always enrich with effective flag state (if we have a summary dict).
+        try:
+            eff = _fresh__effective_flags_v1()
+        except Exception:
+            eff = {}
+        if isinstance(summary, dict) and isinstance(eff, dict) and eff:
+            summary.setdefault("freshness_enabled_effective", bool(eff.get("freshness_enabled_effective")))
+            summary.setdefault("freshness_enabled_effective_source", str(eff.get("freshness_enabled_effective_source") or "")[:120])
+            summary.setdefault("tiebreak_enabled_effective", bool(eff.get("tiebreak_enabled_effective")))
+            summary.setdefault("tiebreak_enabled_effective_source", str(eff.get("tiebreak_enabled_effective_source") or "")[:120])
+
+        # Legacy compact block for older greps/UI.
+        tb = dbg.get("fresh02_freshness_tiebreak_v1")
+        if not isinstance(tb, dict):
+            if isinstance(summary, dict):
+                tb = {
+                    "enabled": bool(summary.get("flag_enabled_any")),
+                    "metrics_with_beacon_count": int(summary.get("metrics_with_beacon_count") or 0),
+                    "used_count": int(summary.get("used_count") or 0),
+                    "changed_winner_count": int(summary.get("changed_winner_count") or 0),
+                    "note": "derived_from_primary_metrics_canonical",
+                }
+                dbg["fresh02_freshness_tiebreak_v1"] = tb
+
+        # Enrich tb with effective flags (non-breaking additive keys).
+        if isinstance(tb, dict) and isinstance(eff, dict) and eff:
+            tb.setdefault("enabled_effective", bool(eff.get("tiebreak_enabled_effective")))
+            tb.setdefault("enabled_effective_source", str(eff.get("tiebreak_enabled_effective_source") or "")[:120])
+            tb.setdefault("freshness_enabled_effective", bool(eff.get("freshness_enabled_effective")))
+            tb.setdefault("freshness_enabled_effective_source", str(eff.get("freshness_enabled_effective_source") or "")[:120])
     except Exception:
         return
+
 
 
 
@@ -6382,26 +6622,52 @@ def _fresh04_low_confidence_blocks_v1(pmc: dict, max_examples: int = 12) -> dict
         return {}
 
 def _fresh11_attach_run_strict_tiebreak_summary_v1(wrapper: dict, default_path: str = "analysis") -> None:
-    """Attach NLP11 strict tiebreak summary into the durable debug bucket (analysis/evolution)."""
+    """Attach NLP11 strict tiebreak summary into the durable debug bucket (analysis/evolution).
+
+    NLP61: also annotate the summary with the *effective* freshness/tiebreak flag state so
+    strict-tiebreak greps stay meaningful even when per-metric beacons are absent.
+    """
     try:
         if not isinstance(wrapper, dict):
             return
-        pmc = _yureeka_get_pmc_v1(wrapper)
-        if not isinstance(pmc, dict) or not pmc:
-            return
-        summary = _fresh11_summarize_strict_tiebreaks_from_pmc_v1(pmc)
-        if not isinstance(summary, dict) or not summary:
-            return
+
         dbg = _yureeka_get_debug_bucket_v1(wrapper, default_path=default_path)
         if not isinstance(dbg, dict):
             return
-        if not isinstance(dbg.get("fresh11_strict_tiebreak_summary_v1"), dict):
-            dbg["fresh11_strict_tiebreak_summary_v1"] = summary
+
+        pmc = _yureeka_get_pmc_v1(wrapper)
+        derived = {}
         try:
-            if not isinstance(dbg.get("fresh04_low_confidence_blocks_v1"), dict):
+            if isinstance(pmc, dict) and pmc:
+                derived = _fresh11_summarize_strict_tiebreaks_from_pmc_v1(pmc)
+        except Exception:
+            derived = {}
+
+        summary = dbg.get("fresh11_strict_tiebreak_summary_v1")
+        if not isinstance(summary, dict):
+            if isinstance(derived, dict) and derived:
+                dbg["fresh11_strict_tiebreak_summary_v1"] = derived
+                summary = derived
+            else:
+                summary = None
+
+        # Attach low-confidence examples only if we have PMC and no existing block.
+        try:
+            if isinstance(pmc, dict) and pmc and not isinstance(dbg.get("fresh04_low_confidence_blocks_v1"), dict):
                 dbg["fresh04_low_confidence_blocks_v1"] = _fresh04_low_confidence_blocks_v1(pmc)
         except Exception:
             pass
+
+        # Enrich with effective flag state (if we have a summary dict).
+        try:
+            eff = _fresh__effective_flags_v1()
+        except Exception:
+            eff = {}
+        if isinstance(summary, dict) and isinstance(eff, dict) and eff:
+            summary.setdefault("freshness_enabled_effective", bool(eff.get("freshness_enabled_effective")))
+            summary.setdefault("freshness_enabled_effective_source", str(eff.get("freshness_enabled_effective_source") or "")[:120])
+            summary.setdefault("tiebreak_enabled_effective", bool(eff.get("tiebreak_enabled_effective")))
+            summary.setdefault("tiebreak_enabled_effective_source", str(eff.get("tiebreak_enabled_effective_source") or "")[:120])
     except Exception:
         return
 
@@ -30537,6 +30803,7 @@ def main():
                     output["debug"]["nlp56_llm_cache_policy_summary_v1"] = _yureeka_llm_cache_policy_summary_v1(stage="analysis")
                     output["debug"]["nlp57_llm_cache_validation_summary_v1"] = _yureeka_llm_cache_validation_summary_v1(stage="analysis")
                     output["debug"]["nlp58_llm_feature_manifest_v1"] = _yureeka_llm_feature_manifest_v1(stage="analysis")
+                    output["debug"]["nlp62_llm_cache_io_health_v1"] = _yureeka_llm_cache_io_health_v1(stage="analysis")
                     output["debug"]["nlp59_llm_cache_write_summary_v1"] = _yureeka_llm_cache_write_summary_v1(stage="analysis")
                     output["debug"]["nlp60_llm_cache_inventory_v1"] = _yureeka_llm_cache_inventory_v1(stage="analysis")
                     try:
@@ -31543,6 +31810,7 @@ def main():
                         _dbg["nlp56_llm_cache_policy_summary_v1"] = _yureeka_llm_cache_policy_summary_v1(stage="evolution")
                         _dbg["nlp57_llm_cache_validation_summary_v1"] = _yureeka_llm_cache_validation_summary_v1(stage="evolution")
                         _dbg["nlp58_llm_feature_manifest_v1"] = _yureeka_llm_feature_manifest_v1(stage="evolution")
+                        _dbg["nlp62_llm_cache_io_health_v1"] = _yureeka_llm_cache_io_health_v1(stage="evolution")
                         _dbg["nlp59_llm_cache_write_summary_v1"] = _yureeka_llm_cache_write_summary_v1(stage="evolution")
                         _dbg["nlp60_llm_cache_inventory_v1"] = _yureeka_llm_cache_inventory_v1(stage="evolution")
                         try:
@@ -37780,6 +38048,16 @@ try:
             "risk": "low",
         })
 
+
+    # NLP61: patch tracker overlay (freshness tie-break summaries expose effective flag state)
+    if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "NLP61" for e in PATCH_TRACKER_V1):
+        PATCH_TRACKER_V1.insert(0, {
+            "patch_id": "NLP61",
+            "scope": "freshness",
+            "summary": "Diagnostics-only: enrich fresh02_freshness_tiebreak_summary_v1 / fresh11_strict_tiebreak_summary_v1 with the *effective* freshness/tiebreak flag state + sources (so flag_enabled_any no longer looks like a regression when per-metric beacons are absent). No changes to winner/value logic; still deterministic and cache-first.",
+            "risk": "low",
+        })
+
     if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "NLP57" for e in PATCH_TRACKER_V1):
         PATCH_TRACKER_V1.insert(0, {"patch_id": "NLP57", "scope": "llm-sidecar", "summary": "Defensive LLM cache validation: when serving cache hits, require payloads to pass strict, feature-specific schema validation (query frame, query-structure fallback, evidence-rank, anomaly relevance). Invalid cached payloads are treated as deterministic cache misses with non-sensitive rejection beacons. Adds nlp57_llm_cache_validation_summary_v1. No effect when LLM flags are OFF.", "risk": "low"})
 except Exception:
@@ -37813,6 +38091,20 @@ try:
         })
 except Exception:
     pass
+
+
+# NLP62: patch tracker overlay (latest-first; safe diagnostics step)
+try:
+    if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "NLP62" for e in PATCH_TRACKER_V1):
+        PATCH_TRACKER_V1.insert(0, {
+            "patch_id": "NLP62",
+            "scope": "llm-cache",
+            "summary": "Diagnostics-only: add cache IO health aggregation (hit/miss/skip/fail + top reasons) and attach nlp62_llm_cache_io_health_v1 beacon + manifest integration; no behavior changes.",
+            "risk": "low",
+        })
+except Exception:
+    pass
+
 
 # LLM38: patch tracker entry
 try:
