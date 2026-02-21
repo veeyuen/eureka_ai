@@ -458,7 +458,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "NLP52"
+_YUREEKA_CODE_VERSION_LOCK = "NLP54"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 # REFACTOR206: Release Candidate freeze (no pipeline behavior change).
 YUREEKA_RELEASE_CANDIDATE_V1 = False
@@ -497,6 +497,10 @@ LLM_BYPASS_CACHE = False
 # NLP48: Replay-only mode (default OFF)
 # - When enabled, live LLM calls are disabled; assists use cache hits only (replay/audit).
 LLM_CACHE_REPLAY_ONLY = False
+
+
+# NLP54: explicit master allow flag for live network calls (defaults OFF; conservative).
+LLM_ALLOW_NETWORK_CALLS = False
 
 ENABLE_LLM_SMOKE_TEST = False
 
@@ -699,6 +703,8 @@ def _yureeka_llm_flags_snapshot_v1() -> dict:
         "ENABLE_LLM_DATASET_LOGGING",
         "LLM_BYPASS_CACHE",
         "LLM_CACHE_REPLAY_ONLY",
+        "LLM_ALLOW_NETWORK_CALLS",
+        "LLM_ALLOW_NETWORK_CALLS",
         "ENABLE_LLM_SMOKE_TEST",
         "LLM_FORCE_REFRESH_ONCE",
     ):
@@ -718,6 +724,14 @@ def _yureeka_llm_flags_snapshot_v1() -> dict:
     try:
         _ro, _src = _yureeka_llm_flag_effective_v1("LLM_CACHE_REPLAY_ONLY")
         out["cache_replay_only"] = {"enabled": bool(_ro), "source": str(_src)[:80]}
+    except Exception:
+        pass
+
+
+    # NLP54: master network-allow state (non-sensitive).
+    try:
+        _an, _an_src = _yureeka_llm_flag_effective_v1("LLM_ALLOW_NETWORK_CALLS")
+        out["allow_network_calls"] = {"enabled": bool(_an), "source": str(_an_src)[:80]}
     except Exception:
         pass
 
@@ -1189,6 +1203,7 @@ def _nlp51_effective_flags_debug_v1() -> dict:
         # Cache controls / ops
         "LLM_BYPASS_CACHE",
         "LLM_CACHE_REPLAY_ONLY",
+        "LLM_ALLOW_NETWORK_CALLS",
         "ENABLE_LLM_SMOKE_TEST",
         "LLM_FORCE_REFRESH_ONCE",
     ]
@@ -1472,6 +1487,29 @@ def _llm03_get_query_frame_v1(query: str, base_signals: Optional[Dict[str, Any]]
                 candidate = cached
 
     if candidate is None:
+        # NLP53: replay-only hard gate — cache-hit or no-op (no network)
+        try:
+            _ro, _ro_src = _yureeka_llm_flag_effective_v1("LLM_CACHE_REPLAY_ONLY")
+        except Exception:
+            _ro, _ro_src = (bool(globals().get("LLM_CACHE_REPLAY_ONLY")), "code:LLM_CACHE_REPLAY_ONLY")
+        if bool(_ro):
+            noop = _yureeka_llm_replay_only_noop_diag_v1(
+                feature="llm03_query_frame",
+                model=str(model),
+                cache_key=str(key),
+                cache_key_fallback=str(key_fallback or ""),
+                where="llm03_query_frame",
+            )
+            dbg["llm_call_diag"] = dict(noop)
+            dbg["llm_used"] = False
+            dbg["llm_ok"] = False
+            dbg["llm_reason"] = "cache_miss_noop"
+            try:
+                _yureeka_llm_global_agg_update_v1("llm03_query_frame", noop, cache_hit=False)
+            except Exception:
+                pass
+            return (det, dbg)
+
         system_prompt = (
             "You are a query-framing assistant. "
             "Return ONLY a strict JSON object with keys:\n"
@@ -1504,6 +1542,11 @@ def _llm03_get_query_frame_v1(query: str, base_signals: Optional[Dict[str, Any]]
             max_tokens=260,
         )
         dbg["llm_call_diag"] = call_diag or {}
+        try:
+            if isinstance(call_diag, dict):
+                call_diag["cache_miss"] = True
+        except Exception:
+            pass
         try:
             _yureeka_llm_global_agg_update_v1("llm03_query_frame", (call_diag or {}), cache_hit=False)
         except Exception:
@@ -1793,6 +1836,68 @@ def _yureeka_llm_cache_note_miss_v1(key: str, where: str = "") -> None:
             pass
     except Exception:
         return
+
+
+
+# NLP53: replay-only no-op diagnostics + run-level summary
+def _yureeka_llm_replay_only_noop_diag_v1(
+    *,
+    feature: str,
+    model: str = "",
+    cache_key: str = "",
+    cache_key_fallback: str = "",
+    where: str = "",
+) -> dict:
+    """Return a compact diag dict for replay-only cache-miss no-ops (no network call)."""
+    try:
+        _ro, _src = _yureeka_llm_flag_effective_v1("LLM_CACHE_REPLAY_ONLY")
+    except Exception:
+        _ro, _src = (bool(globals().get("LLM_CACHE_REPLAY_ONLY")), "code:LLM_CACHE_REPLAY_ONLY")
+    return {
+        "ok": False,
+        "status": None,
+        "reason": "cache_miss_noop",
+        "feature": str(feature or "")[:80],
+        "model": str(model or "")[:80],
+        "cache_key": str(cache_key or "")[:120],
+        "cache_key_fallback": str(cache_key_fallback or "")[:120],
+        "where": str(where or "")[:80],
+        "cache_replay_only": bool(_ro),
+        "cache_replay_only_source": str(_src)[:80],
+        "cache_miss": True,
+        "network_call_blocked": True,
+        "network_call_made": False,
+    }
+
+
+def _yureeka_llm_replay_only_summary_v1(stage: str = "") -> dict:
+    """Compact beacon: replay-only + cache/network counters (non-sensitive)."""
+    out = {"v": "nlp53_llm_replay_only_summary_v1", "stage": str(stage or "")[:40]}
+    try:
+        _ro, _src = _yureeka_llm_flag_effective_v1("LLM_CACHE_REPLAY_ONLY")
+        out["replay_only_enabled"] = bool(_ro)
+        out["replay_only_source"] = str(_src)[:80]
+    except Exception:
+        out["replay_only_enabled"] = bool(globals().get("LLM_CACHE_REPLAY_ONLY"))
+        out["replay_only_source"] = "code:LLM_CACHE_REPLAY_ONLY"
+    try:
+        agg = globals().get("_YUREEKA_LLM_RUN_AGG_V1")
+        if isinstance(agg, dict):
+            out["cache_hits"] = int(agg.get("cache_hits") or 0)
+            out["cache_misses"] = int(agg.get("cache_misses") or 0)
+            out["network_calls_blocked"] = int(agg.get("network_calls_blocked") or 0)
+            out["network_calls_made"] = int(agg.get("network_calls_made") or 0)
+        else:
+            out["cache_hits"] = 0
+            out["cache_misses"] = 0
+            out["network_calls_blocked"] = 0
+            out["network_calls_made"] = 0
+    except Exception:
+        out["cache_hits"] = 0
+        out["cache_misses"] = 0
+        out["network_calls_blocked"] = 0
+        out["network_calls_made"] = 0
+    return out
 
 def get_cached_llm_response(key: str) -> Any:
     """Return cached LLM payload for key, or None if missing/unreadable."""
@@ -2142,6 +2247,8 @@ def _llm04_llm_relevance_check_v1(
     diag = {"ok": False, "reason": "", "llm_used": False}
 
 
+
+
     # LLM05: run-scope circuit breaker + call budget guard (non-behavioral; only affects failing/disabled calls).
     try:
         _is_open, _cb = _yureeka_llm_circuit_is_open_v1()
@@ -2225,6 +2332,26 @@ def _llm04_llm_relevance_check_v1(
                     return (cached, diag)
                 return (None, diag)
 
+        # NLP53: replay-only hard gate — cache-hit or no-op (no network)
+        try:
+            _ro, _ro_src = _yureeka_llm_flag_effective_v1("LLM_CACHE_REPLAY_ONLY")
+        except Exception:
+            _ro, _ro_src = (bool(globals().get("LLM_CACHE_REPLAY_ONLY")), "code:LLM_CACHE_REPLAY_ONLY")
+        if bool(_ro):
+            noop = _yureeka_llm_replay_only_noop_diag_v1(
+                feature="llm04_anomaly_relevance",
+                model=str(model),
+                cache_key=str(key),
+                cache_key_fallback=str(key_fallback or ""),
+                where="llm04_anomaly_relevance",
+            )
+            diag.update({"llm_used": False, "ok": False, "reason": "cache_miss_noop"})
+            try:
+                _yureeka_llm_global_agg_update_v1("llm04_anomaly_relevance", noop, cache_hit=False)
+            except Exception:
+                pass
+            return (None, diag)
+
         system_prompt = (
             "You are a metric relevance checker. "
             "Given a user question, a canonical metric spec, and an evidence snippet with a number, "
@@ -2253,6 +2380,11 @@ def _llm04_llm_relevance_check_v1(
         )
         diag.update(call_diag or {})
         diag["llm_used"] = True
+        try:
+            if isinstance(call_diag, dict):
+                call_diag["cache_miss"] = True
+        except Exception:
+            pass
         try:
             _yureeka_llm_global_agg_update_v1("llm04_anomaly_relevance", (call_diag or {}), cache_hit=False)
         except Exception:
@@ -2755,9 +2887,28 @@ def _yureeka_call_openai_chat_json_v1(
         if bool(_ro):
             diag["reason"] = "cache_replay_only"
             diag["hint"] = "Replay-only: live LLM calls disabled; use cache or disable LLM_CACHE_REPLAY_ONLY."
+            # NLP53: explicit network-call block beacon (no network calls in replay-only)
+            diag["network_call_blocked"] = True
+            diag["network_call_made"] = False
             return (None, diag)
     except Exception:
         pass
+
+    # NLP54: master network-allow flag (must be explicitly enabled for any live provider call).
+    try:
+        _an, _an_src = _yureeka_llm_flag_effective_v1("LLM_ALLOW_NETWORK_CALLS")
+        diag["allow_network_calls"] = bool(_an)
+        diag["allow_network_calls_source"] = str(_an_src)[:80]
+        if not bool(_an):
+            diag["reason"] = "network_disabled_by_flag"
+            diag["hint"] = "Live LLM calls disabled; set LLM_ALLOW_NETWORK_CALLS=true (env or code) to permit network calls."
+            diag["network_call_blocked"] = True
+            diag["network_call_made"] = False
+            return (None, diag)
+    except Exception:
+        pass
+
+
 
 
     # LLM05: run-scope circuit breaker + call budget guard (non-behavioral; only affects failing/disabled calls).
@@ -2899,7 +3050,7 @@ def _yureeka_call_openai_chat_json_v1(
                         pass
         except Exception:
             pass
-
+        diag["network_call_made"] = True
         resp = requests.post(url, headers=headers, json=payload, timeout=int(timeout_sec or 30))
         diag["status"] = int(resp.status_code)
         if int(resp.status_code) != 200:
@@ -3043,6 +3194,9 @@ def _yureeka_llm_reset_run_state_v1(stage: str = "") -> None:
             "attempts": 0,
             "ok": 0,
             "cache_hits": 0,
+            "cache_misses": 0,
+            "network_calls_made": 0,
+            "network_calls_blocked": 0,
             "features": {},
             "reasons": {},
             "status": {},
@@ -3085,6 +3239,23 @@ def _yureeka_llm_global_agg_update_v1(feature: str, call_diag: dict, *, cache_hi
             except Exception:
                 pass
 
+        # NLP53: cache-miss + network-call counters (replay/audit friendly)
+        try:
+            if isinstance(call_diag, dict) and bool(call_diag.get("cache_miss")):
+                agg["cache_misses"] = int(agg.get("cache_misses") or 0) + 1
+        except Exception:
+            pass
+        try:
+            if isinstance(call_diag, dict) and bool(call_diag.get("network_call_made")):
+                agg["network_calls_made"] = int(agg.get("network_calls_made") or 0) + 1
+        except Exception:
+            pass
+        try:
+            if isinstance(call_diag, dict) and bool(call_diag.get("network_call_blocked")):
+                agg["network_calls_blocked"] = int(agg.get("network_calls_blocked") or 0) + 1
+        except Exception:
+            pass
+
         # Per-feature counters
         f = str(feature or "unknown")[:80]
         try:
@@ -3094,13 +3265,19 @@ def _yureeka_llm_global_agg_update_v1(feature: str, call_diag: dict, *, cache_hi
                 agg["features"] = fs
             fe = fs.get(f)
             if not isinstance(fe, dict):
-                fe = {"attempts": 0, "ok": 0, "cache_hits": 0}
+                fe = {"attempts": 0, "ok": 0, "cache_hits": 0, "cache_misses": 0, "network_calls_made": 0, "network_calls_blocked": 0}
                 fs[f] = fe
             fe["attempts"] = int(fe.get("attempts") or 0) + 1
             if bool(cache_hit):
                 fe["cache_hits"] = int(fe.get("cache_hits") or 0) + 1
             if isinstance(call_diag, dict) and bool(call_diag.get("ok")):
                 fe["ok"] = int(fe.get("ok") or 0) + 1
+            if isinstance(call_diag, dict) and bool(call_diag.get("cache_miss")):
+                fe["cache_misses"] = int(fe.get("cache_misses") or 0) + 1
+            if isinstance(call_diag, dict) and bool(call_diag.get("network_call_made")):
+                fe["network_calls_made"] = int(fe.get("network_calls_made") or 0) + 1
+            if isinstance(call_diag, dict) and bool(call_diag.get("network_call_blocked")):
+                fe["network_calls_blocked"] = int(fe.get("network_calls_blocked") or 0) + 1
         except Exception:
             pass
 
@@ -3242,6 +3419,14 @@ def _yureeka_llm_health_snapshot_v1(stage: str = "") -> dict:
         out["cache_replay_only"] = {"enabled": bool(_ro), "source": str(_src)[:80]}
     except Exception:
         pass
+
+    # NLP54: master network-allow status (non-sensitive).
+    try:
+        _an, _an_src = _yureeka_llm_flag_effective_v1("LLM_ALLOW_NETWORK_CALLS")
+        out["allow_network_calls"] = {"enabled": bool(_an), "source": str(_an_src)[:80]}
+    except Exception:
+        pass
+
     try:
         led = globals().get("_YUREEKA_LLM_CACHE_MISS_LEDGER_V1")
         if isinstance(led, dict):
@@ -3260,7 +3445,10 @@ def _yureeka_llm_health_snapshot_v1(stage: str = "") -> dict:
                 "attempts": int(agg.get("attempts") or 0),
                 "ok": int(agg.get("ok") or 0),
                 "cache_hits": int(agg.get("cache_hits") or 0),
-                "live_calls": max(0, int(agg.get("attempts") or 0) - int(agg.get("cache_hits") or 0)),
+                "cache_misses": int(agg.get("cache_misses") or 0),
+                "network_calls_made": int(agg.get("network_calls_made") or 0),
+                "network_calls_blocked": int(agg.get("network_calls_blocked") or 0),
+                "live_calls": int(agg.get("network_calls_made") or max(0, int(agg.get("attempts") or 0) - int(agg.get("cache_hits") or 0))),
                 "status": dict(agg.get("status") or {}),
                 "reasons": dict(agg.get("reasons") or {}),
                 "last": dict(agg.get("last") or {}),
@@ -3410,6 +3598,42 @@ def _yureeka_llm_smoke_test_v1(stage: str = "") -> dict:
         out["reason"] = "flag_off"
         out["flag_source"] = str(_src)[:80]
         return out
+
+    # NLP53: replay-only hard gate — never perform a live smoke-test network call
+    try:
+        _ro, _ro_src = _yureeka_llm_flag_effective_v1("LLM_CACHE_REPLAY_ONLY")
+    except Exception:
+        _ro, _ro_src = (bool(globals().get("LLM_CACHE_REPLAY_ONLY")), "code:LLM_CACHE_REPLAY_ONLY")
+    if bool(_ro):
+        out["attempted"] = False
+        out["ok"] = False
+        out["reason"] = "cache_replay_only"
+        out["cache_replay_only_source"] = str(_ro_src)[:80]
+        out["diag"] = {"ok": False, "status": None, "reason": "cache_replay_only", "model": "", "network_call_blocked": True, "network_call_made": False}
+        try:
+            _yureeka_llm_global_agg_update_v1("llm_smoke_test", out.get("diag") or {}, cache_hit=False)
+        except Exception:
+            pass
+        return out
+
+    # NLP54: master network-allow flag — smoke test should never perform a live call unless explicitly allowed.
+    try:
+        _an, _an_src = _yureeka_llm_flag_effective_v1("LLM_ALLOW_NETWORK_CALLS")
+    except Exception:
+        _an, _an_src = (bool(globals().get("LLM_ALLOW_NETWORK_CALLS")), "code:LLM_ALLOW_NETWORK_CALLS")
+    if not bool(_an):
+        out["attempted"] = False
+        out["ok"] = False
+        out["reason"] = "network_disabled_by_flag"
+        out["allow_network_calls_source"] = str(_an_src)[:80]
+        out["diag"] = {"ok": False, "status": None, "reason": "network_disabled_by_flag", "model": "", "network_call_blocked": True, "network_call_made": False}
+        try:
+            _yureeka_llm_global_agg_update_v1("llm_smoke_test", out.get("diag") or {}, cache_hit=False)
+        except Exception:
+            pass
+        return out
+
+
 
     # Ensure one live attempt per run (reused across stages).
     try:
@@ -3688,7 +3912,46 @@ def _llm01_llm_rank_windows_v1(
         diag["used"] = True
         diag["cache_hit"] = True
         obj = cached
+        # NLP53: record cache-hit into run-scope LLM health aggregation
+        try:
+            _hit_diag = {"ok": True, "status": None, "reason": "cache_hit", "model": str(model)[:80]}
+            _did = False
+            if isinstance(out_debug, dict):
+                _llm01_update_llm_diag_agg_v1(out_debug, _hit_diag, cache_hit=True, feature="llm01_evidence_rank")
+                _did = True
+            if not bool(_did):
+                _yureeka_llm_global_agg_update_v1("llm01_evidence_rank", _hit_diag, cache_hit=True)
+        except Exception:
+            pass
     else:
+        # NLP53: replay-only hard gate — cache-hit or no-op (no network)
+        try:
+            _ro, _ro_src = _yureeka_llm_flag_effective_v1("LLM_CACHE_REPLAY_ONLY")
+        except Exception:
+            _ro, _ro_src = (bool(globals().get("LLM_CACHE_REPLAY_ONLY")), "code:LLM_CACHE_REPLAY_ONLY")
+        if bool(_ro):
+            noop = _yureeka_llm_replay_only_noop_diag_v1(
+                feature="llm01_evidence_rank",
+                model=str(model),
+                cache_key=str(cache_key),
+                cache_key_fallback=str(cache_key_fallback or ""),
+                where="llm01_evidence_rank",
+            )
+            diag.update({"used": False, "cache_hit": False, "reason": "cache_miss_noop"})
+            _did = False
+            try:
+                if isinstance(out_debug, dict):
+                    _llm01_update_llm_diag_agg_v1(out_debug, noop, cache_hit=False, feature="llm01_evidence_rank")
+                    _did = True
+            except Exception:
+                _did = False
+            if not bool(_did):
+                try:
+                    _yureeka_llm_global_agg_update_v1("llm01_evidence_rank", noop, cache_hit=False)
+                except Exception:
+                    pass
+            return (None, None, diag)
+
         # Call model (best-effort)
         system_prompt = (
             "You select the best evidence snippet window for a metric. "
@@ -3703,6 +3966,21 @@ def _llm01_llm_rank_windows_v1(
             prompt_version=prompt_version,
             schema_version=schema_version,
         )
+        try:
+            if isinstance(call_diag, dict):
+                call_diag["cache_miss"] = True
+        except Exception:
+            pass
+        # NLP53: record live-call attempt (cache miss) into run-scope health aggregation
+        try:
+            _did = False
+            if isinstance(out_debug, dict) and isinstance(call_diag, dict):
+                _llm01_update_llm_diag_agg_v1(out_debug, call_diag, cache_hit=False, feature="llm01_evidence_rank")
+                _did = True
+            if (not bool(_did)) and isinstance(call_diag, dict):
+                _yureeka_llm_global_agg_update_v1("llm01_evidence_rank", call_diag, cache_hit=False)
+        except Exception:
+            pass
         diag.update({"used": bool(call_diag.get("ok")), "cache_hit": False, "reason": call_diag.get("reason")})
         if isinstance(obj, dict) and obj:
             try:
@@ -15220,6 +15498,32 @@ def _llm_fallback_query_structure(query: str, web_context: Optional[Dict] = None
             except Exception:
                 pass
         else:
+            # NLP53: replay-only hard gate — cache-hit or no-op (no network)
+            try:
+                _ro, _ro_src = _yureeka_llm_flag_effective_v1("LLM_CACHE_REPLAY_ONLY")
+            except Exception:
+                _ro, _ro_src = (bool(globals().get("LLM_CACHE_REPLAY_ONLY")), "code:LLM_CACHE_REPLAY_ONLY")
+            if bool(_ro):
+                noop = _yureeka_llm_replay_only_noop_diag_v1(
+                    feature="llm00_query_structure",
+                    model=str(model),
+                    cache_key=str(cache_key),
+                    cache_key_fallback=str(cache_key_fallback or ""),
+                    where="llm00_query_structure",
+                )
+                try:
+                    if isinstance(out_debug, dict):
+                        out_debug["llm_fallback_cache_hit"] = False
+                        out_debug["llm_fallback_cache_key"] = str(cache_key)[:80]
+                        out_debug["llm_fallback_call_diag"] = {"ok": False, "status": None, "reason": "cache_miss_noop", "model": str(model)[:80]}
+                except Exception:
+                    pass
+                try:
+                    _yureeka_llm_global_agg_update_v1("llm00_query_structure", noop, cache_hit=False)
+                except Exception:
+                    pass
+                return None
+
             parsed, call_diag = _yureeka_call_openai_chat_json_v1(
                 model=str(model),
                 system_prompt=system_prompt,
@@ -15250,6 +15554,11 @@ def _llm_fallback_query_structure(query: str, web_context: Optional[Dict] = None
                             "reason": str(call_diag.get("reason") or "")[:80],
                             "model": str(call_diag.get("model") or "")[:80],
                         }
+            except Exception:
+                pass
+            try:
+                if isinstance(call_diag, dict):
+                    call_diag["cache_miss"] = True
             except Exception:
                 pass
             try:
@@ -29309,6 +29618,7 @@ def main():
                 if isinstance(output.get("debug"), dict):
                     output["debug"]["llm_sidecar_health_v1"] = _yureeka_llm_health_snapshot_v1(stage="analysis")
                     output["debug"]["llm00_status_v1"] = _yureeka_llm00_status_v1(stage="analysis")
+                    output["debug"]["nlp53_llm_replay_only_summary_v1"] = _yureeka_llm_replay_only_summary_v1(stage="analysis")
                     try:
                         if _yureeka_llm_flag_bool_v1("ENABLE_LLM_SMOKE_TEST"):
                             output["debug"]["llm_smoke_test_v1"] = _yureeka_llm_smoke_test_v1(stage="analysis")
@@ -30309,6 +30619,8 @@ def main():
                     if isinstance(_dbg, dict):
                         _dbg["llm_sidecar_health_v1"] = _yureeka_llm_health_snapshot_v1(stage="evolution")
                         _dbg["llm00_status_v1"] = _yureeka_llm00_status_v1(stage="evolution")
+                        _dbg["nlp53_llm_replay_only_summary_v1"] = _yureeka_llm_replay_only_summary_v1(stage="evolution")
+                        _dbg["nlp53_llm_replay_only_summary_v1"] = _yureeka_llm_replay_only_summary_v1(stage="evolution")
                         try:
                             if _yureeka_llm_flag_bool_v1("ENABLE_LLM_SMOKE_TEST"):
                                 _dbg["llm_smoke_test_v1"] = _yureeka_llm_smoke_test_v1(stage="evolution")
@@ -36490,6 +36802,22 @@ except Exception:
 try:
     if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "LLM36" for e in PATCH_TRACKER_V1):
         PATCH_TRACKER_V1.insert(0, {"patch_id": "LLM36", "scope": "freshness", "summary": "Fix per-metric fresh_tiebreak_v1 fields (winner/base URLs + changed_winner detection) so freshness-driven tie-breaking is provable; add debug.fresh02_freshness_tiebreak_summary_v1 derived from per-metric beacons (analysis + evolution). No winner/value changes; cache-first determinism preserved.", "risk": "low"})
+except Exception:
+    pass
+
+
+# NLP53: patch tracker overlay (LLM replay-only hard gate)
+try:
+    if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "NLP53" for e in PATCH_TRACKER_V1):
+        PATCH_TRACKER_V1.insert(0, {"patch_id": "NLP53", "scope": "llm-sidecar", "summary": "Enforce LLM_CACHE_REPLAY_ONLY as a hard gate across all LLM entry points (query frame, evidence snippets, query-structure fallback, anomaly probe, smoke test). Add cache_miss_noop + run-level counters for cache hits/misses and blocked network calls (replay/audit friendly).", "risk": "low"})
+except Exception:
+    pass
+
+
+# NLP54: patch tracker overlay (avoid touching the compressed canonical blob)
+try:
+    if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "NLP54" for e in PATCH_TRACKER_V1):
+        PATCH_TRACKER_V1.insert(0, {"patch_id": "NLP54", "scope": "llm-sidecar", "summary": "Add explicit LLM_ALLOW_NETWORK_CALLS master gate (default OFF) and enforce it in the provider call boundary + smoke test. Live calls now require BOTH replay-only disabled and network-allow enabled; fully replayable, conservative, and no effect when LLM flags are OFF.", "risk": "low"})
 except Exception:
     pass
 
