@@ -458,7 +458,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "NLP54"
+_YUREEKA_CODE_VERSION_LOCK = "NLP56"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 # REFACTOR206: Release Candidate freeze (no pipeline behavior change).
 YUREEKA_RELEASE_CANDIDATE_V1 = False
@@ -1442,7 +1442,29 @@ def _llm03_get_query_frame_v1(query: str, base_signals: Optional[Dict[str, Any]]
     except Exception:
         pass
 
+
     if not bool(_qf_on):
+        # NLP55: cache probe even when the feature flag is OFF (replay-only / prewarm verification).
+        try:
+            model_probe = os.environ.get("YUREEKA_LLM_MODEL") or os.environ.get("OPENAI_MODEL") or "gpt-4o-mini"
+        except Exception:
+            model_probe = "gpt-4o-mini"
+        try:
+            pv = "llm03_query_frame_v1"
+            sv = "schema_frozen_v1"
+            input_obj_probe = {"query": q_raw, "deterministic_frame": det}
+            input_hash_probe = _yureeka_hash_text_v1(_yureeka__stable_json_dumps_v1(input_obj_probe))
+            q_hash_probe = _yureeka_hash_text_v1(q_raw)
+            key_probe, key_fb_probe = get_llm_cache_key_salted_v1(str(model_probe), pv, sv, str(input_hash_probe), "", str(q_hash_probe))
+            dbg["llm_cache_probe_v1"] = _yureeka_llm_cache_probe_v1(
+                str(key_probe or ""),
+                str(key_fb_probe or ""),
+                feature="llm03_query_frame",
+                model=str(model_probe),
+                prompt_version=str(pv),
+            )
+        except Exception:
+            pass
         dbg["llm_reason"] = "flag_off"
         return (det, dbg)
 
@@ -1504,6 +1526,29 @@ def _llm03_get_query_frame_v1(query: str, base_signals: Optional[Dict[str, Any]]
             dbg["llm_used"] = False
             dbg["llm_ok"] = False
             dbg["llm_reason"] = "cache_miss_noop"
+            try:
+                _yureeka_llm_global_agg_update_v1("llm03_query_frame", noop, cache_hit=False)
+            except Exception:
+                pass
+            return (det, dbg)
+
+        # NLP56: cache-hit-only mode when live network calls are disabled (avoid provider boundary call).
+        try:
+            _an, _an_src = _yureeka_llm_flag_effective_v1("LLM_ALLOW_NETWORK_CALLS")
+        except Exception:
+            _an, _an_src = (bool(globals().get("LLM_ALLOW_NETWORK_CALLS")), "code:LLM_ALLOW_NETWORK_CALLS")
+        if not bool(_an):
+            noop = _yureeka_llm_network_disabled_noop_diag_v1(
+                feature="llm03_query_frame",
+                model=str(model),
+                cache_key=str(key),
+                cache_key_fallback=str(key_fallback or ""),
+                where="llm03_query_frame",
+            )
+            dbg["llm_call_diag"] = dict(noop)
+            dbg["llm_used"] = False
+            dbg["llm_ok"] = False
+            dbg["llm_reason"] = "cache_miss_noop_network_disabled"
             try:
                 _yureeka_llm_global_agg_update_v1("llm03_query_frame", noop, cache_hit=False)
             except Exception:
@@ -1700,6 +1745,49 @@ def _llm_cache_path_v1(key: str) -> str:
         return f"{safe}.json"
 
 
+
+
+
+def _yureeka_llm_cache_probe_v1(
+    cache_key: str,
+    cache_key_fallback: str = "",
+    *,
+    feature: str = "",
+    model: str = "",
+    prompt_version: str = "",
+) -> dict:
+    """Non-sensitive cache probe: report disk existence for the given key(s).
+
+    - No disk reads (existence check only)
+    - No network calls
+    - Intended for replay-only / prewarm verification when LLM feature flags are OFF.
+    """
+    out = {
+        "v": "llm_cache_probe_v1",
+        "feature": str(feature or "")[:80],
+        "model": str(model or "")[:80],
+        "prompt_version": str(prompt_version or "")[:80],
+        "cache_dir": str(LLM_CACHE_DIR_V1 or ".yureeka_llm_cache"),
+        "cache_key": str(cache_key or "")[:120],
+        "cache_key_fallback": str(cache_key_fallback or "")[:120],
+        "disk_exists": False,
+        "disk_exists_fallback": False,
+    }
+    try:
+        if cache_key:
+            p = _llm_cache_path_v1(cache_key)
+            out["disk_exists"] = bool(p) and os.path.exists(p)
+    except Exception:
+        pass
+    try:
+        if cache_key_fallback:
+            p2 = _llm_cache_path_v1(cache_key_fallback)
+            out["disk_exists_fallback"] = bool(p2) and os.path.exists(p2)
+    except Exception:
+        pass
+    return out
+
+
 def _llm_cache__mem_touch_v1(key: str):
     """Update tiny in-memory LRU order."""
     try:
@@ -1870,6 +1958,43 @@ def _yureeka_llm_replay_only_noop_diag_v1(
     }
 
 
+
+
+def _yureeka_llm_network_disabled_noop_diag_v1(
+    *,
+    feature: str,
+    model: str = "",
+    cache_key: str = "",
+    cache_key_fallback: str = "",
+    where: str = "",
+) -> dict:
+    """No-op diag when live network calls are disabled (cache-hit or no-op)."""
+    try:
+        _an, _an_src = _yureeka_llm_flag_effective_v1("LLM_ALLOW_NETWORK_CALLS")
+    except Exception:
+        _an, _an_src = (bool(globals().get("LLM_ALLOW_NETWORK_CALLS")), "code:LLM_ALLOW_NETWORK_CALLS")
+    try:
+        _ro, _ro_src = _yureeka_llm_flag_effective_v1("LLM_CACHE_REPLAY_ONLY")
+    except Exception:
+        _ro, _ro_src = (bool(globals().get("LLM_CACHE_REPLAY_ONLY")), "code:LLM_CACHE_REPLAY_ONLY")
+    return {
+        "ok": False,
+        "status": None,
+        "reason": "cache_miss_noop_network_disabled",
+        "feature": str(feature or "")[:80],
+        "model": str(model or "")[:80],
+        "cache_key": str(cache_key or "")[:120],
+        "cache_key_fallback": str(cache_key_fallback or "")[:120],
+        "where": str(where or "")[:80],
+        "allow_network_calls": bool(_an),
+        "allow_network_calls_source": str(_an_src)[:80],
+        "cache_replay_only": bool(_ro),
+        "cache_replay_only_source": str(_ro_src)[:80],
+        "cache_miss": True,
+        "network_call_blocked": True,
+        "network_call_made": False,
+    }
+
 def _yureeka_llm_replay_only_summary_v1(stage: str = "") -> dict:
     """Compact beacon: replay-only + cache/network counters (non-sensitive)."""
     out = {"v": "nlp53_llm_replay_only_summary_v1", "stage": str(stage or "")[:40]}
@@ -1898,6 +2023,33 @@ def _yureeka_llm_replay_only_summary_v1(stage: str = "") -> dict:
         out["network_calls_blocked"] = 0
         out["network_calls_made"] = 0
     return out
+
+def _yureeka_llm_cache_policy_summary_v1(stage: str = "") -> dict:
+    """Compact beacon: cache/network policy posture + counters (non-sensitive)."""
+    out = {"v": "nlp56_llm_cache_policy_summary_v1", "stage": str(stage or "")[:40]}
+    try:
+        _ro, _ro_src = _yureeka_llm_flag_effective_v1("LLM_CACHE_REPLAY_ONLY")
+    except Exception:
+        _ro, _ro_src = (bool(globals().get("LLM_CACHE_REPLAY_ONLY")), "code:LLM_CACHE_REPLAY_ONLY")
+    try:
+        _an, _an_src = _yureeka_llm_flag_effective_v1("LLM_ALLOW_NETWORK_CALLS")
+    except Exception:
+        _an, _an_src = (bool(globals().get("LLM_ALLOW_NETWORK_CALLS")), "code:LLM_ALLOW_NETWORK_CALLS")
+    out["replay_only_enabled"] = bool(_ro)
+    out["replay_only_source"] = str(_ro_src)[:80]
+    out["allow_network_calls"] = bool(_an)
+    out["allow_network_calls_source"] = str(_an_src)[:80]
+    out["cache_hit_only_effective"] = bool(bool(_ro) or (not bool(_an)))
+    try:
+        agg = globals().get("_YUREEKA_LLM_RUN_AGG_V1")
+        if isinstance(agg, dict):
+            for k in ["attempts", "cache_hits", "cache_misses", "network_calls_made", "network_calls_blocked", "ok"]:
+                out[k] = int(agg.get(k) or 0)
+    except Exception:
+        pass
+    return out
+
+
 
 def get_cached_llm_response(key: str) -> Any:
     """Return cached LLM payload for key, or None if missing/unreadable."""
@@ -2346,6 +2498,26 @@ def _llm04_llm_relevance_check_v1(
                 where="llm04_anomaly_relevance",
             )
             diag.update({"llm_used": False, "ok": False, "reason": "cache_miss_noop"})
+            try:
+                _yureeka_llm_global_agg_update_v1("llm04_anomaly_relevance", noop, cache_hit=False)
+            except Exception:
+                pass
+            return (None, diag)
+
+        # NLP56: cache-hit-only mode when live network calls are disabled (avoid provider boundary call).
+        try:
+            _an, _an_src = _yureeka_llm_flag_effective_v1("LLM_ALLOW_NETWORK_CALLS")
+        except Exception:
+            _an, _an_src = (bool(globals().get("LLM_ALLOW_NETWORK_CALLS")), "code:LLM_ALLOW_NETWORK_CALLS")
+        if not bool(_an):
+            noop = _yureeka_llm_network_disabled_noop_diag_v1(
+                feature="llm04_anomaly_relevance",
+                model=str(model),
+                cache_key=str(key),
+                cache_key_fallback=str(key_fallback or ""),
+                where="llm04_anomaly_relevance",
+            )
+            diag.update({"llm_used": False, "ok": False, "reason": "cache_miss_noop_network_disabled"})
             try:
                 _yureeka_llm_global_agg_update_v1("llm04_anomaly_relevance", noop, cache_hit=False)
             except Exception:
@@ -3938,6 +4110,34 @@ def _llm01_llm_rank_windows_v1(
                 where="llm01_evidence_rank",
             )
             diag.update({"used": False, "cache_hit": False, "reason": "cache_miss_noop"})
+            _did = False
+            try:
+                if isinstance(out_debug, dict):
+                    _llm01_update_llm_diag_agg_v1(out_debug, noop, cache_hit=False, feature="llm01_evidence_rank")
+                    _did = True
+            except Exception:
+                _did = False
+            if not bool(_did):
+                try:
+                    _yureeka_llm_global_agg_update_v1("llm01_evidence_rank", noop, cache_hit=False)
+                except Exception:
+                    pass
+            return (None, None, diag)
+
+        # NLP56: cache-hit-only mode when live network calls are disabled (avoid provider boundary call).
+        try:
+            _an, _an_src = _yureeka_llm_flag_effective_v1("LLM_ALLOW_NETWORK_CALLS")
+        except Exception:
+            _an, _an_src = (bool(globals().get("LLM_ALLOW_NETWORK_CALLS")), "code:LLM_ALLOW_NETWORK_CALLS")
+        if not bool(_an):
+            noop = _yureeka_llm_network_disabled_noop_diag_v1(
+                feature="llm01_evidence_rank",
+                model=str(model),
+                cache_key=str(cache_key),
+                cache_key_fallback=str(cache_key_fallback or ""),
+                where="llm01_evidence_rank",
+            )
+            diag.update({"used": False, "cache_hit": False, "reason": "cache_miss_noop_network_disabled"})
             _did = False
             try:
                 if isinstance(out_debug, dict):
@@ -15402,6 +15602,19 @@ def _embedding_category_vote(query: str) -> Dict[str, Any]:
     conf = max(0.0, min(best_sim / 0.35, 1.0))  # 0.35 sim ~= "high"
     return {"category": best_cat, "confidence": round(conf, 2), "method": "tfidf"}
 
+
+
+
+# NLP55: stabilize LLM00 system prompt string for cache-key probing (no behavior change).
+_LLM00_QSTRUCT_SYSTEM_PROMPT_V1 = (
+    "Extract a query structure. Return ONLY valid JSON with keys:\n"
+    "  category: one of [country, industry, company, finance, market, unknown]\n"
+    "  category_confidence: number 0-1\n"
+    "  main: string (the main question/topic)\n"
+    "  side: array of strings (side questions)\n"
+    "No extra keys, no commentary."
+)
+
 def _llm_fallback_query_structure(query: str, web_context: Optional[Dict] = None, out_debug: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
     """
     Last resort: ask LLM to output ONLY a small JSON query-structure object.
@@ -15456,14 +15669,7 @@ def _llm_fallback_query_structure(query: str, web_context: Optional[Dict] = None
         except Exception:
             model = "gpt-4o-mini"
 
-        system_prompt = (
-            "Extract a query structure. Return ONLY valid JSON with keys:\n"
-            "  category: one of [country, industry, company, finance, market, unknown]\n"
-            "  category_confidence: number 0-1\n"
-            "  main: string (the main question/topic)\n"
-            "  side: array of strings (side questions)\n"
-            "No extra keys, no commentary."
-        )
+        system_prompt = _LLM00_QSTRUCT_SYSTEM_PROMPT_V1
         input_payload = {"query": q}
 
         # Deterministic cache key (replayable)
@@ -15516,6 +15722,32 @@ def _llm_fallback_query_structure(query: str, web_context: Optional[Dict] = None
                         out_debug["llm_fallback_cache_hit"] = False
                         out_debug["llm_fallback_cache_key"] = str(cache_key)[:80]
                         out_debug["llm_fallback_call_diag"] = {"ok": False, "status": None, "reason": "cache_miss_noop", "model": str(model)[:80]}
+                except Exception:
+                    pass
+                try:
+                    _yureeka_llm_global_agg_update_v1("llm00_query_structure", noop, cache_hit=False)
+                except Exception:
+                    pass
+                return None
+
+            # NLP56: cache-hit-only mode when live network calls are disabled (avoid provider boundary call).
+            try:
+                _an, _an_src = _yureeka_llm_flag_effective_v1("LLM_ALLOW_NETWORK_CALLS")
+            except Exception:
+                _an, _an_src = (bool(globals().get("LLM_ALLOW_NETWORK_CALLS")), "code:LLM_ALLOW_NETWORK_CALLS")
+            if not bool(_an):
+                noop = _yureeka_llm_network_disabled_noop_diag_v1(
+                    feature="llm00_query_structure",
+                    model=str(model),
+                    cache_key=str(cache_key),
+                    cache_key_fallback=str(cache_key_fallback or ""),
+                    where="llm00_query_structure",
+                )
+                try:
+                    if isinstance(out_debug, dict):
+                        out_debug["llm_fallback_cache_hit"] = False
+                        out_debug["llm_fallback_cache_key"] = str(cache_key)[:80]
+                        out_debug["llm_fallback_call_diag"] = dict(noop)
                 except Exception:
                     pass
                 try:
@@ -15750,6 +15982,25 @@ def extract_query_structure(query: str) -> Dict[str, Any]:
             debug["llm_fallback_flag_source"] = str(_f_src)[:80]
         except Exception:
             pass
+        # NLP55: cache probe for LLM00 query-structure fallback (even when flag is OFF).
+        try:
+            try:
+                model_probe = os.environ.get("YUREEKA_LLM_MODEL") or os.environ.get("OPENAI_MODEL") or "gpt-4o-mini"
+            except Exception:
+                model_probe = "gpt-4o-mini"
+            q_hash = _yureeka_llm_text_hash_v1(q)
+            in_hash = _yureeka_llm_text_hash_v1(str(_LLM00_QSTRUCT_SYSTEM_PROMPT_V1 or "") + "\n" + str(q or ""))
+            ck, ck_fb = get_llm_cache_key_salted_v1(str(model_probe), "llm00_qstruct_v1", "qstruct_v1", str(in_hash), "", str(q_hash))
+            debug["llm00_cache_probe_v1"] = _yureeka_llm_cache_probe_v1(
+                str(ck or ""),
+                str(ck_fb or ""),
+                feature="llm00_query_structure",
+                model=str(model_probe),
+                prompt_version="llm00_qstruct_v1",
+            )
+        except Exception:
+            pass
+
         if not bool(_f_on):
             try:
                 debug["llm_fallback_used"] = False
@@ -29619,6 +29870,7 @@ def main():
                     output["debug"]["llm_sidecar_health_v1"] = _yureeka_llm_health_snapshot_v1(stage="analysis")
                     output["debug"]["llm00_status_v1"] = _yureeka_llm00_status_v1(stage="analysis")
                     output["debug"]["nlp53_llm_replay_only_summary_v1"] = _yureeka_llm_replay_only_summary_v1(stage="analysis")
+                    output["debug"]["nlp56_llm_cache_policy_summary_v1"] = _yureeka_llm_cache_policy_summary_v1(stage="analysis")
                     try:
                         if _yureeka_llm_flag_bool_v1("ENABLE_LLM_SMOKE_TEST"):
                             output["debug"]["llm_smoke_test_v1"] = _yureeka_llm_smoke_test_v1(stage="analysis")
@@ -30620,7 +30872,7 @@ def main():
                         _dbg["llm_sidecar_health_v1"] = _yureeka_llm_health_snapshot_v1(stage="evolution")
                         _dbg["llm00_status_v1"] = _yureeka_llm00_status_v1(stage="evolution")
                         _dbg["nlp53_llm_replay_only_summary_v1"] = _yureeka_llm_replay_only_summary_v1(stage="evolution")
-                        _dbg["nlp53_llm_replay_only_summary_v1"] = _yureeka_llm_replay_only_summary_v1(stage="evolution")
+                        _dbg["nlp56_llm_cache_policy_summary_v1"] = _yureeka_llm_cache_policy_summary_v1(stage="evolution")
                         try:
                             if _yureeka_llm_flag_bool_v1("ENABLE_LLM_SMOKE_TEST"):
                                 _dbg["llm_smoke_test_v1"] = _yureeka_llm_smoke_test_v1(stage="evolution")
@@ -36818,6 +37070,23 @@ except Exception:
 try:
     if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "NLP54" for e in PATCH_TRACKER_V1):
         PATCH_TRACKER_V1.insert(0, {"patch_id": "NLP54", "scope": "llm-sidecar", "summary": "Add explicit LLM_ALLOW_NETWORK_CALLS master gate (default OFF) and enforce it in the provider call boundary + smoke test. Live calls now require BOTH replay-only disabled and network-allow enabled; fully replayable, conservative, and no effect when LLM flags are OFF.", "risk": "low"})
+except Exception:
+    pass
+
+
+
+# NLP55: patch tracker overlay (LLM cache probes on flag-off)
+try:
+    if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "NLP55" for e in PATCH_TRACKER_V1):
+        PATCH_TRACKER_V1.insert(0, {"patch_id": "NLP55", "scope": "llm-sidecar", "summary": "Add deterministic LLM cache-probe beacons (key + disk-exists) for LLM03 query-frame and LLM00 query-structure fallback even when LLM flags are OFF, to support replay-only rollout. No network calls and no effect on winners/values.", "risk": "low"})
+except Exception:
+    pass
+
+
+# NLP56: patch tracker overlay (cache-hit-only no-op when network disabled)
+try:
+    if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "NLP56" for e in PATCH_TRACKER_V1):
+        PATCH_TRACKER_V1.insert(0, {"patch_id": "NLP56", "scope": "llm-sidecar", "summary": "When LLM feature flags are ON but live network calls are disabled (LLM_ALLOW_NETWORK_CALLS=false), enforce cache-hit-only behavior: cache hit replays, cache miss becomes a deterministic no-op with reason cache_miss_noop_network_disabled. Adds nlp56_llm_cache_policy_summary_v1 and removes duplicate nlp53 summary attach. No effect when LLM flags are OFF.", "risk": "low"})
 except Exception:
     pass
 
