@@ -458,7 +458,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "NLP62"
+_YUREEKA_CODE_VERSION_LOCK = "NLP64"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 # REFACTOR206: Release Candidate freeze (no pipeline behavior change).
 YUREEKA_RELEASE_CANDIDATE_V1 = False
@@ -2498,6 +2498,13 @@ def _yureeka_llm_feature_manifest_v1(stage: str = "") -> dict:
     except Exception:
         pass
 
+    # NLP63: dataset logging feature snapshot (non-sensitive)
+    try:
+        out["features"]["llm_dataset_logging"] = _yureeka_llm_dataset_feature_snapshot_v1(stage=stage)
+    except Exception:
+        pass
+
+
 
     # Policy posture (replay-only / allow-network / cache-hit-only effective)
     try:
@@ -2939,6 +2946,450 @@ def _yureeka_llm_text_hash_v1(text: str) -> str:
         return ""
 
 
+
+# ================================
+# [MOD:LLM_DATASET_LOGGING]
+# LLM Dataset logging (sanitized JSONL) — OFF by default
+# ================================
+#
+# Goal: enable offline replay / evaluation / future training without changing any deterministic
+# pipeline decisions. This logger:
+# - Never stores full scraped pages.
+# - Stores only hashes + short, redacted snippets + compact provenance.
+# - Writes JSONL to disk only when ENABLE_LLM_DATASET_LOGGING is ON.
+#
+# Controls (all no-ops unless ENABLE_LLM_DATASET_LOGGING is ON):
+# - LLM_DATASET_LOG_DIR (env) / default: .yureeka_llm_dataset
+# - LLM_DATASET_LOG_MAX_BYTES_PER_FILE_V1: hard cap per file (best-effort)
+#
+LLM_DATASET_LOG_DIR_DEFAULT_V1 = ".yureeka_llm_dataset"
+LLM_DATASET_LOG_MAX_BYTES_PER_FILE_V1 = 2_000_000  # 2MB cap per file (best-effort)
+LLM_DATASET_LOG_MAX_RECORDS_PER_RUN_V1 = 500
+
+LLM_DATASET_LOG_MAX_PARTS_PER_FILE_V1 = 20
+LLM_DATASET_LOG_INVENTORY_SAMPLE_FILES_V1 = 6
+# Stage-keyed, in-memory stats for manifest/debug beacons (non-sensitive).
+_DATASET_LOG_STATE_V1 = {"analysis": {}, "evolution": {}}
+
+_DATASET_EMAIL_RE_V1 = re.compile(r"(?i)\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b")
+_DATASET_PHONE_RE_V1 = re.compile(r"(?i)(\+?\d[\d\s().-]{7,}\d)")
+_DATASET_WS_RE_V1 = re.compile(r"\s+")
+
+def _dataset_text_sanitize_v1(text: str, max_len: int = 280) -> str:
+    try:
+        s = str(text or "")
+        if not s:
+            return ""
+        # Basic PII-ish redactions from public pages (emails/phones).
+        s = _DATASET_EMAIL_RE_V1.sub("<EMAIL>", s)
+        s = _DATASET_PHONE_RE_V1.sub("<PHONE>", s)
+        s = _DATASET_WS_RE_V1.sub(" ", s).strip()
+        if max_len and len(s) > max_len:
+            s = s[: max_len - 1] + "…"
+        return s
+    except Exception:
+        return ""
+
+def _dataset_record_id_v1(obj: dict) -> str:
+    try:
+        blob = json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+        return hashlib.sha256(blob.encode("utf-8", errors="ignore")).hexdigest()[:16]
+    except Exception:
+        return ""
+
+
+def _dataset_safe_token_v1(s: str, default: str = "stage") -> str:
+    try:
+        t = str(s or "").strip().lower()
+        t = re.sub(r"[^a-z0-9_]+", "_", t)
+        t = t.strip("_")
+        return t or default
+    except Exception:
+        return default
+
+def _dataset_rollover_path_v1(path: str, *, max_bytes: int, max_parts: int) -> dict:
+    """Return an effective path under max_bytes using deterministic part suffixing.
+
+    If base file exceeds max_bytes, choose the first part file with size < max_bytes,
+    or the first missing part slot, up to max_parts. Never creates files here.
+    """
+    out = {"effective_path": str(path or ""), "rollover_used": False, "part_index": 0, "reason": ""}
+    if not path:
+        out["reason"] = "no_path"
+        return out
+    try:
+        mb = int(max_bytes or 0)
+        if mb <= 0:
+            return out
+    except Exception:
+        return out
+    try:
+        if not os.path.exists(path):
+            return out
+        if os.path.getsize(path) < mb:
+            return out
+        # base is full; roll over to parts
+        root, ext = os.path.splitext(path)
+        ext = ext or ".jsonl"
+        try:
+            mp = int(max_parts or 0)
+        except Exception:
+            mp = 0
+        if mp <= 0:
+            out["reason"] = "max_parts_disabled"
+            return out
+        for i in range(1, mp + 1):
+            p = f"{root}.part{str(i).zfill(2)}{ext}"
+            if not os.path.exists(p):
+                out.update({"effective_path": p, "rollover_used": True, "part_index": i, "reason": "rollover_new_part"})
+                return out
+            try:
+                if os.path.getsize(p) < mb:
+                    out.update({"effective_path": p, "rollover_used": True, "part_index": i, "reason": "rollover_existing_part"})
+                    return out
+            except Exception:
+                continue
+        out["reason"] = "max_parts_guard"
+        return out
+    except Exception:
+        return out
+
+def _dataset_inventory_v1(base_dir: str) -> dict:
+    """Stat-only inventory of dataset dir (non-sensitive; no reads)."""
+    out = {
+        "files_total": 0,
+        "bytes_total": 0,
+        "newest_mtime": None,
+        "oldest_mtime": None,
+        "sample_files": [],
+    }
+    try:
+        bd = str(base_dir or "").strip()
+        if not bd or not os.path.isdir(bd):
+            return out
+        files = []
+        for fn in os.listdir(bd):
+            if not fn.endswith(".jsonl"):
+                continue
+            fp = os.path.join(bd, fn)
+            try:
+                st_ = os.stat(fp)
+                files.append((fn, int(st_.st_size), float(st_.st_mtime)))
+            except Exception:
+                continue
+        if not files:
+            return out
+        out["files_total"] = int(len(files))
+        out["bytes_total"] = int(sum(sz for _, sz, _ in files))
+        mtimes = [mt for _, _, mt in files]
+        try:
+            out["newest_mtime"] = max(mtimes) if mtimes else None
+            out["oldest_mtime"] = min(mtimes) if mtimes else None
+        except Exception:
+            pass
+        # stable sample: sort by mtime desc, then name
+        files_sorted = sorted(files, key=lambda t: (-t[2], t[0]))
+        n = int(LLM_DATASET_LOG_INVENTORY_SAMPLE_FILES_V1) if str(LLM_DATASET_LOG_INVENTORY_SAMPLE_FILES_V1).isdigit() else 6
+        out["sample_files"] = [f"{fn}::{sz}" for fn, sz, _ in files_sorted[: max(0, min(n, 12))]]
+        return out
+    except Exception:
+        return out
+
+
+
+def _dataset_log_path_v1(*, question: str, stage: str) -> str:
+    try:
+        qh = _yureeka_question_hash_v1(question or "")
+        base = os.environ.get("LLM_DATASET_LOG_DIR") or os.environ.get("YUREEKA_LLM_DATASET_DIR") or LLM_DATASET_LOG_DIR_DEFAULT_V1
+        base = str(base or LLM_DATASET_LOG_DIR_DEFAULT_V1).strip() or LLM_DATASET_LOG_DIR_DEFAULT_V1
+        stg = _dataset_safe_token_v1(stage or "", default="stage")
+        # stable per question+stage (deterministic); de-dupe offline via record_id.
+        fn = f"yureeka_dataset_{qh}_{stg}.jsonl"
+        return os.path.join(base, fn)
+    except Exception:
+        return ""
+
+
+def _dataset_safe_append_jsonl_v1(path: str, records: list) -> dict:
+    """Append records to JSONL file with best-effort size caps + deterministic rollover."""
+    out = {
+        "ok": False,
+        "records_written": 0,
+        "bytes_written": 0,
+        "path": str(path or ""),
+        "effective_path": str(path or ""),
+        "rollover_used": False,
+        "part_index": 0,
+        "reason": "",
+        "error": "",
+    }
+    if not path:
+        out["reason"] = "no_path"
+        return out
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+    except Exception:
+        try:
+            if os.path.dirname(path):
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+        except Exception:
+            out["reason"] = "mkdir_failed"
+            return out
+
+    try:
+        # Determine effective path (rollover if base is full)
+        try:
+            rr = _dataset_rollover_path_v1(path, max_bytes=int(LLM_DATASET_LOG_MAX_BYTES_PER_FILE_V1), max_parts=int(LLM_DATASET_LOG_MAX_PARTS_PER_FILE_V1))
+            if isinstance(rr, dict) and rr.get("effective_path"):
+                out["effective_path"] = str(rr.get("effective_path") or path)
+                out["rollover_used"] = bool(rr.get("rollover_used"))
+                out["part_index"] = int(rr.get("part_index") or 0)
+                # reason here is informational; may be overwritten by later guards
+                if rr.get("reason"):
+                    out["reason"] = str(rr.get("reason") or "")
+        except Exception:
+            out["effective_path"] = path
+
+        eff = out.get("effective_path") or path
+
+        # size guard on effective path
+        try:
+            if os.path.exists(eff) and os.path.getsize(eff) >= int(LLM_DATASET_LOG_MAX_BYTES_PER_FILE_V1):
+                out["reason"] = "max_bytes_guard"
+                return out
+        except Exception:
+            pass
+
+        lines = []
+        for r in (records or []):
+            if not isinstance(r, dict):
+                continue
+            lines.append(json.dumps(r, ensure_ascii=False, separators=(",", ":")))
+            if len(lines) >= int(LLM_DATASET_LOG_MAX_RECORDS_PER_RUN_V1):
+                break
+        if not lines:
+            out["reason"] = "no_records"
+            return out
+
+        payload = ("\n".join(lines) + "\n").encode("utf-8", errors="ignore")
+        with open(eff, "ab") as f:
+            f.write(payload)
+        out["ok"] = True
+        out["records_written"] = len(lines)
+        out["bytes_written"] = len(payload)
+        out["path"] = str(path or "")
+        out["effective_path"] = str(eff or "")
+        if not out.get("reason"):
+            out["reason"] = "ok"
+        return out
+    except Exception as e:
+        out["error"] = str(e)
+        out["reason"] = "write_failed"
+        return out
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+    except Exception:
+        # directory may be "", tolerate current dir
+        try:
+            if os.path.dirname(path):
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+        except Exception:
+            out["reason"] = "mkdir_failed"
+            return out
+
+    try:
+        # size guard
+        try:
+            if os.path.exists(path) and os.path.getsize(path) >= int(LLM_DATASET_LOG_MAX_BYTES_PER_FILE_V1):
+                out["reason"] = "max_bytes_guard"
+                return out
+        except Exception:
+            pass
+
+        lines = []
+        for r in (records or []):
+            if not isinstance(r, dict):
+                continue
+            lines.append(json.dumps(r, ensure_ascii=False, separators=(",", ":")))
+            if len(lines) >= int(LLM_DATASET_LOG_MAX_RECORDS_PER_RUN_V1):
+                break
+        if not lines:
+            out["reason"] = "no_records"
+            return out
+
+        payload = ("\n".join(lines) + "\n").encode("utf-8", errors="ignore")
+        with open(path, "ab") as f:
+            f.write(payload)
+        out["ok"] = True
+        out["records_written"] = len(lines)
+        out["bytes_written"] = len(payload)
+        return out
+    except Exception as e:
+        out["error"] = str(e)
+        out["reason"] = "write_failed"
+        return out
+
+def _dataset_state_update_v1(stage: str, delta: dict) -> None:
+    try:
+        stg = str(stage or "") or "stage"
+        _DATASET_LOG_STATE_V1.setdefault(stg, {})
+        cur = _DATASET_LOG_STATE_V1.get(stg)
+        if not isinstance(cur, dict):
+            _DATASET_LOG_STATE_V1[stg] = {}
+            cur = _DATASET_LOG_STATE_V1.get(stg)
+        if isinstance(delta, dict):
+            for k, v in delta.items():
+                cur[k] = v
+    except Exception:
+        return
+
+def _dataset_state_snapshot_v1(stage: str) -> dict:
+    try:
+        cur = _DATASET_LOG_STATE_V1.get(str(stage or "") or "stage")
+        return dict(cur) if isinstance(cur, dict) else {}
+    except Exception:
+        return {}
+
+def _dataset_export_from_pmc_v1(*, pmc: dict, question: str, stage: str) -> list:
+    """Create a compact per-metric dataset record list from primary_metrics_canonical."""
+    out = []
+    if not isinstance(pmc, dict) or not pmc:
+        return out
+    try:
+        q_s = _dataset_text_sanitize_v1(question or "", max_len=200)
+        qh = _yureeka_question_hash_v1(question or "")
+        cv = _yureeka_get_code_version()
+        for ck in sorted(pmc.keys()):
+            payload = pmc.get(ck)
+            if not isinstance(ck, str) or not ck:
+                continue
+            if not isinstance(payload, dict):
+                continue
+            prov = payload.get("provenance") if isinstance(payload.get("provenance"), dict) else {}
+            best = prov.get("best_candidate") if isinstance(prov.get("best_candidate"), dict) else {}
+            # Evidence snippet (sanitized)
+            ev = payload.get("evidence_best_snippet")
+            if not isinstance(ev, str):
+                ev = ""
+            ev_s = _dataset_text_sanitize_v1(ev, max_len=240)
+            # Minimal candidate snapshot
+            cand = {
+                "candidate_id": str(best.get("candidate_id") or best.get("anchor_hash") or "")[:32],
+                "source_url": str(best.get("source_url") or best.get("url") or ""),
+                "raw": _dataset_text_sanitize_v1(best.get("raw") or "", max_len=120),
+                "value_norm": best.get("value_norm"),
+                "unit_family": str(best.get("unit_family") or ""),
+                "unit_tag": str(best.get("unit_tag") or best.get("unit") or ""),
+                "published_at": str(best.get("published_at") or best.get("source_published_at") or prov.get("published_at") or ""),
+                "age_days": best.get("age_days") if ("age_days" in best) else prov.get("age_days"),
+                "freshness_score": best.get("freshness_score") if ("freshness_score" in best) else prov.get("freshness_score"),
+                "score": best.get("score") if ("score" in best) else prov.get("score"),
+            }
+            # Compact tiebreak beacon if present
+            ftb = prov.get("fresh_tiebreak_v1") if isinstance(prov.get("fresh_tiebreak_v1"), dict) else {}
+            tb = {}
+            if ftb:
+                tb = {
+                    "used": bool(ftb.get("used")),
+                    "reason": str(ftb.get("reason") or "")[:80],
+                    "changed_winner": bool(ftb.get("changed_winner")),
+                }
+            rec = {
+                "v": "yureeka_dataset_record_v1",
+                "record_type": "pmc_metric_v1",
+                "stage": str(stage or ""),
+                "code_version": str(cv or ""),
+                "question_hash": str(qh or ""),
+                "question": q_s,
+                "canonical_key": str(ck),
+                "candidate": cand,
+                "evidence_snippet": ev_s,
+                "tiebreak": tb,
+            }
+            rec["record_id"] = _dataset_record_id_v1(rec)
+            out.append(rec)
+            if len(out) >= 1000:
+                break
+    except Exception:
+        return out
+    return out
+
+def _yureeka_dataset_logging_apply_v1(*, wrapper: dict, stage: str) -> dict:
+    """Apply dataset logging to a wrapper (analysis/evolution). Returns summary beacon."""
+    on, src = _yureeka_llm_flag_effective_v1("ENABLE_LLM_DATASET_LOGGING")
+    stg = str(stage or "") or "stage"
+    summary = {
+        "v": "nlp63_dataset_logging_summary_v1",
+        "stage": stg,
+        "enabled": bool(on),
+        "enabled_source": str(src or "")[:120],
+        "path": "",
+        "effective_path": "",
+        "rollover_used": False,
+        "part_index": 0,
+        "inventory": {},
+        "records_buffered": 0,
+        "records_written": 0,
+        "bytes_written": 0,
+        "reason": "",
+        "error": "",
+    }
+    if not bool(on):
+        _dataset_state_update_v1(stg, {"enabled": False, "enabled_source": summary["enabled_source"], "records_written": 0, "bytes_written": 0, "path": "", "effective_path": "", "rollover_used": False, "part_index": 0, "inventory": {}})
+        return summary
+
+    try:
+        q = ""
+        try:
+            q = str((wrapper or {}).get("question") or "")
+        except Exception:
+            q = ""
+        pmc = _yureeka_get_pmc_v1(wrapper or {})
+        recs = _dataset_export_from_pmc_v1(pmc=pmc, question=q, stage=stg)
+        summary["records_buffered"] = int(len(recs))
+        path = _dataset_log_path_v1(question=q, stage=stg)
+        summary["path"] = path
+        w = _dataset_safe_append_jsonl_v1(path, recs)
+        summary["records_written"] = int(w.get("records_written") or 0)
+        summary["bytes_written"] = int(w.get("bytes_written") or 0)
+        summary["reason"] = str(w.get("reason") or "")
+        summary["error"] = str(w.get("error") or "")
+        _dataset_state_update_v1(stg, {"enabled": True, "enabled_source": summary["enabled_source"], "records_written": summary["records_written"], "bytes_written": summary["bytes_written"], "path": path, "reason": summary["reason"]})
+        # Also expose in st.session_state.debug for quick UI inspection (cap)
+        try:
+            st.session_state.setdefault("debug", {})
+            dbg = st.session_state.get("debug")
+            if isinstance(dbg, dict):
+                dbg.setdefault("llm_dataset_v1", [])
+                if isinstance(dbg.get("llm_dataset_v1"), list):
+                    dbg["llm_dataset_v1"].extend(recs[:10])
+                    if len(dbg["llm_dataset_v1"]) > 200:
+                        dbg["llm_dataset_v1"] = dbg["llm_dataset_v1"][-200:]
+        except Exception:
+            pass
+        return summary
+    except Exception as e:
+        summary["reason"] = "exception"
+        summary["error"] = str(e)
+        _dataset_state_update_v1(stg, {"enabled": True, "enabled_source": summary["enabled_source"], "records_written": 0, "bytes_written": 0, "path": summary.get("path") or "", "reason": summary["reason"], "error": summary["error"]})
+        return summary
+
+def _yureeka_llm_dataset_feature_snapshot_v1(stage: str = "") -> dict:
+    """Small manifest-friendly snapshot."""
+    stg = str(stage or "") or "stage"
+    snap = _dataset_state_snapshot_v1(stg)
+    return {
+        "enabled": bool(snap.get("enabled")),
+        "path": str(snap.get("path") or ""),
+        "effective_path": str(snap.get("effective_path") or ""),
+        "rollover_used": bool(snap.get("rollover_used")),
+        "part_index": int(snap.get("part_index") or 0),
+        "inventory": snap.get("inventory") if isinstance(snap.get("inventory"), dict) else {},
+        "records_written": int(snap.get("records_written") or 0),
+        "bytes_written": int(snap.get("bytes_written") or 0),
+        "reason": str(snap.get("reason") or ""),
+    }
+
 def debug_llm_dataset_v1(
     *,
     url: str = "",
@@ -2965,7 +3416,12 @@ def debug_llm_dataset_v1(
             "chosen_winners": chosen_winners if chosen_winners is not None else {},
             "schema_keys": schema_keys if schema_keys is not None else [],
             "stage": str(stage or ""),
+            "record_id": "",
         }
+        try:
+            rec["record_id"] = _dataset_record_id_v1(rec)
+        except Exception:
+            pass
         st.session_state.setdefault("debug", {})
         dbg = st.session_state.get("debug")
         if isinstance(dbg, dict):
@@ -30802,6 +31258,7 @@ def main():
                     output["debug"]["nlp53_llm_replay_only_summary_v1"] = _yureeka_llm_replay_only_summary_v1(stage="analysis")
                     output["debug"]["nlp56_llm_cache_policy_summary_v1"] = _yureeka_llm_cache_policy_summary_v1(stage="analysis")
                     output["debug"]["nlp57_llm_cache_validation_summary_v1"] = _yureeka_llm_cache_validation_summary_v1(stage="analysis")
+                    output["debug"]["nlp63_dataset_logging_summary_v1"] = _yureeka_dataset_logging_apply_v1(wrapper=output, stage="analysis")
                     output["debug"]["nlp58_llm_feature_manifest_v1"] = _yureeka_llm_feature_manifest_v1(stage="analysis")
                     output["debug"]["nlp62_llm_cache_io_health_v1"] = _yureeka_llm_cache_io_health_v1(stage="analysis")
                     output["debug"]["nlp59_llm_cache_write_summary_v1"] = _yureeka_llm_cache_write_summary_v1(stage="analysis")
@@ -31809,6 +32266,7 @@ def main():
                         _dbg["nlp53_llm_replay_only_summary_v1"] = _yureeka_llm_replay_only_summary_v1(stage="evolution")
                         _dbg["nlp56_llm_cache_policy_summary_v1"] = _yureeka_llm_cache_policy_summary_v1(stage="evolution")
                         _dbg["nlp57_llm_cache_validation_summary_v1"] = _yureeka_llm_cache_validation_summary_v1(stage="evolution")
+                        _dbg["nlp63_dataset_logging_summary_v1"] = _yureeka_dataset_logging_apply_v1(wrapper=evolution_output, stage="evolution")
                         _dbg["nlp58_llm_feature_manifest_v1"] = _yureeka_llm_feature_manifest_v1(stage="evolution")
                         _dbg["nlp62_llm_cache_io_health_v1"] = _yureeka_llm_cache_io_health_v1(stage="evolution")
                         _dbg["nlp59_llm_cache_write_summary_v1"] = _yureeka_llm_cache_write_summary_v1(stage="evolution")
@@ -38104,6 +38562,32 @@ try:
         })
 except Exception:
     pass
+
+# NLP63: patch tracker overlay (dataset logging: export + persist; OFF by default)
+try:
+    if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "NLP63" for e in PATCH_TRACKER_V1):
+        PATCH_TRACKER_V1.insert(0, {
+            "patch_id": "NLP63",
+            "scope": "llm-dataset",
+            "summary": "Add dataset logging end-state scaffolding: sanitized JSONL export of primary_metrics_canonical (per-metric winners + minimal provenance) to .yureeka_llm_dataset when ENABLE_LLM_DATASET_LOGGING is ON; attaches nlp63_dataset_logging_summary_v1 and manifest feature snapshot. No behavior changes when flags are OFF.",
+            "risk": "low",
+        })
+except Exception:
+    pass
+# NLP64: patch tracker overlay (dataset logging: rollover + deterministic ordering + inventory beacon)
+try:
+    if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "NLP64" for e in PATCH_TRACKER_V1):
+        PATCH_TRACKER_V1.insert(0, {
+            "patch_id": "NLP64",
+            "scope": "llm-dataset",
+            "summary": "Dataset logging hardening: export records in deterministic canonical_key order; sanitize stage tokens in filenames; add max-bytes rollover to .partNN JSONL files; attach non-sensitive dataset dir inventory (stat-only) and expose effective_path/rollover fields in nlp63_dataset_logging_summary_v1 + manifest snapshot. No behavior changes when logging is OFF.",
+            "risk": "low",
+        })
+except Exception:
+    pass
+
+
+
 
 
 # LLM38: patch tracker entry
