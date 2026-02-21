@@ -458,7 +458,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "NLP68"
+_YUREEKA_CODE_VERSION_LOCK = "NLP70"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 # REFACTOR206: Release Candidate freeze (no pipeline behavior change).
 YUREEKA_RELEASE_CANDIDATE_V1 = False
@@ -2070,11 +2070,23 @@ def _yureeka_llm_cache_policy_summary_v1(stage: str = "") -> dict:
         _an, _an_src = _yureeka_llm_flag_effective_v1("LLM_ALLOW_NETWORK_CALLS")
     except Exception:
         _an, _an_src = (bool(globals().get("LLM_ALLOW_NETWORK_CALLS")), "code:LLM_ALLOW_NETWORK_CALLS")
+    try:
+        _sm, _sm_src = _yureeka_llm_flag_effective_v1("LLM_SEED_MODE")
+    except Exception:
+        _sm, _sm_src = (bool(globals().get("LLM_SEED_MODE")), "code:LLM_SEED_MODE")
+
     out["replay_only_enabled"] = bool(_ro)
     out["replay_only_source"] = str(_ro_src)[:80]
     out["allow_network_calls"] = bool(_an)
     out["allow_network_calls_source"] = str(_an_src)[:80]
-    out["cache_hit_only_effective"] = bool(bool(_ro) or (not bool(_an)))
+    out["seed_mode_enabled"] = bool(_sm)
+    out["seed_mode_source"] = str(_sm_src)[:80]
+
+    # NLP70: unify policy posture — network is allowed only if all gates are satisfied.
+    _net_allowed_eff = bool(bool(_an) and bool(_sm) and (not bool(_ro)))
+    out["network_allowed_effective"] = bool(_net_allowed_eff)
+    out["cache_hit_only_effective"] = bool(not bool(_net_allowed_eff))
+
     try:
         agg = globals().get("_YUREEKA_LLM_RUN_AGG_V1")
         if isinstance(agg, dict):
@@ -2083,6 +2095,7 @@ def _yureeka_llm_cache_policy_summary_v1(stage: str = "") -> dict:
     except Exception:
         pass
     return out
+
 
 
 
@@ -2543,13 +2556,21 @@ def _yureeka_llm_feature_manifest_v1(stage: str = "") -> dict:
             out["policy"] = {
                 "replay_only_enabled": bool(pol.get("replay_only_enabled")),
                 "allow_network_calls": bool(pol.get("allow_network_calls")),
+                "seed_mode_enabled": bool(pol.get("seed_mode_enabled")),
+                "network_allowed_effective": bool(pol.get("network_allowed_effective")),
                 "cache_hit_only_effective": bool(pol.get("cache_hit_only_effective")),
             }
     except Exception:
+        _ro = bool(globals().get("LLM_CACHE_REPLAY_ONLY"))
+        _an = bool(globals().get("LLM_ALLOW_NETWORK_CALLS"))
+        _sm = bool(globals().get("LLM_SEED_MODE"))
+        _net_allowed_eff = bool(_an and _sm and (not _ro))
         out["policy"] = {
-            "replay_only_enabled": bool(globals().get("LLM_CACHE_REPLAY_ONLY")),
-            "allow_network_calls": bool(globals().get("LLM_ALLOW_NETWORK_CALLS")),
-            "cache_hit_only_effective": bool(bool(globals().get("LLM_CACHE_REPLAY_ONLY")) or (not bool(globals().get("LLM_ALLOW_NETWORK_CALLS")))),
+            "replay_only_enabled": bool(_ro),
+            "allow_network_calls": bool(_an),
+            "seed_mode_enabled": bool(_sm),
+            "network_allowed_effective": bool(_net_allowed_eff),
+            "cache_hit_only_effective": bool(not bool(_net_allowed_eff)),
         }
 
     # Effective flag snapshot (sources trimmed)
@@ -3321,10 +3342,23 @@ def _dataset_emit_llm_event_v1(*, feature: str, call_diag: dict, cache_hit: bool
         stg = str(stage or "") or "stage"
         qh = str(question_hash or "") or ""
         cv = _yureeka_get_code_version()
+        try:
+            _an, _ = _yureeka_llm_flag_effective_v1("LLM_ALLOW_NETWORK_CALLS")
+            _sm, _ = _yureeka_llm_flag_effective_v1("LLM_SEED_MODE")
+            _ro, _ = _yureeka_llm_flag_effective_v1("LLM_CACHE_REPLAY_ONLY")
+            _net_allowed_eff = bool(bool(_an) and bool(_sm) and (not bool(_ro)))
+            _cache_hit_only = not bool(_net_allowed_eff)
+        except Exception:
+            _an = False
+            _sm = False
+            _ro = False
+            _net_allowed_eff = False
+            _cache_hit_only = True
         # keep minimal + safe; no raw text, only hashes / small strings
         rec = {
             "v": "yureeka_llm_event_v1",
             "record_type": "llm_call_diag_v1",
+            "policy": {"allow_network_calls": bool(_an), "seed_mode_enabled": bool(_sm), "replay_only": bool(_ro), "network_allowed_effective": bool(_net_allowed_eff), "cache_hit_only_effective": bool(_cache_hit_only)},
             "stage": stg,
             "code_version": str(cv or ""),
             "question_hash": str(qh or ""),
@@ -4580,6 +4614,24 @@ def _yureeka_call_openai_chat_json_v1(
         if not bool(_an):
             diag["reason"] = "network_disabled_by_flag"
             diag["hint"] = "Live LLM calls disabled; set LLM_ALLOW_NETWORK_CALLS=true (env or code) to permit network calls."
+            diag["network_call_blocked"] = True
+            diag["network_call_made"] = False
+            return (None, diag)
+
+        # NLP69: seed-mode guard (prevents accidental live calls even if allow_network_calls is enabled).
+        try:
+            _sm, _sm_src = _yureeka_llm_flag_effective_v1("LLM_SEED_MODE")
+            diag["seed_mode_enabled"] = bool(_sm)
+            diag["seed_mode_source"] = str(_sm_src)[:80]
+            if bool(_an) and not bool(_sm):
+                diag["reason"] = "seed_mode_required"
+                diag["hint"] = "Live LLM calls require LLM_SEED_MODE=true in addition to LLM_ALLOW_NETWORK_CALLS=true."
+                diag["network_call_blocked"] = True
+                diag["network_call_made"] = False
+                return (None, diag)
+        except Exception:
+            # Fail closed
+            diag["reason"] = "seed_mode_eval_failed"
             diag["network_call_blocked"] = True
             diag["network_call_made"] = False
             return (None, diag)
@@ -6434,7 +6486,9 @@ def _llm01_attach_evidence_snippets_to_pmc_v1(
                 "llm_rejects": int(llm_rejects),
                 "flag_enabled": bool(_yureeka_llm_flag_bool_v1("ENABLE_LLM_EVIDENCE_SNIPPETS")),
                 "allow_network_calls": bool(_yureeka_llm_flag_bool_v1("LLM_ALLOW_NETWORK_CALLS")),
-                "cache_hit_only_effective": bool((not bool(_yureeka_llm_flag_bool_v1("LLM_ALLOW_NETWORK_CALLS"))) and bool(_yureeka_llm_flag_bool_v1("ENABLE_LLM_EVIDENCE_SNIPPETS"))),
+                "seed_mode_enabled": bool(_yureeka_llm_flag_bool_v1("LLM_SEED_MODE")),
+                "network_allowed_effective": bool(bool(_yureeka_llm_flag_bool_v1("LLM_ALLOW_NETWORK_CALLS")) and bool(_yureeka_llm_flag_bool_v1("LLM_SEED_MODE")) and (not bool(_yureeka_llm_flag_bool_v1("LLM_CACHE_REPLAY_ONLY")))),
+                "cache_hit_only_effective": bool(not (bool(_yureeka_llm_flag_bool_v1("LLM_ALLOW_NETWORK_CALLS")) and bool(_yureeka_llm_flag_bool_v1("LLM_SEED_MODE")) and (not bool(_yureeka_llm_flag_bool_v1("LLM_CACHE_REPLAY_ONLY"))))),
             }
     except Exception:
         pass
@@ -40485,6 +40539,74 @@ try:
                     PATCH_TRACKER_V1[_existing_i] = _ex
             except Exception:
                 pass
+        try:
+            _yureeka_patch_tracker_ensure_head_v1(_pid, {"patch_id": _pid})
+        except Exception:
+            pass
+except Exception:
+    pass
+
+
+# NLP69: patch tracker entry
+try:
+    if isinstance(PATCH_TRACKER_V1, list):
+        _pid = "NLP69"
+        _existing_i = None
+        for _i, _e in enumerate(list(PATCH_TRACKER_V1)):
+            if isinstance(_e, dict) and str(_e.get("patch_id") or "") == _pid:
+                _existing_i = _i
+                break
+        _ent = {
+            "patch_id": "NLP69",
+            "date": "2026-02-21",
+            "title": "NLP69 Seed-mode guard for live LLM calls + fix LLM01 rollup cache-hit-only posture; enrich dataset event policy fields",
+            "summary": [
+                "Require LLM_SEED_MODE=true in addition to LLM_ALLOW_NETWORK_CALLS=true for any live provider call (fail-closed).",
+                "Fix nlp68_llm01_evidence_snippets_rollup_v1.cache_hit_only_effective to reflect network/replay policy even when feature flag is OFF.",
+                "Add policy capsule (allow_network_calls/seed_mode/replay_only/cache_hit_only_effective) into yureeka_llm_events JSONL records (hash-only).",
+                "Patch hygiene: bump CODE_VERSION and register patch tracker entry."
+            ],
+            "risk": "Low: gating is more conservative; no impact when LLM features are OFF; dataset logs remain hash-only."
+        }
+        if _existing_i is None:
+            PATCH_TRACKER_V1.insert(0, dict(_ent))
+        else:
+            PATCH_TRACKER_V1[_existing_i] = dict(_ent)
+        try:
+            _yureeka_patch_tracker_ensure_head_v1(_pid, {"patch_id": _pid})
+        except Exception:
+            pass
+except Exception:
+    pass
+
+
+# NLP70: patch tracker entry
+try:
+    if isinstance(PATCH_TRACKER_V1, list):
+        _pid = "NLP70"
+        _existing_i = None
+        for _i, _e in enumerate(list(PATCH_TRACKER_V1)):
+            if isinstance(_e, dict) and str(_e.get("patch_id") or "") == _pid:
+                _existing_i = _i
+                break
+        _ent = {
+            "patch_id": "NLP70",
+            "date": "2026-02-22",
+            "title": "NLP70 Seed-mode aware LLM policy capsule unification (beacons + manifest + events) and LLM01 rollup fix",
+            "summary": [
+                "Unify cache/network policy posture to be seed-mode aware: network_allowed_effective = allow_network_calls AND seed_mode_enabled AND NOT replay_only.",
+                "Update nlp56_llm_cache_policy_summary_v1 to include seed_mode fields and network_allowed_effective; cache_hit_only_effective derived from effective network allowance.",
+                "Update nlp58_llm_feature_manifest_v1 policy snapshot to carry seed_mode_enabled and network_allowed_effective, with safe fallback.",
+                "Fix nlp68_llm01_evidence_snippets_rollup_v1 cache_hit_only_effective to be seed-mode aware; add network_allowed_effective.",
+                "Enrich yureeka_llm_events policy capsule with network_allowed_effective for consistent dataset/event auditing (hash-only).",
+                "Patch hygiene: bump CODE_VERSION and register patch tracker entry."
+            ],
+            "risk": "Low: diagnostics-only unification + more conservative policy reporting; no winner/value changes; no new network behavior unless explicitly enabled."
+        }
+        if _existing_i is None:
+            PATCH_TRACKER_V1.insert(0, dict(_ent))
+        else:
+            PATCH_TRACKER_V1[_existing_i] = dict(_ent)
         try:
             _yureeka_patch_tracker_ensure_head_v1(_pid, {"patch_id": _pid})
         except Exception:
