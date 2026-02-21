@@ -458,7 +458,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "NLP56"
+_YUREEKA_CODE_VERSION_LOCK = "NLP58"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 # REFACTOR206: Release Candidate freeze (no pipeline behavior change).
 YUREEKA_RELEASE_CANDIDATE_V1 = False
@@ -1492,9 +1492,9 @@ def _llm03_get_query_frame_v1(query: str, base_signals: Optional[Dict[str, Any]]
 
     candidate = None
     if key:
-        cached = get_cached_llm_response(key)
+        cached = get_cached_llm_response(key, validator=_llm03__validate_query_frame_v1, feature="llm03_query_frame", diag=dbg)
         if cached is None and key_fallback:
-            cached = get_cached_llm_response(key_fallback)
+            cached = get_cached_llm_response(key_fallback, validator=_llm03__validate_query_frame_v1, feature="llm03_query_frame", diag=dbg)
             if cached is not None:
                 dbg["llm_cache_fallback_hit"] = True
         if cached is not None:
@@ -2051,7 +2051,255 @@ def _yureeka_llm_cache_policy_summary_v1(stage: str = "") -> dict:
 
 
 
-def get_cached_llm_response(key: str) -> Any:
+
+# NLP57: defensive cache payload validation (schema-first; replay-safe; no network).
+def _yureeka_llm_cache_validation_agg_v1() -> dict:
+    """Mutable per-run cache validation aggregation (non-sensitive)."""
+    try:
+        agg = globals().get("_YUREEKA_LLM_CACHE_VALIDATION_AGG_V1")
+        if not isinstance(agg, dict):
+            agg = {
+                "v": "llm_cache_validation_agg_v1",
+                "accepted": 0,
+                "rejected": 0,
+                "reasons": {},
+                "features": {},
+            }
+            globals()["_YUREEKA_LLM_CACHE_VALIDATION_AGG_V1"] = agg
+        return agg
+    except Exception:
+        return {"v": "llm_cache_validation_agg_v1", "accepted": 0, "rejected": 0, "reasons": {}, "features": {}}
+
+def _yureeka_llm_cache_max_bytes_v1() -> int:
+    """Upper bound on cache file size to read (defensive)."""
+    try:
+        v = _yureeka_hp_get_v1("llm.cache.max_bytes", 2000000)
+        v = int(v) if v is not None else 2000000
+    except Exception:
+        v = 2000000
+    if v < 50000:
+        v = 50000
+    if v > 20000000:
+        v = 20000000
+    return int(v)
+
+def _yureeka_llm_cache_validate_jsonish_v1(payload: Any) -> Tuple[bool, str]:
+    """Basic sanity: allow only JSON-ish primitives/containers (best-effort)."""
+    try:
+        if payload is None:
+            return (False, "none")
+        if isinstance(payload, (str, int, float, bool)):
+            return (True, "ok")
+        if isinstance(payload, list):
+            return (True, "ok")
+        if isinstance(payload, dict):
+            return (True, "ok")
+        return (False, "non_jsonish_type")
+    except Exception:
+        return (False, "exception")
+
+def _yureeka_llm_cache_record_validation_v1(feature: str, ok: bool, reason: str) -> None:
+    try:
+        agg = _yureeka_llm_cache_validation_agg_v1()
+        f = str(feature or "unknown")[:80]
+        r = str(reason or "")[:120] or ("ok" if ok else "invalid")
+        if ok:
+            agg["accepted"] = int(agg.get("accepted") or 0) + 1
+        else:
+            agg["rejected"] = int(agg.get("rejected") or 0) + 1
+        try:
+            rs = agg.get("reasons")
+            if not isinstance(rs, dict):
+                rs = {}
+                agg["reasons"] = rs
+            rs[r] = int(rs.get(r) or 0) + 1
+        except Exception:
+            pass
+        try:
+            fs = agg.get("features")
+            if not isinstance(fs, dict):
+                fs = {}
+                agg["features"] = fs
+            cur = fs.get(f)
+            if not isinstance(cur, dict):
+                cur = {"accepted": 0, "rejected": 0, "reasons": {}}
+                fs[f] = cur
+            if ok:
+                cur["accepted"] = int(cur.get("accepted") or 0) + 1
+            else:
+                cur["rejected"] = int(cur.get("rejected") or 0) + 1
+            try:
+                fr = cur.get("reasons")
+                if not isinstance(fr, dict):
+                    fr = {}
+                    cur["reasons"] = fr
+                fr[r] = int(fr.get(r) or 0) + 1
+            except Exception:
+                pass
+        except Exception:
+            pass
+    except Exception:
+        return
+
+def _yureeka_llm_cache_validation_summary_v1(stage: str = "") -> dict:
+    """Compact beacon for cache validation behavior (non-sensitive)."""
+    out = {"v": "nlp57_llm_cache_validation_summary_v1", "stage": str(stage or "")[:40]}
+    try:
+        agg = _yureeka_llm_cache_validation_agg_v1()
+        out["accepted"] = int(agg.get("accepted") or 0)
+        out["rejected"] = int(agg.get("rejected") or 0)
+        # top reasons (compact)
+        try:
+            rs = agg.get("reasons")
+            if isinstance(rs, dict) and rs:
+                items = sorted(((str(k), int(v)) for k, v in rs.items()), key=lambda kv: (-kv[1], kv[0]))[:6]
+                out["top_reasons"] = {k: v for k, v in items}
+        except Exception:
+            pass
+        # compact per-feature counts (no heavy maps)
+        try:
+            fs = agg.get("features")
+            if isinstance(fs, dict) and fs:
+                feat = {}
+                for k in sorted(list(fs.keys()))[:10]:
+                    v = fs.get(k)
+                    if isinstance(v, dict):
+                        feat[str(k)[:80]] = {"accepted": int(v.get("accepted") or 0), "rejected": int(v.get("rejected") or 0)}
+                out["features"] = feat
+        except Exception:
+            pass
+    except Exception:
+        out["accepted"] = 0
+        out["rejected"] = 0
+    return out
+
+# NLP58: per-feature manifest beacon (effective flags + policy + counters + cache validation; non-sensitive).
+def _yureeka_llm_feature_manifest_v1(stage: str = "") -> dict:
+    """Compact per-feature diagnostics manifest for triad grepping (non-sensitive)."""
+    out = {"v": "nlp58_llm_feature_manifest_v1", "stage": str(stage or "")[:40], "policy": {}, "flags": {}, "features": {}}
+
+    # Policy posture (replay-only / allow-network / cache-hit-only effective)
+    try:
+        pol = _yureeka_llm_cache_policy_summary_v1(stage=stage)
+        if isinstance(pol, dict):
+            out["policy"] = {
+                "replay_only_enabled": bool(pol.get("replay_only_enabled")),
+                "allow_network_calls": bool(pol.get("allow_network_calls")),
+                "cache_hit_only_effective": bool(pol.get("cache_hit_only_effective")),
+            }
+    except Exception:
+        out["policy"] = {
+            "replay_only_enabled": bool(globals().get("LLM_CACHE_REPLAY_ONLY")),
+            "allow_network_calls": bool(globals().get("LLM_ALLOW_NETWORK_CALLS")),
+            "cache_hit_only_effective": bool(bool(globals().get("LLM_CACHE_REPLAY_ONLY")) or (not bool(globals().get("LLM_ALLOW_NETWORK_CALLS")))),
+        }
+
+    # Effective flag snapshot (sources trimmed)
+    flag_names = [
+        "ENABLE_LLM_QUERY_FRAME",
+        "ENABLE_LLM_QUERY_STRUCTURE_FALLBACK",
+        "ENABLE_LLM_EVIDENCE_SNIPPETS",
+        "ENABLE_LLM_SOURCE_CLUSTERING",
+        "ENABLE_LLM_ANOMALY_FLAGS",
+        "ENABLE_LLM_DATASET_LOGGING",
+        "ENABLE_LLM_SMOKE_TEST",
+        "LLM_BYPASS_CACHE",
+        "LLM_CACHE_REPLAY_ONLY",
+        "LLM_ALLOW_NETWORK_CALLS",
+        "LLM_FORCE_REFRESH_ONCE",
+    ]
+    fn = globals().get("_yureeka_llm_flag_effective_v1")
+    for name in flag_names:
+        try:
+            if callable(fn):
+                v, src = fn(str(name))
+            else:
+                v, src = (bool(globals().get(str(name), False)), "globals")
+            out["flags"][str(name)] = {"value": bool(v), "source": str(src or "")[:120]}
+        except Exception:
+            out["flags"][str(name)] = {"value": False, "source": "exception"}
+
+    # Per-feature run counters (bounded; no payload content)
+    run_fs = {}
+    try:
+        agg = globals().get("_YUREEKA_LLM_RUN_AGG_V1")
+        if isinstance(agg, dict):
+            fs = agg.get("features")
+            if isinstance(fs, dict):
+                run_fs = fs
+            out["run_totals"] = {
+                "attempts": int(agg.get("attempts") or 0),
+                "cache_hits": int(agg.get("cache_hits") or 0),
+                "cache_misses": int(agg.get("cache_misses") or 0),
+                "network_calls_made": int(agg.get("network_calls_made") or 0),
+                "network_calls_blocked": int(agg.get("network_calls_blocked") or 0),
+                "ok": int(agg.get("ok") or 0),
+            }
+    except Exception:
+        pass
+
+    # Per-feature cache validation counters (accepted/rejected)
+    val_fs = {}
+    try:
+        vagg = globals().get("_YUREEKA_LLM_CACHE_VALIDATION_AGG_V1")
+        if isinstance(vagg, dict):
+            fs = vagg.get("features")
+            if isinstance(fs, dict):
+                val_fs = fs
+    except Exception:
+        pass
+
+    # Stable feature order for grepping; also include any observed extras.
+    preferred = [
+        "llm03_query_frame",
+        "llm00_query_structure",
+        "llm01_evidence_rank",
+        "llm04_anomaly_relevance",
+        "llm_source_clustering",
+        "llm_dataset_logging",
+        "llm_smoke_test",
+        "unknown",
+    ]
+    seen = set()
+    try:
+        for k in list(run_fs.keys()) + list(val_fs.keys()):
+            if isinstance(k, str) and k:
+                seen.add(k)
+    except Exception:
+        pass
+
+    order = []
+    for f in preferred:
+        if f in seen:
+            order.append(f)
+            seen.discard(f)
+    for f in sorted(seen):
+        order.append(f)
+
+    for f in order:
+        row = {}
+        try:
+            r = run_fs.get(f)
+            if isinstance(r, dict):
+                for k in ["attempts", "ok", "cache_hits", "cache_misses", "network_calls_made", "network_calls_blocked"]:
+                    if k in r:
+                        row[k] = int(r.get(k) or 0)
+        except Exception:
+            pass
+        try:
+            v = val_fs.get(f)
+            if isinstance(v, dict):
+                row["validation_accepted"] = int(v.get("accepted") or 0)
+                row["validation_rejected"] = int(v.get("rejected") or 0)
+        except Exception:
+            pass
+        if row:
+            out["features"][f] = row
+
+    return out
+
+
+def get_cached_llm_response(key: str, *, validator=None, feature: str = "", diag: Optional[dict] = None) -> Any:
     """Return cached LLM payload for key, or None if missing/unreadable."""
     if not key:
         return None
@@ -2077,8 +2325,50 @@ def get_cached_llm_response(key: str) -> Any:
 
     try:
         if key in _LLM_CACHE_MEM_V1:
+            payload = _LLM_CACHE_MEM_V1.get(key)
+            ok_basic, r_basic = _yureeka_llm_cache_validate_jsonish_v1(payload)
+            if not bool(ok_basic):
+                try:
+                    _yureeka_llm_cache_record_validation_v1(feature, False, "invalid_basic:" + str(r_basic or "invalid"))
+                except Exception:
+                    pass
+                try:
+                    _LLM_CACHE_MEM_V1.pop(key, None)
+                except Exception:
+                    pass
+                return None
+            if validator is not None:
+                try:
+                    ok, r = validator(payload)
+                except Exception:
+                    ok, r = (False, "validator_exception")
+                if not bool(ok):
+                    try:
+                        _yureeka_llm_cache_record_validation_v1(feature, False, "invalid:" + str(r or "invalid"))
+                    except Exception:
+                        pass
+                    try:
+                        _LLM_CACHE_MEM_V1.pop(key, None)
+                    except Exception:
+                        pass
+                    try:
+                        if isinstance(diag, dict):
+                            diag["llm_cache_validation_ok"] = False
+                            diag["llm_cache_validation_reject_reason"] = str(r or "invalid")[:120]
+                    except Exception:
+                        pass
+                    return None
+            try:
+                _yureeka_llm_cache_record_validation_v1(feature, True, "ok")
+            except Exception:
+                pass
+            try:
+                if isinstance(diag, dict):
+                    diag["llm_cache_validation_ok"] = True
+            except Exception:
+                pass
             _llm_cache__mem_touch_v1(key)
-            return _LLM_CACHE_MEM_V1.get(key)
+            return payload
     except Exception:
         pass
 
@@ -2097,11 +2387,79 @@ def get_cached_llm_response(key: str) -> Any:
             pass
         return None
 
+    # Defensive size cap (avoid huge cache files)
+    try:
+        _maxb = _yureeka_llm_cache_max_bytes_v1()
+        _sz = int(os.path.getsize(path)) if path and os.path.exists(path) else 0
+        if _sz and int(_sz) > int(_maxb):
+            try:
+                _yureeka_llm_cache_note_miss_v1(key, where="disk_too_large")
+            except Exception:
+                pass
+            try:
+                _yureeka_llm_cache_record_validation_v1(feature, False, "disk_too_large")
+            except Exception:
+                pass
+            try:
+                if isinstance(diag, dict):
+                    diag["llm_cache_validation_ok"] = False
+                    diag["llm_cache_validation_reject_reason"] = "disk_too_large"
+            except Exception:
+                pass
+            return None
+    except Exception:
+        pass
+
     try:
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
         # allow either raw payload or wrapped {"payload": ...}
         payload = data.get("payload") if isinstance(data, dict) and "payload" in data else data
+
+        ok_basic, r_basic = _yureeka_llm_cache_validate_jsonish_v1(payload)
+        if not bool(ok_basic):
+            try:
+                _yureeka_llm_cache_note_miss_v1(key, where="disk_payload_not_jsonish")
+            except Exception:
+                pass
+            try:
+                _yureeka_llm_cache_record_validation_v1(feature, False, "invalid_basic:" + str(r_basic or "invalid"))
+            except Exception:
+                pass
+            return None
+
+        if validator is not None:
+            try:
+                ok, r = validator(payload)
+            except Exception:
+                ok, r = (False, "validator_exception")
+            if not bool(ok):
+                try:
+                    _yureeka_llm_cache_note_miss_v1(key, where="disk_payload_rejected")
+                except Exception:
+                    pass
+                try:
+                    _yureeka_llm_cache_record_validation_v1(feature, False, "invalid:" + str(r or "invalid"))
+                except Exception:
+                    pass
+                try:
+                    if isinstance(diag, dict):
+                        diag["llm_cache_validation_ok"] = False
+                        diag["llm_cache_validation_reject_reason"] = str(r or "invalid")[:120]
+                except Exception:
+                    pass
+                return None
+
+        try:
+            _yureeka_llm_cache_record_validation_v1(feature, True, "ok")
+        except Exception:
+            pass
+        try:
+            if isinstance(diag, dict):
+                diag["llm_cache_validation_ok"] = True
+        except Exception:
+            pass
+
         _LLM_CACHE_MEM_V1[key] = payload
         _llm_cache__mem_touch_v1(key)
         return payload
@@ -2467,9 +2825,9 @@ def _llm04_llm_relevance_check_v1(
             key_fallback = ""
 
         if key:
-            cached = get_cached_llm_response(key)
+            cached = get_cached_llm_response(key, validator=_llm04__validate_relevance_obj_v1, feature="llm04_anomaly_relevance", diag=diag)
             if cached is None and key_fallback:
-                cached = get_cached_llm_response(key_fallback)
+                cached = get_cached_llm_response(key_fallback, validator=_llm04__validate_relevance_obj_v1, feature="llm04_anomaly_relevance", diag=diag)
                 if cached is not None:
                     diag["cache_fallback_hit"] = True
             if cached is not None:
@@ -4070,11 +4428,30 @@ def _llm01_llm_rank_windows_v1(
         pass
 
     # Cache lookup (always)
+    def _llm01__cache_validate_rank_obj_v1(_obj: Any) -> Tuple[bool, str]:
+        try:
+            if not isinstance(_obj, dict) or not _obj:
+                return (False, "not_dict")
+            bi = _llm01__coerce_int_v1(_obj.get("best_index"), default=None)
+            if bi is None:
+                return (False, "missing_best_index")
+            try:
+                cf = float(_obj.get("confidence")) if _obj.get("confidence") is not None else None
+            except Exception:
+                cf = None
+            if cf is None:
+                return (False, "missing_confidence")
+            if not (0.0 <= float(cf) <= 1.0):
+                return (False, "confidence_range")
+            return (True, "ok")
+        except Exception:
+            return (False, "exception")
+
     cached = None
     try:
-        cached = get_cached_llm_response(cache_key)
+        cached = get_cached_llm_response(cache_key, validator=_llm01__cache_validate_rank_obj_v1, feature="llm01_evidence_rank", diag=diag)
         if cached is None and cache_key_fallback:
-            cached = get_cached_llm_response(cache_key_fallback)
+            cached = get_cached_llm_response(cache_key_fallback, validator=_llm01__cache_validate_rank_obj_v1, feature="llm01_evidence_rank", diag=diag)
             if cached is not None:
                 diag["cache_fallback_hit"] = True
     except Exception:
@@ -15683,10 +16060,48 @@ def _llm_fallback_query_structure(query: str, web_context: Optional[Dict] = None
             cache_key = ""
             cache_key_fallback = ""
 
+        def _llm00__cache_validate_qstruct_v1(_obj: Any) -> Tuple[bool, str]:
+            try:
+                if not isinstance(_obj, dict) or not _obj:
+                    return (False, "not_dict")
+                cat = str(_obj.get("category") or "").strip().lower()
+                if cat not in ("country", "industry", "company", "finance", "market", "unknown"):
+                    return (False, "bad_category")
+                try:
+                    cf = float(_obj.get("category_confidence")) if _obj.get("category_confidence") is not None else None
+                except Exception:
+                    cf = None
+                if cf is None:
+                    return (False, "bad_confidence")
+                if not (0.0 <= float(cf) <= 1.0):
+                    return (False, "confidence_range")
+                m = _obj.get("main")
+                if not isinstance(m, str) or not m.strip():
+                    return (False, "bad_main")
+                side = _obj.get("side")
+                if side is None:
+                    side = []
+                if not isinstance(side, list):
+                    return (False, "bad_side")
+                for s in list(side)[:8]:
+                    if not isinstance(s, str):
+                        return (False, "bad_side_item")
+                return (True, "ok")
+            except Exception:
+                return (False, "exception")
+
         cached = None
         if cache_key:
             try:
-                cached = get_cached_llm_response(cache_key)
+                cached = get_cached_llm_response(cache_key, validator=_llm00__cache_validate_qstruct_v1, feature="llm00_query_structure", diag=out_debug)
+                if cached is None and cache_key_fallback:
+                    cached = get_cached_llm_response(cache_key_fallback, validator=_llm00__cache_validate_qstruct_v1, feature="llm00_query_structure", diag=out_debug)
+                    if cached is not None:
+                        try:
+                            if isinstance(out_debug, dict):
+                                out_debug["llm_fallback_cache_fallback_hit"] = True
+                        except Exception:
+                            pass
             except Exception:
                 cached = None
 
@@ -29871,6 +30286,8 @@ def main():
                     output["debug"]["llm00_status_v1"] = _yureeka_llm00_status_v1(stage="analysis")
                     output["debug"]["nlp53_llm_replay_only_summary_v1"] = _yureeka_llm_replay_only_summary_v1(stage="analysis")
                     output["debug"]["nlp56_llm_cache_policy_summary_v1"] = _yureeka_llm_cache_policy_summary_v1(stage="analysis")
+                    output["debug"]["nlp57_llm_cache_validation_summary_v1"] = _yureeka_llm_cache_validation_summary_v1(stage="analysis")
+                    output["debug"]["nlp58_llm_feature_manifest_v1"] = _yureeka_llm_feature_manifest_v1(stage="analysis")
                     try:
                         if _yureeka_llm_flag_bool_v1("ENABLE_LLM_SMOKE_TEST"):
                             output["debug"]["llm_smoke_test_v1"] = _yureeka_llm_smoke_test_v1(stage="analysis")
@@ -30873,6 +31290,8 @@ def main():
                         _dbg["llm00_status_v1"] = _yureeka_llm00_status_v1(stage="evolution")
                         _dbg["nlp53_llm_replay_only_summary_v1"] = _yureeka_llm_replay_only_summary_v1(stage="evolution")
                         _dbg["nlp56_llm_cache_policy_summary_v1"] = _yureeka_llm_cache_policy_summary_v1(stage="evolution")
+                        _dbg["nlp57_llm_cache_validation_summary_v1"] = _yureeka_llm_cache_validation_summary_v1(stage="evolution")
+                        _dbg["nlp58_llm_feature_manifest_v1"] = _yureeka_llm_feature_manifest_v1(stage="evolution")
                         try:
                             if _yureeka_llm_flag_bool_v1("ENABLE_LLM_SMOKE_TEST"):
                                 _dbg["llm_smoke_test_v1"] = _yureeka_llm_smoke_test_v1(stage="evolution")
@@ -37087,6 +37506,10 @@ except Exception:
 try:
     if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "NLP56" for e in PATCH_TRACKER_V1):
         PATCH_TRACKER_V1.insert(0, {"patch_id": "NLP56", "scope": "llm-sidecar", "summary": "When LLM feature flags are ON but live network calls are disabled (LLM_ALLOW_NETWORK_CALLS=false), enforce cache-hit-only behavior: cache hit replays, cache miss becomes a deterministic no-op with reason cache_miss_noop_network_disabled. Adds nlp56_llm_cache_policy_summary_v1 and removes duplicate nlp53 summary attach. No effect when LLM flags are OFF.", "risk": "low"})
+    if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "NLP58" for e in PATCH_TRACKER_V1):
+        PATCH_TRACKER_V1.insert(0, {"patch_id": "NLP58", "scope": "llm-sidecar", "summary": "Add nlp58_llm_feature_manifest_v1: compact per-feature LLM diagnostics manifest combining effective flags, cache/network policy posture, run counters, and cache validation acceptance/rejection. Attached in both analysis and evolution debug. No behavior changes when LLM flags are OFF.", "risk": "low"})
+    if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "NLP57" for e in PATCH_TRACKER_V1):
+        PATCH_TRACKER_V1.insert(0, {"patch_id": "NLP57", "scope": "llm-sidecar", "summary": "Defensive LLM cache validation: when serving cache hits, require payloads to pass strict, feature-specific schema validation (query frame, query-structure fallback, evidence-rank, anomaly relevance). Invalid cached payloads are treated as deterministic cache misses with non-sensitive rejection beacons. Adds nlp57_llm_cache_validation_summary_v1. No effect when LLM flags are OFF.", "risk": "low"})
 except Exception:
     pass
 
