@@ -458,7 +458,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "NLP58"
+_YUREEKA_CODE_VERSION_LOCK = "NLP60"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 # REFACTOR206: Release Candidate freeze (no pipeline behavior change).
 YUREEKA_RELEASE_CANDIDATE_V1 = False
@@ -704,6 +704,7 @@ def _yureeka_llm_flags_snapshot_v1() -> dict:
         "LLM_BYPASS_CACHE",
         "LLM_CACHE_REPLAY_ONLY",
         "LLM_ALLOW_NETWORK_CALLS",
+        "LLM_CACHE_PERSIST_TO_DISK",
         "LLM_ALLOW_NETWORK_CALLS",
         "ENABLE_LLM_SMOKE_TEST",
         "LLM_FORCE_REFRESH_ONCE",
@@ -914,6 +915,10 @@ LLM_STRICT_MODE = bool(_yureeka_hp_get_v1('llm.strict_mode', True))
 
 # Debug-only dataset logging (default OFF; never required for correctness).
 ENABLE_LLM_DATASET_LOGGING = False
+
+# Optional LLM cache disk persistence (default ON for legacy compatibility; can be disabled via UI/secrets/env).
+# Set YUREEKA_LLM_CACHE_PERSIST_TO_DISK=0 to prevent writing cache files (memory cache still used).
+LLM_CACHE_PERSIST_TO_DISK = True
 
 # Optional deterministic cache (disk + tiny in-memory LRU). Never required for correctness.
 LLM_CACHE_DIR_V1 = str((_yureeka_hp_get_v1("llm.cache.dir", None) or os.environ.get("YUREEKA_LLM_CACHE_DIR") or ".yureeka_llm_cache"))
@@ -2173,10 +2178,215 @@ def _yureeka_llm_cache_validation_summary_v1(stage: str = "") -> dict:
         out["rejected"] = 0
     return out
 
+
+
+# NLP59: cache write aggregation + summary (non-sensitive; disk writes are optional and flag-gated)
+def _yureeka_llm_cache_write_agg_v1() -> dict:
+    """Mutable per-run cache write aggregation (non-sensitive)."""
+    try:
+        agg = globals().get("_YUREEKA_LLM_CACHE_WRITE_AGG_V1")
+        if not isinstance(agg, dict):
+            agg = {
+                "v": "llm_cache_write_agg_v1",
+                "attempts": 0,
+                "ok": 0,
+                "skipped": 0,
+                "failed": 0,
+                "bytes_written": 0,
+                "reasons": {},
+            }
+            globals()["_YUREEKA_LLM_CACHE_WRITE_AGG_V1"] = agg
+        return agg
+    except Exception:
+        return {"v": "llm_cache_write_agg_v1", "attempts": 0, "ok": 0, "skipped": 0, "failed": 0, "bytes_written": 0, "reasons": {}}
+
+
+def _yureeka_llm_cache_write_record_v1(ok: bool, reason: str = "", bytes_written: int = 0) -> None:
+    try:
+        agg = _yureeka_llm_cache_write_agg_v1()
+        agg["attempts"] = int(agg.get("attempts") or 0) + 1
+        r = str(reason or "")[:120] or ("ok" if ok else "unknown")
+        rs = agg.get("reasons")
+        if not isinstance(rs, dict):
+            rs = {}
+            agg["reasons"] = rs
+        rs[r] = int(rs.get(r) or 0) + 1
+        if ok:
+            agg["ok"] = int(agg.get("ok") or 0) + 1
+        else:
+            if r.startswith("skip:"):
+                agg["skipped"] = int(agg.get("skipped") or 0) + 1
+            else:
+                agg["failed"] = int(agg.get("failed") or 0) + 1
+        try:
+            if bytes_written:
+                agg["bytes_written"] = int(agg.get("bytes_written") or 0) + int(bytes_written)
+        except Exception:
+            pass
+    except Exception:
+        return
+
+
+def _yureeka_llm_cache_write_summary_v1(stage: str = "") -> dict:
+    """Compact beacon for cache write behavior (non-sensitive)."""
+    out = {"v": "nlp59_llm_cache_write_summary_v1", "stage": str(stage or "")[:40]}
+    try:
+        on, src = _yureeka_llm_flag_effective_v1("LLM_CACHE_PERSIST_TO_DISK")
+    except Exception:
+        on, src = (bool(globals().get("LLM_CACHE_PERSIST_TO_DISK")), "code:LLM_CACHE_PERSIST_TO_DISK")
+    out["persist_to_disk_enabled"] = bool(on)
+    out["persist_to_disk_source"] = str(src or "")[:120]
+    try:
+        agg = _yureeka_llm_cache_write_agg_v1()
+        out["attempts"] = int(agg.get("attempts") or 0)
+        out["ok"] = int(agg.get("ok") or 0)
+        out["skipped"] = int(agg.get("skipped") or 0)
+        out["failed"] = int(agg.get("failed") or 0)
+        out["bytes_written"] = int(agg.get("bytes_written") or 0)
+        try:
+            rs = agg.get("reasons")
+            if isinstance(rs, dict) and rs:
+                items = sorted(((str(k), int(v)) for k, v in rs.items()), key=lambda kv: (-kv[1], kv[0]))[:6]
+                out["top_reasons"] = {k: v for k, v in items}
+        except Exception:
+            pass
+    except Exception:
+        pass
+    return out
+
+# NLP60: cache inventory beacon (disk+mem counts; non-sensitive).
+def _yureeka_llm_cache_inventory_v1(stage: str = "", *, max_files: int = 2000, sample_n: int = 8) -> dict:
+    """Return a compact cache inventory snapshot (non-sensitive; no file reads).
+
+    - Scans cache dir file names + stat() only (no JSON reads).
+    - Includes mem cache size and disk file counts/bytes for triad diagnostics.
+    """
+    out = {
+        "v": "nlp60_llm_cache_inventory_v1",
+        "stage": str(stage or "")[:40],
+        "cache_dir": str(LLM_CACHE_DIR_V1 or ".yureeka_llm_cache"),
+        "cache_dir_exists": False,
+        "disk_files_total": 0,
+        "disk_json_files": 0,
+        "disk_bytes_total": 0,
+        "disk_newest_mtime": 0.0,
+        "disk_oldest_mtime": 0.0,
+        "disk_prefix_counts": {},
+        "disk_samples": [],
+        "mem_entries": 0,
+        "mem_max_entries": int(LLM_CACHE_MAX_MEM_ENTRIES_V1 or 0) if str(LLM_CACHE_MAX_MEM_ENTRIES_V1 or "").isdigit() else 0,
+    }
+
+    # Effective disk persistence flag (for context only)
+    try:
+        on, src = _yureeka_llm_flag_effective_v1("LLM_CACHE_PERSIST_TO_DISK")
+    except Exception:
+        on, src = (bool(globals().get("LLM_CACHE_PERSIST_TO_DISK")), "code:LLM_CACHE_PERSIST_TO_DISK")
+    out["persist_to_disk_enabled"] = bool(on)
+    out["persist_to_disk_source"] = str(src or "")[:120]
+
+    # Mem cache size (cheap)
+    try:
+        out["mem_entries"] = int(len(_LLM_CACHE_MEM_V1 or {}))
+    except Exception:
+        out["mem_entries"] = 0
+
+    # Disk scan (stat only)
+    try:
+        cdir = str(LLM_CACHE_DIR_V1 or ".yureeka_llm_cache")
+        out["cache_dir_exists"] = bool(cdir) and os.path.isdir(cdir)
+        if not out["cache_dir_exists"]:
+            return out
+
+        names = []
+        try:
+            names = list(os.listdir(cdir))
+        except Exception:
+            names = []
+        if not isinstance(names, list):
+            names = []
+
+        # cap
+        if max_files and len(names) > int(max_files):
+            names = names[: int(max_files)]
+
+        total = 0
+        json_n = 0
+        bytes_total = 0
+        newest = 0.0
+        oldest = 0.0
+        pfx = {}
+
+        samples = []
+        for fn in names:
+            try:
+                if not fn or fn.startswith("."):
+                    continue
+                total += 1
+                is_json = bool(str(fn).lower().endswith(".json"))
+                if is_json:
+                    json_n += 1
+
+                # prefix bucket for quick greps
+                try:
+                    base = str(fn).split(".json")[0]
+                    pref = base.split("_")[0] if "_" in base else (base[:8] if base else "")
+                    pref = str(pref or "")[:24]
+                    if pref:
+                        pfx[pref] = int(pfx.get(pref) or 0) + 1
+                except Exception:
+                    pass
+
+                path = os.path.join(cdir, fn)
+                try:
+                    stt = os.stat(path)
+                    sz = int(getattr(stt, "st_size", 0) or 0)
+                    mt = float(getattr(stt, "st_mtime", 0.0) or 0.0)
+                except Exception:
+                    sz = 0
+                    mt = 0.0
+                bytes_total += max(0, sz)
+                if mt:
+                    newest = max(newest, mt)
+                    oldest = mt if (oldest == 0.0) else min(oldest, mt)
+
+                # sample filenames (hash-like keys; non-sensitive)
+                if len(samples) < int(sample_n or 0):
+                    samples.append(str(fn)[:120])
+            except Exception:
+                continue
+
+        out["disk_files_total"] = int(total)
+        out["disk_json_files"] = int(json_n)
+        out["disk_bytes_total"] = int(bytes_total)
+        out["disk_newest_mtime"] = float(newest or 0.0)
+        out["disk_oldest_mtime"] = float(oldest or 0.0)
+
+        # sort prefix counts (top 8)
+        try:
+            items = sorted(((str(k), int(v)) for k, v in (pfx or {}).items()), key=lambda kv: (-kv[1], kv[0]))[:8]
+            out["disk_prefix_counts"] = {k: v for k, v in items}
+        except Exception:
+            out["disk_prefix_counts"] = {}
+
+        out["disk_samples"] = list(samples or [])
+    except Exception:
+        return out
+
+    return out
+
+
 # NLP58: per-feature manifest beacon (effective flags + policy + counters + cache validation; non-sensitive).
 def _yureeka_llm_feature_manifest_v1(stage: str = "") -> dict:
     """Compact per-feature diagnostics manifest for triad grepping (non-sensitive)."""
     out = {"v": "nlp58_llm_feature_manifest_v1", "stage": str(stage or "")[:40], "policy": {}, "flags": {}, "features": {}}
+
+    # NLP60: include cache inventory snapshot (non-sensitive; no reads) for quick triad greps
+    try:
+        out["cache_inventory"] = _yureeka_llm_cache_inventory_v1(stage=stage)
+    except Exception:
+        pass
+
 
     # Policy posture (replay-only / allow-network / cache-hit-only effective)
     try:
@@ -2206,6 +2416,7 @@ def _yureeka_llm_feature_manifest_v1(stage: str = "") -> dict:
         "LLM_BYPASS_CACHE",
         "LLM_CACHE_REPLAY_ONLY",
         "LLM_ALLOW_NETWORK_CALLS",
+        "LLM_CACHE_PERSIST_TO_DISK",
         "LLM_FORCE_REFRESH_ONCE",
     ]
     fn = globals().get("_yureeka_llm_flag_effective_v1")
@@ -2470,7 +2681,7 @@ def get_cached_llm_response(key: str, *, validator=None, feature: str = "", diag
             pass
         return None
 
-def cache_llm_response(key: str, payload: Any) -> bool:
+def cache_llm_response(key: str, payload: Any, *, feature: str = "") -> bool:
     """Persist payload to cache. Best-effort; returns True on success."""
     if not key:
         return False
@@ -2481,11 +2692,41 @@ def cache_llm_response(key: str, payload: Any) -> bool:
     except Exception:
         pass
 
+    # NLP59: disk persistence is optional (flag-gated).
+    try:
+        _disk_on, _disk_src = _yureeka_llm_flag_effective_v1("LLM_CACHE_PERSIST_TO_DISK")
+    except Exception:
+        _disk_on, _disk_src = (bool(globals().get("LLM_CACHE_PERSIST_TO_DISK")), "code:LLM_CACHE_PERSIST_TO_DISK")
+    if not bool(_disk_on):
+        try:
+            _yureeka_llm_cache_write_record_v1(False, reason="skip:flag_off")
+        except Exception:
+            pass
+        return True
+
+    # Defensive size cap for disk writes (reuse read max_bytes as an upper bound).
+    try:
+        _maxb = _yureeka_llm_cache_max_bytes_v1()
+        _raw = _yureeka__stable_json_dumps_v1({"payload": payload})
+        _sz = len((_raw or "").encode("utf-8", errors="ignore"))
+        if _sz and int(_sz) > int(_maxb):
+            try:
+                _yureeka_llm_cache_write_record_v1(False, reason="skip:too_large", bytes_written=0)
+            except Exception:
+                pass
+            return True
+    except Exception:
+        pass
+
     # LLM30: If LLM_FORCE_REFRESH_ONCE consumed a key that already existed on disk,
     # do NOT overwrite the disk cache file (preserves replay determinism/auditability).
     try:
         st = globals().get("_YUREEKA_LLM_FORCE_REFRESH_ONCE_STATE_V1")
         if isinstance(st, dict) and bool(st.get("disk_write_skipped")) and str(st.get("key") or "") == str(key or ""):
+            try:
+                _yureeka_llm_cache_write_record_v1(False, reason="skip:disk_write_skipped")
+            except Exception:
+                pass
             return True
     except Exception:
         pass
@@ -2504,8 +2745,16 @@ def cache_llm_response(key: str, payload: Any) -> bool:
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump({"payload": payload}, f, ensure_ascii=False, sort_keys=True)
         os.replace(tmp, path)
+        try:
+            _yureeka_llm_cache_write_record_v1(True, reason="ok", bytes_written=int(_sz) if "_sz" in locals() else 0)
+        except Exception:
+            pass
         return True
     except Exception:
+        try:
+            _yureeka_llm_cache_write_record_v1(False, reason="write_failed")
+        except Exception:
+            pass
         try:
             # cleanup temp file if any
             if os.path.exists(tmp):
@@ -30288,6 +30537,8 @@ def main():
                     output["debug"]["nlp56_llm_cache_policy_summary_v1"] = _yureeka_llm_cache_policy_summary_v1(stage="analysis")
                     output["debug"]["nlp57_llm_cache_validation_summary_v1"] = _yureeka_llm_cache_validation_summary_v1(stage="analysis")
                     output["debug"]["nlp58_llm_feature_manifest_v1"] = _yureeka_llm_feature_manifest_v1(stage="analysis")
+                    output["debug"]["nlp59_llm_cache_write_summary_v1"] = _yureeka_llm_cache_write_summary_v1(stage="analysis")
+                    output["debug"]["nlp60_llm_cache_inventory_v1"] = _yureeka_llm_cache_inventory_v1(stage="analysis")
                     try:
                         if _yureeka_llm_flag_bool_v1("ENABLE_LLM_SMOKE_TEST"):
                             output["debug"]["llm_smoke_test_v1"] = _yureeka_llm_smoke_test_v1(stage="analysis")
@@ -31292,6 +31543,8 @@ def main():
                         _dbg["nlp56_llm_cache_policy_summary_v1"] = _yureeka_llm_cache_policy_summary_v1(stage="evolution")
                         _dbg["nlp57_llm_cache_validation_summary_v1"] = _yureeka_llm_cache_validation_summary_v1(stage="evolution")
                         _dbg["nlp58_llm_feature_manifest_v1"] = _yureeka_llm_feature_manifest_v1(stage="evolution")
+                        _dbg["nlp59_llm_cache_write_summary_v1"] = _yureeka_llm_cache_write_summary_v1(stage="evolution")
+                        _dbg["nlp60_llm_cache_inventory_v1"] = _yureeka_llm_cache_inventory_v1(stage="evolution")
                         try:
                             if _yureeka_llm_flag_bool_v1("ENABLE_LLM_SMOKE_TEST"):
                                 _dbg["llm_smoke_test_v1"] = _yureeka_llm_smoke_test_v1(stage="evolution")
@@ -37508,6 +37761,25 @@ try:
         PATCH_TRACKER_V1.insert(0, {"patch_id": "NLP56", "scope": "llm-sidecar", "summary": "When LLM feature flags are ON but live network calls are disabled (LLM_ALLOW_NETWORK_CALLS=false), enforce cache-hit-only behavior: cache hit replays, cache miss becomes a deterministic no-op with reason cache_miss_noop_network_disabled. Adds nlp56_llm_cache_policy_summary_v1 and removes duplicate nlp53 summary attach. No effect when LLM flags are OFF.", "risk": "low"})
     if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "NLP58" for e in PATCH_TRACKER_V1):
         PATCH_TRACKER_V1.insert(0, {"patch_id": "NLP58", "scope": "llm-sidecar", "summary": "Add nlp58_llm_feature_manifest_v1: compact per-feature LLM diagnostics manifest combining effective flags, cache/network policy posture, run counters, and cache validation acceptance/rejection. Attached in both analysis and evolution debug. No behavior changes when LLM flags are OFF.", "risk": "low"})
+
+    # NLP59: patch tracker overlay (cache disk persistence knob + write summary beacons)
+    if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "NLP59" for e in PATCH_TRACKER_V1):
+        PATCH_TRACKER_V1.insert(0, {
+            "patch_id": "NLP59",
+            "scope": "llm-sidecar",
+            "summary": "Add LLM_CACHE_PERSIST_TO_DISK (default ON; can be disabled via UI/secrets/env) and emit nlp59_llm_cache_write_summary_v1 to track cache file write attempts/ok/skip/fail (non-sensitive). Disk writes remain optional; no behavior changes when LLM flags are OFF.",
+            "risk": "low",
+        })
+
+    # NLP60: patch tracker overlay (cache inventory beacon)
+    if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "NLP60" for e in PATCH_TRACKER_V1):
+        PATCH_TRACKER_V1.insert(0, {
+            "patch_id": "NLP60",
+            "scope": "llm-sidecar",
+            "summary": "Add nlp60_llm_cache_inventory_v1 (disk+mem cache counts/bytes/sample filenames via stat-only scan) and include it in nlp58_llm_feature_manifest_v1.cache_inventory. Attach the beacon into both analysis and evolution debug for triad grepping. No network calls and no behavior changes when LLM flags are OFF.",
+            "risk": "low",
+        })
+
     if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "NLP57" for e in PATCH_TRACKER_V1):
         PATCH_TRACKER_V1.insert(0, {"patch_id": "NLP57", "scope": "llm-sidecar", "summary": "Defensive LLM cache validation: when serving cache hits, require payloads to pass strict, feature-specific schema validation (query frame, query-structure fallback, evidence-rank, anomaly relevance). Invalid cached payloads are treated as deterministic cache misses with non-sensitive rejection beacons. Adds nlp57_llm_cache_validation_summary_v1. No effect when LLM flags are OFF.", "risk": "low"})
 except Exception:
