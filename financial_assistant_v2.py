@@ -458,7 +458,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "NLP74"
+_YUREEKA_CODE_VERSION_LOCK = "NLP76"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 # REFACTOR206: Release Candidate freeze (no pipeline behavior change).
 YUREEKA_RELEASE_CANDIDATE_V1 = False
@@ -2035,6 +2035,13 @@ def _yureeka_llm_force_refresh_once_state_v1() -> dict:
                 "disk_existed": False,
                 "disk_write_skipped": False,
                 "backup_done": False,
+                "armed": False,
+                "armed_feature": "",
+                "armed_key": "",
+                "armed_at": 0.0,
+                "calls_budget": 1,
+                "calls_made": 0,
+                "blocked_reason": "" ,
             }
             globals()["_YUREEKA_LLM_FORCE_REFRESH_ONCE_STATE_V1"] = st
         try:
@@ -2090,6 +2097,115 @@ def _yureeka_llm_force_refresh_once_should_bypass_v1(key: str) -> bool:
     except Exception:
         return False
 
+
+
+# NLP75: one-shot seed refresh arming helper (feature-scoped; no prompts/outputs stored).
+def _yureeka_llm_force_refresh_once_arm_v1(*, feature: str, cache_key: str, where: str = "") -> bool:
+    """Arm a one-shot live call for `feature` + `cache_key` when LLM_FORCE_REFRESH_ONCE is enabled.
+
+    Requirements (fail-closed):
+      - LLM_FORCE_REFRESH_ONCE enabled and not already consumed/armed
+      - Cache key must not already exist on disk (no overwrite)
+      - Feature must be allowed by LLM_SEED_FEATURE_WHITELIST (or default allowlist when empty)
+      - LLM_CACHE_REPLAY_ONLY must be False
+      - LLM_SEED_MODE must be True (explicit operator intent)
+    """
+    try:
+        st = _yureeka_llm_force_refresh_once_state_v1()
+        if not isinstance(st, dict) or (not bool(st.get("enabled"))):
+            return False
+        if bool(st.get("consumed")) or bool(st.get("armed")):
+            return False
+        f = str(feature or "")
+        k = str(cache_key or "")
+        if (not f) or (not k):
+            return False
+
+        # Replay-only hard gate
+        try:
+            _ro, _ro_src = _yureeka_llm_flag_effective_v1("LLM_CACHE_REPLAY_ONLY")
+            if bool(_ro):
+                st["blocked_reason"] = "replay_only"
+                return False
+        except Exception:
+            st["blocked_reason"] = "replay_only_eval_failed"
+            return False
+
+        # Seed-mode requirement (explicit operator intent)
+        try:
+            _sm, _sm_src = _yureeka_llm_flag_effective_v1("LLM_SEED_MODE")
+            if not bool(_sm):
+                st["blocked_reason"] = "seed_mode_required"
+                return False
+        except Exception:
+            st["blocked_reason"] = "seed_mode_eval_failed"
+            return False
+
+        # Feature whitelist (default: only llm01_evidence_rank when whitelist empty)
+        allowed = []
+        try:
+            allowed = list(globals().get("LLM_SEED_FEATURE_WHITELIST") or [])
+        except Exception:
+            allowed = []
+        if not allowed:
+            allowed = ["llm01_evidence_rank"]
+        if f not in [str(x or "") for x in allowed]:
+            st["blocked_reason"] = "feature_not_whitelisted"
+            return False
+
+        # Do not overwrite existing disk cache (seed should fill, not mutate)
+        try:
+            path = _llm_cache_path_v1(k)
+            if bool(path) and os.path.exists(path):
+                st["disk_existed"] = True
+                st["disk_write_skipped"] = True
+                st["blocked_reason"] = "disk_cache_exists"
+                return False
+        except Exception:
+            # Fail closed
+            st["blocked_reason"] = "disk_check_failed"
+            return False
+
+        # Arm + consume
+        st["consumed"] = True
+        st["armed"] = True
+        st["armed_feature"] = f[:80]
+        st["armed_key"] = k[:120]
+        st["key"] = k[:120]
+        try:
+            st["armed_at"] = float(time.time())
+            st["consumed_at"] = float(st.get("armed_at") or 0.0)
+        except Exception:
+            st["armed_at"] = 0.0
+        st["blocked_reason"] = ""
+
+        # Expose a tiny global active capsule so the provider boundary can allow the one-shot call.
+        try:
+            globals()["_YUREEKA_LLM_FORCE_REFRESH_ONCE_ACTIVE_V1"] = {
+                "active": True,
+                "feature": f[:80],
+                "cache_key": k[:120],
+                "where": str(where or "")[:80],
+            }
+        except Exception:
+            pass
+        return True
+    except Exception:
+        return False
+
+
+def _yureeka_llm_force_refresh_once_disarm_v1() -> None:
+    """Disarm one-shot live call capsule (best-effort)."""
+    try:
+        st = globals().get("_YUREEKA_LLM_FORCE_REFRESH_ONCE_STATE_V1")
+        if isinstance(st, dict):
+            st["armed"] = False
+    except Exception:
+        pass
+    try:
+        globals().pop("_YUREEKA_LLM_FORCE_REFRESH_ONCE_ACTIVE_V1", None)
+    except Exception:
+        pass
 
 # NLP48: non-sensitive cache-miss ledger (replayability diagnostics)
 def _yureeka_llm_cache_miss_ledger_v1() -> dict:
@@ -2264,6 +2380,18 @@ def _yureeka_llm_cache_policy_summary_v1(stage: str = "") -> dict:
     _net_allowed_eff = bool(bool(_an) and bool(_sm) and (not bool(_ro)))
     out["network_allowed_effective"] = bool(_net_allowed_eff)
     out["cache_hit_only_effective"] = bool(not bool(_net_allowed_eff))
+
+    # NLP75: one-shot seed refresh capsule (non-sensitive)
+    try:
+        st = _yureeka_llm_force_refresh_once_state_v1()
+        if isinstance(st, dict):
+            out["force_refresh_once_enabled"] = bool(st.get("enabled"))
+            out["force_refresh_once_consumed"] = bool(st.get("consumed"))
+            out["force_refresh_once_armed"] = bool(st.get("armed"))
+            out["force_refresh_once_armed_feature"] = str(st.get("armed_feature") or "")[:80]
+            out["force_refresh_once_blocked_reason"] = str(st.get("blocked_reason") or "")[:80]
+    except Exception:
+        pass
 
     # NLP71: seed-mode budgeting knobs (surfaced for audit; enforcement-ready)
     try:
@@ -2759,6 +2887,10 @@ def _yureeka_llm_feature_manifest_v1(stage: str = "") -> dict:
                 "seed_budget_max_tokens": int(pol.get("seed_budget_max_tokens") or 0),
                 "seed_budget_max_latency_ms": int(pol.get("seed_budget_max_latency_ms") or 0),
                 "seed_feature_whitelist": list((pol.get("seed_feature_whitelist") or [])[:8]),
+                "force_refresh_once_enabled": bool(pol.get("force_refresh_once_enabled")),
+                "force_refresh_once_consumed": bool(pol.get("force_refresh_once_consumed")),
+                "force_refresh_once_armed": bool(pol.get("force_refresh_once_armed")),
+                "force_refresh_once_armed_feature": str(pol.get("force_refresh_once_armed_feature") or "")[:80],
             }
     except Exception:
         _ro = bool(globals().get("LLM_CACHE_REPLAY_ONLY"))
@@ -4816,21 +4948,32 @@ def _yureeka_call_openai_chat_json_v1(
         _an, _an_src = _yureeka_llm_flag_effective_v1("LLM_ALLOW_NETWORK_CALLS")
         diag["allow_network_calls"] = bool(_an)
         diag["allow_network_calls_source"] = str(_an_src)[:80]
-        if not bool(_an):
+
+        # NLP75: one-shot seed refresh override (LLM_FORCE_REFRESH_ONCE)
+        # Allows a single live call for an explicitly armed feature even when LLM_ALLOW_NETWORK_CALLS is false.
+        _fr_active = False
+        try:
+            _fr = globals().get("_YUREEKA_LLM_FORCE_REFRESH_ONCE_ACTIVE_V1")
+            if isinstance(_fr, dict) and bool(_fr.get("active")) and (str(_fr.get("feature") or "") == str(feature or "")):
+                _fr_active = True
+        except Exception:
+            _fr_active = False
+
+        if (not bool(_an)) and (not bool(_fr_active)):
             diag["reason"] = "network_disabled_by_flag"
             diag["hint"] = "Live LLM calls disabled; set LLM_ALLOW_NETWORK_CALLS=true (env or code) to permit network calls."
             diag["network_call_blocked"] = True
             diag["network_call_made"] = False
             return (None, diag)
 
-        # NLP69: seed-mode guard (prevents accidental live calls even if allow_network_calls is enabled).
+        # Seed-mode guard (prevents accidental live calls; required for both normal and one-shot).
         try:
             _sm, _sm_src = _yureeka_llm_flag_effective_v1("LLM_SEED_MODE")
             diag["seed_mode_enabled"] = bool(_sm)
             diag["seed_mode_source"] = str(_sm_src)[:80]
-            if bool(_an) and not bool(_sm):
+            if (bool(_an) or bool(_fr_active)) and (not bool(_sm)):
                 diag["reason"] = "seed_mode_required"
-                diag["hint"] = "Live LLM calls require LLM_SEED_MODE=true in addition to LLM_ALLOW_NETWORK_CALLS=true."
+                diag["hint"] = "Live LLM calls require LLM_SEED_MODE=true."
                 diag["network_call_blocked"] = True
                 diag["network_call_made"] = False
                 return (None, diag)
@@ -4840,13 +4983,16 @@ def _yureeka_call_openai_chat_json_v1(
             diag["network_call_blocked"] = True
             diag["network_call_made"] = False
             return (None, diag)
+
+        # Mark override in diag (non-sensitive)
+        if bool(_fr_active) and (not bool(_an)):
+            diag["force_refresh_once_effective"] = True
+            diag["network_call_override"] = "force_refresh_once"
+
     except Exception:
         pass
 
-
-
-
-    # LLM05: run-scope circuit breaker + call budget guard (non-behavioral; only affects failing/disabled calls).
+# LLM05: run-scope circuit breaker + call budget guard (non-behavioral; only affects failing/disabled calls).
     try:
         _is_open, _cb = _yureeka_llm_circuit_is_open_v1()
         if bool(_is_open):
@@ -5974,27 +6120,36 @@ def _llm01_llm_rank_windows_v1(
         except Exception:
             _an, _an_src = (bool(globals().get("LLM_ALLOW_NETWORK_CALLS")), "code:LLM_ALLOW_NETWORK_CALLS")
         if not bool(_an):
-            noop = _yureeka_llm_network_disabled_noop_diag_v1(
-                feature="llm01_evidence_rank",
-                model=str(model),
-                cache_key=str(cache_key),
-                cache_key_fallback=str(cache_key_fallback or ""),
-                where="llm01_evidence_rank",
-            )
-            diag.update({"used": False, "cache_hit": False, "reason": "cache_miss_noop_network_disabled"})
-            _did = False
+            # NLP75: allow a single one-shot seed refresh without enabling global network calls.
+            _armed = False
             try:
-                if isinstance(out_debug, dict):
-                    _llm01_update_llm_diag_agg_v1(out_debug, noop, cache_hit=False, feature="llm01_evidence_rank")
-                    _did = True
+                _armed = bool(_yureeka_llm_force_refresh_once_arm_v1(feature="llm01_evidence_rank", cache_key=str(cache_key), where="llm01_evidence_rank"))
             except Exception:
+                _armed = False
+            if not bool(_armed):
+                noop = _yureeka_llm_network_disabled_noop_diag_v1(
+                    feature="llm01_evidence_rank",
+                    model=str(model),
+                    cache_key=str(cache_key),
+                    cache_key_fallback=str(cache_key_fallback or ""),
+                    where="llm01_evidence_rank",
+                )
+                diag.update({"used": False, "cache_hit": False, "reason": "cache_miss_noop_network_disabled"})
                 _did = False
-            if not bool(_did):
                 try:
-                    _yureeka_llm_global_agg_update_v1("llm01_evidence_rank", noop, cache_hit=False)
+                    if isinstance(out_debug, dict):
+                        _llm01_update_llm_diag_agg_v1(out_debug, noop, cache_hit=False, feature="llm01_evidence_rank")
+                        _did = True
                 except Exception:
-                    pass
-            return (None, None, diag)
+                    _did = False
+                if not bool(_did):
+                    try:
+                        _yureeka_llm_global_agg_update_v1("llm01_evidence_rank", noop, cache_hit=False)
+                    except Exception:
+                        pass
+                return (None, None, diag)
+            # Armed: proceed to provider boundary; it will still enforce seed-mode and budgets.
+
 
         # Call model (best-effort)
         system_prompt = (
@@ -6010,6 +6165,12 @@ def _llm01_llm_rank_windows_v1(
             prompt_version=prompt_version,
             schema_version=schema_version,
         )
+        # NLP75: disarm one-shot override after provider boundary attempt (best-effort).
+        try:
+            _yureeka_llm_force_refresh_once_disarm_v1()
+        except Exception:
+            pass
+
         try:
             if isinstance(call_diag, dict):
                 call_diag["cache_miss"] = True
@@ -6418,10 +6579,27 @@ def _llm01_attach_evidence_snippets_to_pmc_v1(
             _llm_flag_on = bool(_yureeka_llm_flag_bool_v1("ENABLE_LLM_EVIDENCE_SNIPPETS"))
         except Exception:
             _llm_flag_on = False
+        _seed_only = False
+        try:
+            _seed_mode_eff = bool(_yureeka_llm_flag_bool_v1("LLM_SEED_MODE"))
+        except Exception:
+            _seed_mode_eff = False
+        try:
+            _force_once_eff = bool(_yureeka_llm_flag_bool_v1("LLM_FORCE_REFRESH_ONCE"))
+        except Exception:
+            _force_once_eff = False
+        # NLP76: seed override — allow cache fill even when feature flag is OFF.
+        if (not bool(_llm_flag_on)) and bool(_seed_mode_eff) and bool(_force_once_eff):
+            _seed_only = True
+            _llm_flag_on = True
+
         try:
             _force_call = bool(_yureeka_llm_flag_bool_v1("LLM01_EVIDENCE_FORCE_CALL"))
         except Exception:
             _force_call = False
+        # NLP76: in seed-only mode, force a single rank attempt (still non-decider).
+        if bool(_seed_only):
+            _force_call = True
         try:
             _tie_ok = bool(isinstance(tie_set, list) and len(tie_set) >= 2)
         except Exception:
@@ -6518,12 +6696,21 @@ def _llm01_attach_evidence_snippets_to_pmc_v1(
                     llm_decision_reason = "llm_agrees_det"
                     llm_agrees += 1
                 else:
-                    chosen_i = int(llm_i)
-                    method = "llm_ranked"
-                    llm_used += 1
-                    llm_accepts += 1
-                    llm_accepted = True
-                    llm_decision_reason = "accepted_tiebreak"
+                    # NLP76: seed-only mode may perform the rank call to fill cache, but never
+                    # changes the deterministic snippet selection.
+                    if bool(_seed_only):
+                        llm_decision_reason = "seed_only_no_apply"
+                        try:
+                            llm_rejects += 1
+                        except Exception:
+                            pass
+                    else:
+                        chosen_i = int(llm_i)
+                        method = "llm_ranked"
+                        llm_used += 1
+                        llm_accepts += 1
+                        llm_accepted = True
+                        llm_decision_reason = "accepted_tiebreak"
 
         chosen = windows[chosen_i] if 0 <= chosen_i < len(windows) else windows[best_i]
         snippet = str(chosen.get("text") or "").strip()
@@ -6600,6 +6787,7 @@ def _llm01_attach_evidence_snippets_to_pmc_v1(
                         "method": method,
                         "basis": str(basis_key or ""),
                         "llm_flag": bool(_yureeka_llm_flag_bool_v1("ENABLE_LLM_EVIDENCE_SNIPPETS")),
+                        "seed_only": bool(_seed_only),
                         "llm_used": bool(method == "llm_ranked"),
                         "llm_called": bool(llm_called),
                         "llm_accepted": bool(llm_accepted),
@@ -7033,6 +7221,15 @@ try:
     PATCH_TRACKER_V1 = list(_PATCH_TRACKER_CANONICAL_ENTRIES_V1 or [])
 except Exception:
     PATCH_TRACKER_V1 = []
+    {
+        "patch_id": "NLP76",
+        "date": "2026-02-23",
+        "title": "Seed override for evidence seeding when feature flag off",
+        "notes": [
+            "Allow one-shot LLM seed fill for llm01_evidence_rank even when ENABLE_LLM_EVIDENCE_SNIPPETS is OFF (seed-only; does not change winners/values/snippets).",
+            "Adds seed_only beacons in per-metric evidence_snippet_v1 provenance and keeps deterministic snippet output."
+        ]
+    },
 
 
 
@@ -40887,39 +41084,12 @@ except Exception:
 
 
 
-# NLP72: patch tracker overlay (triad checkpoint; no pipeline behavior changes)
-try:
-    if isinstance(PATCH_TRACKER_V1, list):
-        _pid = "NLP72"
-        _existing_i = None
-        for _i, _e in enumerate(list(PATCH_TRACKER_V1)):
-            if isinstance(_e, dict) and str(_e.get("patch_id") or "") == _pid:
-                _existing_i = _i
-                break
-        _ent = {
-            "patch_id": "NLP72",
-            "date": "2026-02-22",
-            "title": "NLP72 Triad checkpoint: version bump + patch tracker head alignment (no behavior change)",
-            "summary": [
-                "Bump CODE_VERSION to NLP72 for triad checkpointing (no functional changes).",
-                "Register NLP72 patch tracker entry and ensure PATCH_TRACKER_V1 head alignment.",
-                "Preserve deterministic baseline (REFACTOR206) when NLP/LLM flags are OFF."
-            ],
-            "risk": "Very low: version/paperwork only; no pipeline logic changes."
-        }
-        if _existing_i is None:
-            PATCH_TRACKER_V1.insert(0, dict(_ent))
-        else:
-            PATCH_TRACKER_V1[_existing_i] = dict(_ent)
-        try:
-            _yureeka_patch_tracker_ensure_head_v1(_pid, {"patch_id": _pid})
-        except Exception:
-            pass
-except Exception:
-    pass
 
+# =============================================================================
+# Patch Tracker Overlay — NLP73/NLP74/NLP75
+# =============================================================================
 
-# NLP73: patch tracker entry
+# NLP73: enable evidence snippet sidecar in cache-hit-only mode (no live calls by default)
 try:
     if isinstance(PATCH_TRACKER_V1, list):
         _pid = "NLP73"
@@ -40929,21 +41099,76 @@ try:
                 _existing_i = _i
                 break
         _ent = {
-            "patch_id": "NLP74",
+            "patch_id": "NLP73",
             "date": "2026-02-22",
-            "title": "NLP73 Enable LLM01 evidence snippets in cache-hit-only mode by default (no network) + cache-key provenance beacons",
+            "title": "NLP73 LLM01 evidence snippets: cache-first sidecar activation (no live calls by default)",
             "summary": [
-                "Enable ENABLE_LLM_EVIDENCE_SNIPPETS by default while keeping network_allowed_effective=false (LLM_ALLOW_NETWORK_CALLS=false and LLM_SEED_MODE=false). This activates cache-first LLM01 tie-set ranking probes without introducing any live calls.",
-                "Expose llm_cache_key/llm_cache_key_fallback in per-metric provenance.evidence_snippet_v1 even when the LLM result is not applied (cache miss / network disabled), improving seed-mode targeting and replay diagnostics.",
-                "Add llm_rank_attempts counters to llm01_evidence_snippets_v1 and nlp68_llm01_evidence_snippets_rollup_v1 for triad grepping (attempts can be >0 with llm_calls==0 in offline cache-hit-only runs).",
-                "Preserve deterministic selection rules: metric winners/values remain unchanged; evidence snippets may change only when an accepted cached LLM ranking is available and only within the deterministic tie-set gate."
+                "Keep deterministic deciders unchanged; LLM is assist-only and never changes winners/values unless explicitly enabled later.",
+                "Enable cache-first plumbing for LLM01 evidence snippet ranking within tie-set gating (still no network unless explicitly allowed).",
+                "Expose cache keys and acceptance/rejection beacons to support later seed-mode cache population."
             ],
-            "risk": "Low: offline-by-default; cache-first diagnostics only; no winner/value drift when assist flags are OFF."
+            "risk": "Low: offline-by-default; cache-first; no winner/value drift when assist flags are OFF."
         }
         if _existing_i is None:
             PATCH_TRACKER_V1.insert(0, dict(_ent))
         else:
             PATCH_TRACKER_V1[_existing_i] = dict(_ent)
+except Exception:
+    pass
+
+# NLP74: triad checkpoint (no pipeline behavior changes)
+try:
+    if isinstance(PATCH_TRACKER_V1, list):
+        _pid = "NLP74"
+        _existing_i = None
+        for _i, _e in enumerate(list(PATCH_TRACKER_V1)):
+            if isinstance(_e, dict) and str(_e.get("patch_id") or "") == _pid:
+                _existing_i = _i
+                break
+        _ent = {
+            "patch_id": "NLP74",
+            "date": "2026-02-22",
+            "title": "NLP74 Triad checkpoint: version bump + patch tracker head alignment (no behavior change)",
+            "summary": [
+                "Triad checkpoint only; no extraction/selection/diff changes.",
+                "Preserve deterministic baseline (REFACTOR206) when NLP/LLM flags are OFF."
+            ],
+            "risk": "Very low: version/paperwork only."
+        }
+        if _existing_i is None:
+            PATCH_TRACKER_V1.insert(0, dict(_ent))
+        else:
+            PATCH_TRACKER_V1[_existing_i] = dict(_ent)
+except Exception:
+    pass
+
+# NLP75: one-shot seed refresh (controlled live call) — still sidecar-only, no winner/value drift by default
+try:
+    if isinstance(PATCH_TRACKER_V1, list):
+        _pid = "NLP75"
+        _existing_i = None
+        for _i, _e in enumerate(list(PATCH_TRACKER_V1)):
+            if isinstance(_e, dict) and str(_e.get("patch_id") or "") == _pid:
+                _existing_i = _i
+                break
+        _ent = {
+            "patch_id": "NLP75",
+            "date": "2026-02-22",
+            "title": "NLP75 Seed-mode one-shot cache fill (LLM_FORCE_REFRESH_ONCE) for LLM01 (safe, capped, replayable)",
+            "summary": [
+                "Implement one-shot seed refresh arming for a single whitelisted LLM feature (default: llm01_evidence_rank).",
+                "Allow exactly one live provider call when LLM_SEED_MODE=true and LLM_FORCE_REFRESH_ONCE=true, even if LLM_ALLOW_NETWORK_CALLS=false.",
+                "Fail closed under replay-only or when disk cache already exists (no overwrite).",
+                "Add policy beacons for force_refresh_once (enabled/consumed/armed/feature/blocked_reason) for triad grepping."
+            ],
+            "risk": "Low-to-medium: only affects runs where LLM_SEED_MODE + LLM_FORCE_REFRESH_ONCE are explicitly enabled."
+        }
+        if _existing_i is None:
+            PATCH_TRACKER_V1.insert(0, dict(_ent))
+        else:
+            PATCH_TRACKER_V1[_existing_i] = dict(_ent)
+
+        # Ensure PATCH_TRACKER head matches CODE_VERSION
         try:
             _yureeka_patch_tracker_ensure_head_v1(_pid, {"patch_id": _pid})
         except Exception:
