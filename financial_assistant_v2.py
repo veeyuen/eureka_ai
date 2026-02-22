@@ -458,7 +458,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "NLP70"
+_YUREEKA_CODE_VERSION_LOCK = "NLP72"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 # REFACTOR206: Release Candidate freeze (no pipeline behavior change).
 YUREEKA_RELEASE_CANDIDATE_V1 = False
@@ -501,6 +501,20 @@ LLM_CACHE_REPLAY_ONLY = False
 
 # NLP54: explicit master allow flag for live network calls (defaults OFF; conservative).
 LLM_ALLOW_NETWORK_CALLS = False
+
+# NLP71: Seed-mode plumbing (default OFF)
+# - Seed mode is a *separate* explicit guard for live calls (in addition to LLM_ALLOW_NETWORK_CALLS).
+# - This patch adds budgeting knobs + UI exposure; defaults keep the system fully offline.
+LLM_SEED_MODE = False
+
+# NLP71: Seed-mode hard caps (applies only when live calls are explicitly enabled)
+# NOTE: These are enforcement-ready knobs; policy beacons will surface them even if unused.
+LLM_SEED_MAX_CALLS = 10
+LLM_SEED_MAX_TOKENS = 4000
+LLM_SEED_MAX_LATENCY_MS = 15000
+# Comma-separated feature allowlist for live calls (future use). Empty = allow all features.
+LLM_SEED_FEATURE_WHITELIST = ""
+
 
 ENABLE_LLM_SMOKE_TEST = False
 
@@ -555,6 +569,168 @@ def _yureeka__parse_floatish_v1(v: Any) -> Optional[float]:
         return float(s)
     except Exception:
         return None
+
+
+
+
+
+def _yureeka__parse_intish_v1(v: Any) -> Optional[int]:
+    """Parse int-ish env/secrets strings safely. Returns None if unparseable."""
+    try:
+        if v is None:
+            return None
+        if isinstance(v, bool):
+            return int(bool(v))
+        if isinstance(v, int):
+            return int(v)
+        if isinstance(v, float):
+            # Guard NaN/Inf without importing math
+            if v != v:
+                return None
+            if v == float("inf") or v == float("-inf"):
+                return None
+            return int(v)
+        s = str(v).strip()
+        if not s:
+            return None
+        # Allow "123", "123.0", "1e3"
+        try:
+            f = float(s)
+            if f != f:
+                return None
+            if f == float("inf") or f == float("-inf"):
+                return None
+            return int(f)
+        except Exception:
+            pass
+        # Fallback: strip non-digit (keep leading minus)
+        s2 = re.sub(r"[^0-9\-]+", "", s)
+        if s2 in ("", "-", "--"):
+            return None
+        return int(s2)
+    except Exception:
+        return None
+
+
+def _yureeka__parse_csv_list_v1(v: Any) -> List[str]:
+    """Parse a CSV-ish value into a list of non-empty trimmed strings."""
+    out: List[str] = []
+    try:
+        if v is None:
+            return []
+        if isinstance(v, (list, tuple)):
+            for x in v:
+                s = str(x).strip()
+                if s:
+                    out.append(s)
+            return out
+        s = str(v)
+        if not s.strip():
+            return []
+        for part in s.split(","):
+            part = str(part).strip()
+            if part:
+                out.append(part)
+    except Exception:
+        return out
+    return out
+
+
+def _yureeka_llm_param_effective_v1(param_name: str) -> Tuple[Any, str]:
+    """Resolve an LLM parameter value (any type) with UI/secrets/env override.
+
+    Mirrors _yureeka_llm_flag_effective_v1 precedence, but does NOT coerce to bool.
+    """
+    _pname = str(param_name or "").strip()
+    _sentinel = object()
+
+    def _get_map_val(mobj: Any, key: str):
+        try:
+            if mobj is None or not key:
+                return _sentinel
+            getf = getattr(mobj, "get", None)
+            if not callable(getf):
+                return _sentinel
+            return getf(key, _sentinel)
+        except Exception:
+            return _sentinel
+
+    # 0) Streamlit session_state override
+    try:
+        _st0 = globals().get("st")
+        _ss0 = getattr(_st0, "session_state", None) if _st0 is not None else None
+        if _ss0 is not None and _pname:
+            for root in ("YUREEKA_LLM_FLAGS", "YUREEKA_FLAGS", "LLM_FLAGS"):
+                try:
+                    sub = _get_map_val(_ss0, root)
+                    if sub is _sentinel:
+                        continue
+                    raw = _get_map_val(sub, _pname)
+                    if raw is not _sentinel:
+                        return (raw, f"ui:{root}.{_pname}")
+                except Exception:
+                    continue
+    except Exception:
+        pass
+
+    # 1) Streamlit secrets override
+    try:
+        _st = globals().get("st")
+        _secrets = getattr(_st, "secrets", None) if _st is not None else None
+        if _secrets is not None and _pname:
+            for root in ("YUREEKA_LLM_FLAGS", "YUREEKA_FLAGS", "LLM_FLAGS", "general", "GENERAL"):
+                try:
+                    sub = _get_map_val(_secrets, root)
+                    if sub is _sentinel:
+                        continue
+                    raw = _get_map_val(sub, _pname)
+                    if raw is not _sentinel:
+                        return (raw, f"secrets:{root}.{_pname}")
+                except Exception:
+                    continue
+            try:
+                raw = _get_map_val(_secrets, _pname)
+                if raw is not _sentinel:
+                    return (raw, f"secrets:{_pname}")
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    # 2) Env override
+    try:
+        env_name = "YUREEKA_" + _pname
+        raw = os.environ.get(env_name)
+        if raw is not None:
+            return (raw, "env:" + env_name)
+    except Exception:
+        pass
+
+    # 3) Code default
+    try:
+        val = globals().get(_pname)
+        if val is not None:
+            return (val, "code:" + _pname)
+    except Exception:
+        pass
+    return (None, "default")
+
+
+def _yureeka_llm_param_int_effective_v1(param_name: str, default: int = 0) -> Tuple[int, str]:
+    raw, src = _yureeka_llm_param_effective_v1(param_name)
+    pv = _yureeka__parse_intish_v1(raw)
+    return (int(pv if pv is not None else int(default)), src)
+
+
+def _yureeka_llm_param_float_effective_v1(param_name: str, default: float = 0.0) -> Tuple[float, str]:
+    raw, src = _yureeka_llm_param_effective_v1(param_name)
+    pv = _yureeka__parse_floatish_v1(raw)
+    return (float(pv if pv is not None else float(default)), src)
+
+
+def _yureeka_llm_param_csv_list_effective_v1(param_name: str) -> Tuple[List[str], str]:
+    raw, src = _yureeka_llm_param_effective_v1(param_name)
+    return (_yureeka__parse_csv_list_v1(raw), src)
 
 
 
@@ -704,8 +880,10 @@ def _yureeka_llm_flags_snapshot_v1() -> dict:
         "LLM_BYPASS_CACHE",
         "LLM_CACHE_REPLAY_ONLY",
         "LLM_ALLOW_NETWORK_CALLS",
+        "LLM_SEED_MODE",
         "LLM_CACHE_PERSIST_TO_DISK",
         "LLM_ALLOW_NETWORK_CALLS",
+        "LLM_SEED_MODE",
         "ENABLE_LLM_SMOKE_TEST",
         "LLM_FORCE_REFRESH_ONCE",
     ):
@@ -2087,6 +2265,24 @@ def _yureeka_llm_cache_policy_summary_v1(stage: str = "") -> dict:
     out["network_allowed_effective"] = bool(_net_allowed_eff)
     out["cache_hit_only_effective"] = bool(not bool(_net_allowed_eff))
 
+    # NLP71: seed-mode budgeting knobs (surfaced for audit; enforcement-ready)
+    try:
+        _mc, _mc_src = _yureeka_llm_param_int_effective_v1("LLM_SEED_MAX_CALLS", default=int(globals().get("LLM_SEED_MAX_CALLS") or 0))
+        _mt, _mt_src = _yureeka_llm_param_int_effective_v1("LLM_SEED_MAX_TOKENS", default=int(globals().get("LLM_SEED_MAX_TOKENS") or 0))
+        _ml, _ml_src = _yureeka_llm_param_int_effective_v1("LLM_SEED_MAX_LATENCY_MS", default=int(globals().get("LLM_SEED_MAX_LATENCY_MS") or 0))
+        _wl, _wl_src = _yureeka_llm_param_csv_list_effective_v1("LLM_SEED_FEATURE_WHITELIST")
+        out["seed_budget_max_calls"] = int(_mc)
+        out["seed_budget_max_calls_source"] = str(_mc_src)[:80]
+        out["seed_budget_max_tokens"] = int(_mt)
+        out["seed_budget_max_tokens_source"] = str(_mt_src)[:80]
+        out["seed_budget_max_latency_ms"] = int(_ml)
+        out["seed_budget_max_latency_ms_source"] = str(_ml_src)[:80]
+        out["seed_feature_whitelist"] = list(_wl or [])
+        out["seed_feature_whitelist_source"] = str(_wl_src)[:80]
+    except Exception:
+        pass
+
+
     try:
         agg = globals().get("_YUREEKA_LLM_RUN_AGG_V1")
         if isinstance(agg, dict):
@@ -2559,6 +2755,10 @@ def _yureeka_llm_feature_manifest_v1(stage: str = "") -> dict:
                 "seed_mode_enabled": bool(pol.get("seed_mode_enabled")),
                 "network_allowed_effective": bool(pol.get("network_allowed_effective")),
                 "cache_hit_only_effective": bool(pol.get("cache_hit_only_effective")),
+                "seed_budget_max_calls": int(pol.get("seed_budget_max_calls") or 0),
+                "seed_budget_max_tokens": int(pol.get("seed_budget_max_tokens") or 0),
+                "seed_budget_max_latency_ms": int(pol.get("seed_budget_max_latency_ms") or 0),
+                "seed_feature_whitelist": list((pol.get("seed_feature_whitelist") or [])[:8]),
             }
     except Exception:
         _ro = bool(globals().get("LLM_CACHE_REPLAY_ONLY"))
@@ -2571,6 +2771,10 @@ def _yureeka_llm_feature_manifest_v1(stage: str = "") -> dict:
             "seed_mode_enabled": bool(_sm),
             "network_allowed_effective": bool(_net_allowed_eff),
             "cache_hit_only_effective": bool(not bool(_net_allowed_eff)),
+            "seed_budget_max_calls": int(globals().get("LLM_SEED_MAX_CALLS") or 0),
+            "seed_budget_max_tokens": int(globals().get("LLM_SEED_MAX_TOKENS") or 0),
+            "seed_budget_max_latency_ms": int(globals().get("LLM_SEED_MAX_LATENCY_MS") or 0),
+            "seed_feature_whitelist": _yureeka__parse_csv_list_v1(globals().get("LLM_SEED_FEATURE_WHITELIST") or ""),
         }
 
     # Effective flag snapshot (sources trimmed)
@@ -2585,6 +2789,7 @@ def _yureeka_llm_feature_manifest_v1(stage: str = "") -> dict:
         "LLM_BYPASS_CACHE",
         "LLM_CACHE_REPLAY_ONLY",
         "LLM_ALLOW_NETWORK_CALLS",
+        "LLM_SEED_MODE",
         "LLM_CACHE_PERSIST_TO_DISK",
         "LLM_FORCE_REFRESH_ONCE",
     ]
@@ -31233,6 +31438,30 @@ def main():
     )
 
     st.title("💹 Yureeka Market Intelligence")
+
+    # NLP71: UI safety banner for seed mode (no live calls unless explicitly enabled).
+    try:
+        _pol_ui = _yureeka_llm_cache_policy_summary_v1(stage="ui")
+        if isinstance(_pol_ui, dict) and bool(_pol_ui.get("seed_mode_enabled")):
+            _mc = int(_pol_ui.get("seed_budget_max_calls") or 0)
+            _mt = int(_pol_ui.get("seed_budget_max_tokens") or 0)
+            _ml = int(_pol_ui.get("seed_budget_max_latency_ms") or 0)
+            _wl = _pol_ui.get("seed_feature_whitelist") or []
+            _wl_s = ", ".join(list(_wl)[:6]) if isinstance(_wl, list) and _wl else ""
+            if bool(_pol_ui.get("network_allowed_effective")):
+                st.error(
+                    f"⚠️ LLM live network calls are ENABLED (seed mode ON). Budgets: max_calls={_mc}, max_tokens={_mt}, max_latency_ms={_ml}"
+                    + (f"; whitelist=[{_wl_s}]" if _wl_s else "")
+                )
+            else:
+                st.warning(
+                    f"⚠️ LLM seed mode is ENABLED. Live calls remain blocked unless 'Allow live LLM network calls' is also enabled and Replay-only is OFF. "
+                    f"Budgets: max_calls={_mc}, max_tokens={_mt}, max_latency_ms={_ml}"
+                    + (f"; whitelist=[{_wl_s}]" if _wl_s else "")
+                )
+    except Exception:
+        pass
+
     # Info section
     col_info, col_status = st.columns([3, 1])
     with col_info:
@@ -31889,7 +32118,10 @@ def main():
 
             st.markdown("**Diagnostics**")
             _llm_ui_checkbox("ENABLE_LLM_SMOKE_TEST", "Run LLM smoke test (connectivity)", default=False, help="Records non-sensitive status in the JSON debug.")
-            _llm_ui_checkbox("LLM_BYPASS_CACHE", "Bypass LLM cache (debug)", default=False, help="Forces live calls; turn OFF for cached/replayable runs.")
+            _llm_ui_checkbox("LLM_BYPASS_CACHE", "Bypass LLM cache (debug)", default=False, help="Forces cache-miss path; live call still requires Allow network + Seed mode and not Replay-only.")
+
+            _llm_ui_checkbox("LLM_ALLOW_NETWORK_CALLS", "Allow live LLM network calls (master gate)", default=False, help="OFF by default. Live calls still require Seed mode ON, and are blocked when Replay-only is enabled.")
+            _llm_ui_checkbox("LLM_SEED_MODE", "Seed mode (explicit consent for live calls)", default=False, help="OFF by default. Required in addition to Allow network calls. When ON, a warning banner is shown and budgets are surfaced in debug beacons.")
 
             _llm_ui_checkbox("LLM_CACHE_REPLAY_ONLY", "Replay-only (no live LLM calls)", default=False, help="When ON, the sidecar will use cache hits only; live calls are skipped and recorded as cache_replay_only.")
 
@@ -40602,6 +40834,72 @@ try:
                 "Patch hygiene: bump CODE_VERSION and register patch tracker entry."
             ],
             "risk": "Low: diagnostics-only unification + more conservative policy reporting; no winner/value changes; no new network behavior unless explicitly enabled."
+        }
+        if _existing_i is None:
+            PATCH_TRACKER_V1.insert(0, dict(_ent))
+        else:
+            PATCH_TRACKER_V1[_existing_i] = dict(_ent)
+        try:
+            _yureeka_patch_tracker_ensure_head_v1(_pid, {"patch_id": _pid})
+        except Exception:
+            pass
+except Exception:
+    pass
+
+# NLP71: patch tracker entry
+try:
+    if isinstance(PATCH_TRACKER_V1, list):
+        _pid = "NLP71"
+        _existing_i = None
+        for _i, _e in enumerate(list(PATCH_TRACKER_V1)):
+            if isinstance(_e, dict) and str(_e.get("patch_id") or "") == _pid:
+                _existing_i = _i
+                break
+        _ent = {
+            "patch_id": "NLP71",
+            "date": "2026-02-22",
+            "title": "NLP71 Seed-mode plumbing: explicit seed flag + UI banner + seed budgeting beacons",
+            "summary": [
+                "Add explicit LLM_SEED_MODE code default (OFF) and expose it in the Streamlit Advanced LLM flags UI.",
+                "Add seed-mode budgeting knobs (max_calls/max_tokens/max_latency_ms/feature_whitelist) and surface them in nlp56_llm_cache_policy_summary_v1.",
+                "Propagate seed budgeting fields into nlp58_llm_feature_manifest_v1 policy capsule for triad grepping.",
+                "Add a UI warning banner when seed mode is enabled (and an error banner if live network calls are effectively enabled).",
+                "Patch hygiene: bump CODE_VERSION and register patch tracker entry."
+            ],
+            "risk": "Low: plumbing + beacons + UI messaging only; defaults remain fully offline; no winner/value changes when flags are OFF."
+        }
+        if _existing_i is None:
+            PATCH_TRACKER_V1.insert(0, dict(_ent))
+        else:
+            PATCH_TRACKER_V1[_existing_i] = dict(_ent)
+        try:
+            _yureeka_patch_tracker_ensure_head_v1(_pid, {"patch_id": _pid})
+        except Exception:
+            pass
+except Exception:
+    pass
+
+
+
+# NLP72: patch tracker overlay (triad checkpoint; no pipeline behavior changes)
+try:
+    if isinstance(PATCH_TRACKER_V1, list):
+        _pid = "NLP72"
+        _existing_i = None
+        for _i, _e in enumerate(list(PATCH_TRACKER_V1)):
+            if isinstance(_e, dict) and str(_e.get("patch_id") or "") == _pid:
+                _existing_i = _i
+                break
+        _ent = {
+            "patch_id": "NLP72",
+            "date": "2026-02-22",
+            "title": "NLP72 Triad checkpoint: version bump + patch tracker head alignment (no behavior change)",
+            "summary": [
+                "Bump CODE_VERSION to NLP72 for triad checkpointing (no functional changes).",
+                "Register NLP72 patch tracker entry and ensure PATCH_TRACKER_V1 head alignment.",
+                "Preserve deterministic baseline (REFACTOR206) when NLP/LLM flags are OFF."
+            ],
+            "risk": "Very low: version/paperwork only; no pipeline logic changes."
         }
         if _existing_i is None:
             PATCH_TRACKER_V1.insert(0, dict(_ent))
