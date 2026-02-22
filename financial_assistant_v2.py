@@ -458,7 +458,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "NLP72"
+_YUREEKA_CODE_VERSION_LOCK = "NLP74"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 # REFACTOR206: Release Candidate freeze (no pipeline behavior change).
 YUREEKA_RELEASE_CANDIDATE_V1 = False
@@ -477,9 +477,9 @@ YUREEKA_REGRESSION_QUESTIONS_V1 = [
 # === LLM SIDECAR (LLM01) ======================================================
 # Hybrid NLP/LLM "sidecar assist" layer scaffolding.
 # Design rule: LLM assists; deterministic rules decide.
-# All feature flags are OFF by default to preserve REFACTOR206 behavior.
+# Feature flags are conservative by default; NLP73 enables evidence snippets in cache-hit-only mode (still no network by default).
 
-ENABLE_LLM_EVIDENCE_SNIPPETS = False
+ENABLE_LLM_EVIDENCE_SNIPPETS = True
 ENABLE_LLM_SOURCE_CLUSTERING = False
 ENABLE_LLM_QUERY_FRAME = False
 ENABLE_LLM_QUERY_STRUCTURE_FALLBACK = False
@@ -6264,6 +6264,7 @@ def _llm01_attach_evidence_snippets_to_pmc_v1(
     cache_hits = 0
 
     llm_calls = 0
+    llm_rank_attempts = 0  # attempted LLM rank probes (cache hit or miss; may be no-op)
     llm_accepts = 0
     llm_agrees = 0
     llm_rejects = 0
@@ -6448,6 +6449,7 @@ def _llm01_attach_evidence_snippets_to_pmc_v1(
             except Exception:
                 pass
         else:
+            llm_rank_attempts += 1
             try:
                 llm_i, llm_conf, llm_diag = _llm01_llm_rank_windows_v1(
                     windows=windows,
@@ -6608,8 +6610,9 @@ def _llm01_attach_evidence_snippets_to_pmc_v1(
                         # Provide a bounded reason string even when falling back to deterministic.
                         "llm_reason": str((llm_diag or {}).get("reason") or "")[:120],
                         "llm_model": str((llm_diag or {}).get("model") or "")[:80],
-                        "llm_cache_key": str((llm_diag or {}).get("cache_key") or "") if (method == "llm_ranked") else "",
-                        "llm_cache_hit": bool((llm_diag or {}).get("cache_hit")) if (method == "llm_ranked") else False,
+                        "llm_cache_key": str((llm_diag or {}).get("cache_key") or "")[:120],
+                        "llm_cache_key_fallback": str((llm_diag or {}).get("cache_key_fallback") or "")[:120],
+                        "llm_cache_hit": bool((llm_diag or {}).get("cache_hit")),
                     })
                 metric["provenance"] = prov
         except Exception:
@@ -6643,6 +6646,7 @@ def _llm01_attach_evidence_snippets_to_pmc_v1(
                     "cache_hits": int(cache_hits),
                     "flag_enable_llm": bool(_yureeka_llm_flag_bool_v1("ENABLE_LLM_EVIDENCE_SNIPPETS")),
                     "llm_calls": int(llm_calls),
+                    "llm_rank_attempts": int(llm_rank_attempts),
                     "llm_accepts": int(llm_accepts),
                     "llm_agrees": int(llm_agrees),
                     "llm_rejects": int(llm_rejects),
@@ -6686,6 +6690,7 @@ def _llm01_attach_evidence_snippets_to_pmc_v1(
                 "skipped": int(skipped),
                 "cache_hits": int(cache_hits),
                 "llm_calls": int(llm_calls),
+                "llm_rank_attempts": int(llm_rank_attempts),
                 "llm_accepts": int(llm_accepts),
                 "llm_agrees": int(llm_agrees),
                 "llm_rejects": int(llm_rejects),
@@ -6716,6 +6721,7 @@ def _llm01_attach_evidence_snippets_to_pmc_v1(
         "skipped": int(skipped),
         "cache_hits": int(cache_hits),
         "llm_calls": int(llm_calls),
+        "llm_rank_attempts": int(llm_rank_attempts),
         "llm_accepts": int(llm_accepts),
         "llm_agrees": int(llm_agrees),
         "llm_rejects": int(llm_rejects),
@@ -32032,7 +32038,7 @@ def main():
 
             st.markdown("---")
             st.subheader("🧠 LLM Sidecar (experimental)")
-            st.caption("LLM assists; deterministic rules decide. Defaults OFF to preserve REFACTOR206 behavior.")
+            st.caption("LLM assists; deterministic rules decide. Defaults conservative; evidence snippet ranking is ON (cache-hit-only) unless you switch it off.")
 
             try:
                 _ss = st.session_state
@@ -32053,8 +32059,8 @@ def main():
             _llm_ui_checkbox(
                 "ENABLE_LLM_EVIDENCE_SNIPPETS",
                 "Enable LLM evidence snippet ranking (assist only)",
-                default=False,
-                help="When ON, the sidecar may rank candidate evidence snippets. Metric winners/values remain deterministic."
+                default=True,
+                help="When ON, the sidecar may rank candidate evidence snippets using cache hits only unless live calls are explicitly enabled (Allow network + Seed mode). Metric winners/values remain deterministic."
             )
 
 
@@ -40900,6 +40906,39 @@ try:
                 "Preserve deterministic baseline (REFACTOR206) when NLP/LLM flags are OFF."
             ],
             "risk": "Very low: version/paperwork only; no pipeline logic changes."
+        }
+        if _existing_i is None:
+            PATCH_TRACKER_V1.insert(0, dict(_ent))
+        else:
+            PATCH_TRACKER_V1[_existing_i] = dict(_ent)
+        try:
+            _yureeka_patch_tracker_ensure_head_v1(_pid, {"patch_id": _pid})
+        except Exception:
+            pass
+except Exception:
+    pass
+
+
+# NLP73: patch tracker entry
+try:
+    if isinstance(PATCH_TRACKER_V1, list):
+        _pid = "NLP73"
+        _existing_i = None
+        for _i, _e in enumerate(list(PATCH_TRACKER_V1)):
+            if isinstance(_e, dict) and str(_e.get("patch_id") or "") == _pid:
+                _existing_i = _i
+                break
+        _ent = {
+            "patch_id": "NLP74",
+            "date": "2026-02-22",
+            "title": "NLP73 Enable LLM01 evidence snippets in cache-hit-only mode by default (no network) + cache-key provenance beacons",
+            "summary": [
+                "Enable ENABLE_LLM_EVIDENCE_SNIPPETS by default while keeping network_allowed_effective=false (LLM_ALLOW_NETWORK_CALLS=false and LLM_SEED_MODE=false). This activates cache-first LLM01 tie-set ranking probes without introducing any live calls.",
+                "Expose llm_cache_key/llm_cache_key_fallback in per-metric provenance.evidence_snippet_v1 even when the LLM result is not applied (cache miss / network disabled), improving seed-mode targeting and replay diagnostics.",
+                "Add llm_rank_attempts counters to llm01_evidence_snippets_v1 and nlp68_llm01_evidence_snippets_rollup_v1 for triad grepping (attempts can be >0 with llm_calls==0 in offline cache-hit-only runs).",
+                "Preserve deterministic selection rules: metric winners/values remain unchanged; evidence snippets may change only when an accepted cached LLM ranking is available and only within the deterministic tie-set gate."
+            ],
+            "risk": "Low: offline-by-default; cache-first diagnostics only; no winner/value drift when assist flags are OFF."
         }
         if _existing_i is None:
             PATCH_TRACKER_V1.insert(0, dict(_ent))
