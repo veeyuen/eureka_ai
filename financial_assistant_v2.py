@@ -458,7 +458,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "NLP76"
+_YUREEKA_CODE_VERSION_LOCK = "NLP77"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 # REFACTOR206: Release Candidate freeze (no pipeline behavior change).
 YUREEKA_RELEASE_CANDIDATE_V1 = False
@@ -5950,6 +5950,7 @@ def _llm01_llm_rank_windows_v1(
     unit_tokens: List[str],
     url: str,
     question: str,
+    seed_override: bool = False,
     out_debug: Optional[dict] = None,
 ) -> Tuple[Optional[int], Optional[float], dict]:
     """Return (best_index, confidence, diag). Uses cache; calls LLM only if needed."""
@@ -5965,13 +5966,16 @@ def _llm01_llm_rank_windows_v1(
         diag["model"] = model
 
     _flag_on, _flag_src = _yureeka_llm_flag_effective_v1("ENABLE_LLM_EVIDENCE_SNIPPETS")
-    if not bool(_flag_on):
+    if (not bool(_flag_on)) and (not bool(seed_override)):
         diag["reason"] = "flag_off"
         try:
             diag["flag_source"] = str(_flag_src)[:80]
         except Exception:
             pass
         return (None, None, diag)
+    if bool(seed_override) and (not bool(_flag_on)):
+        # Seed override: allow cache fill / one-shot live call without enabling the feature globally.
+        diag["seed_override"] = True
 
     # Prepare minimal prompt payload
     safe_windows = []
@@ -6636,6 +6640,7 @@ def _llm01_attach_evidence_snippets_to_pmc_v1(
                     unit_tokens=list(unit_tokens),
                     url=str(url or ""),
                     question=str(question or ""),
+                    seed_override=bool(_seed_only),
                     out_debug=out_debug,
                 )
             except Exception as e:
@@ -7232,6 +7237,19 @@ except Exception:
     },
 
 
+
+
+# NLP77: patch tracker overlay (NLP stream)
+try:
+    if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "NLP77" for e in PATCH_TRACKER_V1):
+        PATCH_TRACKER_V1.insert(0, {
+            "patch_id": "NLP77",
+            "scope": "nlp_llm_endstate",
+            "summary": "Seed override propagates into LLM01 evidence-rank: seed-only cache fill can bypass ENABLE_LLM_EVIDENCE_SNIPPETS flag while preserving deterministic winners/values.",
+            "risk": "low",
+        })
+except Exception:
+    pass
 
 # REFACTOR194: patch tracker overlay (avoid touching the compressed canonical blob)
 try:
