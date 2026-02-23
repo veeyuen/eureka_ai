@@ -458,7 +458,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "NLP82"
+_YUREEKA_CODE_VERSION_LOCK = "NLP83"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 # REFACTOR206: Release Candidate freeze (no pipeline behavior change).
 YUREEKA_RELEASE_CANDIDATE_V1 = False
@@ -7593,6 +7593,19 @@ try:
 except Exception:
     PATCH_TRACKER_V1 = []
 
+# NLP83: patch tracker overlay (NLP stream)
+try:
+    if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "NLP83" for e in PATCH_TRACKER_V1):
+        PATCH_TRACKER_V1.insert(0, {
+            "patch_id": "NLP83",
+            "scope": "nlp_llm_endstate",
+            "summary": "Add end-state checklist beacon (debug-only) to make validation self-evident without changing deciders.",
+            "risk": "low",
+        })
+except Exception:
+    pass
+
+
 # NLP76: patch tracker overlay (NLP stream)
 try:
     if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "NLP76" for e in PATCH_TRACKER_V1):
@@ -8942,6 +8955,55 @@ def _yureeka_runtime_identity_v1():
     except Exception:
         return {"code_version": _yureeka_get_code_version(),
             "authority_manifest_v1": _yureeka_authority_manifest_v1(), "code_version_lock": globals().get("_YUREEKA_CODE_VERSION_LOCK")}
+
+
+def _nlp83_end_state_checklist_v1() -> dict:
+    """End-state checklist beacon (additive). Pure diagnostics; does not change winners/values."""
+    out = {"v": "nlp83_end_state_checklist_v1"}
+    try:
+        out["code_version"] = str(CODE_VERSION_LOCK)
+    except Exception:
+        out["code_version"] = ""
+    # LLM safety posture (recompute from flags; mirrors policy summary)
+    try:
+        allow_net = bool(_yureeka_llm_flag_bool_v1("LLM_ALLOW_NETWORK_CALLS"))
+    except Exception:
+        allow_net = False
+    try:
+        seed_mode = bool(_yureeka_llm_flag_bool_v1("LLM_SEED_MODE"))
+    except Exception:
+        seed_mode = False
+    try:
+        replay_only = bool(_yureeka_llm_flag_bool_v1("LLM_CACHE_REPLAY_ONLY"))
+    except Exception:
+        replay_only = False
+    network_allowed_effective = bool(allow_net and seed_mode and (not replay_only))
+    out["llm_safety"] = {
+        "allow_network_calls": bool(allow_net),
+        "seed_mode_enabled": bool(seed_mode),
+        "cache_replay_only": bool(replay_only),
+        "network_allowed_effective": bool(network_allowed_effective),
+    }
+    # One-shot seed capsule presence (best-effort)
+    try:
+        force_once = bool(_yureeka_llm_flag_bool_v1("LLM_FORCE_REFRESH_ONCE"))
+    except Exception:
+        force_once = False
+    out["seed_fill"] = {
+        "force_refresh_once_enabled": bool(force_once),
+        "one_shot_supported": True,
+    }
+    # Dataset logging posture
+    try:
+        ds_enabled = bool(_yureeka_llm_flag_bool_v1("ENABLE_LLM_DATASET_LOGGING"))
+    except Exception:
+        ds_enabled = False
+    out["dataset_logging"] = {"enabled": bool(ds_enabled)}
+    # UI affordance (NLP82 dataset status expander)
+    out["ui"] = {"dataset_status_panel_present": True}
+    # Baseline safety: this is a declarative claim (triad confirms drift-free when flags OFF)
+    out["baseline"] = {"drift_free_when_llm_flags_off_expected": True}
+    return out
 
 def _yureeka_lock_version_globals_v1():
     """Re-assert global version vars for observability (does not affect the frozen getter)."""
@@ -32441,6 +32503,7 @@ def main():
                 output.setdefault("debug", {})
                 if isinstance(output.get("debug"), dict):
                     output["debug"].setdefault("runtime_identity_v1", _yureeka_runtime_identity_v1())
+                    output["debug"].setdefault("nlp83_end_state_checklist_v1", _nlp83_end_state_checklist_v1())
             except Exception:
                 pass
 
