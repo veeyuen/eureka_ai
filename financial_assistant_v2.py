@@ -458,7 +458,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "NLP89"
+_YUREEKA_CODE_VERSION_LOCK = "NLP90"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 # REFACTOR206: Release Candidate freeze (no pipeline behavior change).
 YUREEKA_RELEASE_CANDIDATE_V1 = False
@@ -879,6 +879,51 @@ def _yureeka_llm_profile_override_v1(name: str):
         return None
     return None
 
+
+
+def _yureeka_ui_settings_snapshot_v1() -> dict:
+    """NLP90: Capture UI settings mode (production/simplified) for audit/debug.
+    Purely diagnostic; never affects deciders or network policy.
+    """
+    out = {"v": "nlp90_ui_settings_snapshot_v1"}
+    try:
+        _ss = getattr(st, "session_state", None)
+        ui_flags = None
+        try:
+            ui_flags = (_ss.get("YUREEKA_UI_FLAGS") if isinstance(_ss, dict) else None)
+        except Exception:
+            ui_flags = None
+        if isinstance(ui_flags, dict):
+            out["production_mode"] = bool(ui_flags.get("PRODUCTION_MODE"))
+            out["show_advanced"] = bool(ui_flags.get("SHOW_ADVANCED"))
+        else:
+            out["production_mode"] = None
+            out["show_advanced"] = None
+    except Exception:
+        out["production_mode"] = None
+        out["show_advanced"] = None
+
+    try:
+        r = _yureeka_llm_profile_resolved_v1()
+        if isinstance(r, dict):
+            out["llm_profile_effective"] = r.get("profile_effective")
+            out["llm_features_effective"] = r.get("features_effective")
+            out["profile_applies"] = bool(r.get("applies"))
+    except Exception:
+        pass
+
+    try:
+        pol = _yureeka_llm_cache_policy_summary_v1(stage="ui_settings_snapshot")
+        if isinstance(pol, dict):
+            out["policy"] = {
+                "network_allowed_effective": pol.get("network_allowed_effective"),
+                "cache_hit_only_effective": pol.get("cache_hit_only_effective"),
+                "replay_only": pol.get("replay_only"),
+                "seed_mode": pol.get("seed_mode"),
+            }
+    except Exception:
+        pass
+    return out
 
 def _yureeka_llm_param_effective_v1(param_name: str) -> Tuple[Any, str]:
     """Resolve an LLM parameter value (any type) with UI/secrets/env override.
@@ -8340,6 +8385,18 @@ try:
         })
 except Exception:
     pass
+# NLP90: patch tracker overlay (NLP stream)
+try:
+    if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "NLP90" for e in PATCH_TRACKER_V1):
+        PATCH_TRACKER_V1.insert(0, {
+            "patch_id": "NLP90",
+            "scope": "nlp_llm_endstate",
+            "summary": "Production UI simplified mode: collapse legacy LLM flags behind profile/features + settings guide; add UI settings snapshot beacon (no decider changes).",
+            "risk": "low",
+        })
+except Exception:
+    pass
+
 
 
 
@@ -9802,7 +9859,7 @@ def _nlp85_end_state_declared_v1(checklist: dict = None) -> dict:
     """End-state declaration beacon for the NLP/LLM stream (NLP85 base; NLP88 narrative polish).
     Pure diagnostics + UI-friendly summary. Never changes winners/values/snippets.
     """
-    out = {"v": "nlp85_end_state_declared_v1", "declared_end_state_version": "NLP89", "declared_end_state_base_version": "NLP85"}
+    out = {"v": "nlp85_end_state_declared_v1", "declared_end_state_version": "NLP90", "declared_end_state_base_version": "NLP85"}
     try:
         out["code_version"] = str(CODE_VERSION_LOCK)
     except Exception:
@@ -33380,6 +33437,7 @@ def main():
                     output["debug"].setdefault("runtime_identity_v1", _yureeka_runtime_identity_v1())
                     output["debug"].setdefault("nlp83_end_state_checklist_v1", _nlp83_end_state_checklist_v1())
                     output["debug"].setdefault("nlp89_llm_profile_resolved_v1", _yureeka_llm_profile_resolved_v1())
+                    output["debug"].setdefault("nlp90_ui_settings_snapshot_v1", _yureeka_ui_settings_snapshot_v1())
                     output["debug"].setdefault("nlp85_end_state_declared_v1", _nlp85_end_state_declared_v1(output["debug"].get("nlp83_end_state_checklist_v1")))
             except Exception:
                 pass
@@ -33730,46 +33788,110 @@ def main():
                 except Exception:
                     pass
 
-            with st.expander("Advanced LLM flags", expanded=False):
+            # NLP90: Production UI simplified mode (reduce flag surface in production)
+            # - In simplified mode, prefer LLM_PROFILE + LLM_FEATURES and hide legacy per-flag toggles.
+            # - Advanced flags remain available behind an explicit "Show advanced settings" toggle.
+            try:
+                _ss = st.session_state
+                if not isinstance(_ss.get("YUREEKA_UI_FLAGS"), dict):
+                    _ss["YUREEKA_UI_FLAGS"] = {}
+                _ui_flags = _ss.get("YUREEKA_UI_FLAGS") or {}
+            except Exception:
+                _ui_flags = {}
 
+            def _ui__env_bool_v1(val: str):
+                try:
+                    s = str(val or "").strip().lower()
+                    return s in ("1", "true", "yes", "y", "on")
+                except Exception:
+                    return None
 
-                st.caption("LLM01 evidence assist policy (controls acceptance, not metric winners).")
-                _llm_ui_checkbox(
-                    "LLM01_EVIDENCE_FORCE_CALL",
-                    "Force LLM rank call (debug only)",
-                    default=False,
-                    help="When ON, the LLM rank call runs even without a deterministic tie-set. Proposal is still accepted only on ties unless confidence-gated agreement is detected."
+            def _ui__default_bool_v1(key: str, default: bool = False) -> bool:
+                # Secrets: [YUREEKA_UI_FLAGS] {PRODUCTION_MODE=true, SHOW_ADVANCED=false}
+                try:
+                    sec = st.secrets.get("YUREEKA_UI_FLAGS") if hasattr(st, "secrets") else None
+                    if isinstance(sec, dict) and (key in sec):
+                        return bool(sec.get(key))
+                except Exception:
+                    pass
+                # Env: YUREEKA_UI_<KEY>
+                try:
+                    v = os.environ.get(f"YUREEKA_UI_{str(key or '').strip()}", None)
+                    b = _ui__env_bool_v1(v) if (v is not None) else None
+                    if b is not None:
+                        return bool(b)
+                except Exception:
+                    pass
+                return bool(default)
+
+            try:
+                _prod_default = _ui__default_bool_v1("PRODUCTION_MODE", default=False)
+                _prod_cur = bool(_ui_flags.get("PRODUCTION_MODE", _prod_default))
+                _ui_prod_mode = st.checkbox(
+                    "Production UI (simplified settings)",
+                    value=bool(_prod_cur),
+                    key="ui_uiflag_PRODUCTION_MODE",
+                    help="Recommended for production: use LLM_PROFILE + LLM_FEATURES. Hides legacy per-flag toggles unless you enable 'Show advanced settings'.",
                 )
-                _llm_ui_slider_float(
-                    "LLM01_EVIDENCE_CONFIDENCE_THRESHOLD",
-                    "LLM01 confidence threshold (accept ≥)",
-                    min_v=0.0,
-                    max_v=1.0,
-                    step_v=0.05,
-                    default_v=float(globals().get("LLM01_EVIDENCE_CONFIDENCE_THRESHOLD") or 0.75),
-                    help="Higher = more conservative acceptance of the LLM proposal."
-                )
-                _llm_ui_slider_float(
-                    "LLM01_EVIDENCE_SCORE_TIE_DELTA",
-                    "LLM01 tie delta (defines ambiguity set)",
-                    min_v=0.05,
-                    max_v=12.0,
-                    step_v=0.25,
-                    default_v=float(globals().get("LLM01_EVIDENCE_SCORE_TIE_DELTA") or 2.5),
-                    help="Larger = more windows treated as a tie-set; makes it easier to see LLM assist in action without changing metric values."
-                )
+                _ui_flags["PRODUCTION_MODE"] = bool(_ui_prod_mode)
+            except Exception:
+                _ui_prod_mode = bool(_ui_flags.get("PRODUCTION_MODE", False))
 
-                _llm_ui_checkbox("ENABLE_LLM_SOURCE_CLUSTERING", "Enable LLM source clustering", default=False, help="Experimental.")
-                _llm_ui_checkbox("ENABLE_LLM_QUERY_FRAME", "Enable LLM query framing", default=False, help="Experimental; may change search terms.")
-                _llm_ui_checkbox("ENABLE_NLP_QUERY_BOOST", "Enable deterministic NLP query boosting", default=False, help="Deterministic: appends stable keywords from query_frame (no LLM call). May change retrieval terms.")
-                _llm_ui_checkbox("ENABLE_LLM_QUERY_STRUCTURE_FALLBACK", "Enable LLM query-structure fallback (legacy)", default=False, help="OFF by default. When ON, low-confidence query structure may be refined by the sidecar (confidence-gated); may change retrieval terms.")
-                _llm_ui_checkbox("ENABLE_LLM_ANOMALY_FLAGS", "Enable LLM anomaly flags", default=False, help="Experimental.")
-                _llm_ui_checkbox("ENABLE_LLM_DATASET_LOGGING", "Enable LLM dataset logging", default=False, help="Experimental; may write small local logs.")
-                _llm_ui_checkbox("ENABLE_LLM_EVOLUTION_SUMMARY", "Enable LLM evolution summary", default=False, help="Audit-only: Writes a narrative summary of Evolution diffs. Cache-first/no-op by default; never affects winners.",
-                disabled=bool(isinstance(_prof_dbg, dict) and bool(_prof_dbg.get("applies")) and isinstance((_prof_dbg.get("derived_flags") or {}), dict) and "ENABLE_LLM_EVOLUTION_SUMMARY" in (_prof_dbg.get("derived_flags") or {})),
-                forced_value=(_prof_dbg.get("derived_flags") or {}).get("ENABLE_LLM_EVOLUTION_SUMMARY") if isinstance(_prof_dbg, dict) else None)
+            try:
+                _adv_default = _ui__default_bool_v1("SHOW_ADVANCED", default=False)
+                _adv_cur = bool(_ui_flags.get("SHOW_ADVANCED", _adv_default))
+                _ui_show_advanced = st.checkbox(
+                    "Show advanced settings",
+                    value=bool(_adv_cur),
+                    key="ui_uiflag_SHOW_ADVANCED",
+                    disabled=not bool(_ui_prod_mode),
+                    help="Reveal legacy per-flag toggles and debug controls. Not recommended in production day-to-day.",
+                )
+                _ui_flags["SHOW_ADVANCED"] = bool(_ui_show_advanced)
+            except Exception:
+                _ui_show_advanced = bool(_ui_flags.get("SHOW_ADVANCED", False))
 
-                # NLP82: local dataset/events status panel (UI-only)
+            _ui_simplified = bool(_ui_prod_mode) and (not bool(_ui_show_advanced))
+
+            with st.expander("LLM settings guide", expanded=bool(_ui_simplified)):
+                st.markdown(
+                    "- **Production default:** set **LLM_PROFILE = REPLAY** (cache-only) and choose **LLM_FEATURES**.\n"
+                    "- **To seed once:** temporarily set **LLM_PROFILE = SEED_ONCE**, run once, then switch back to **REPLAY**.\n"
+                    "- **OFF** disables the sidecar.\n"
+                    "- **LIVE** allows network (still audit-only; never changes winners/values).\n"
+                    "Advanced per-flag toggles exist for debugging, but profiles/features are the intended production interface."
+                )
+                try:
+                    _pol = _yureeka_llm_cache_policy_summary_v1(stage="ui_guide")
+                    if isinstance(_pol, dict):
+                        st.caption(
+                            f"Effective posture: network_allowed_effective={_pol.get('network_allowed_effective')} | "
+                            f"cache_hit_only_effective={_pol.get('cache_hit_only_effective')} | "
+                            f"replay_only={_pol.get('replay_only')} | seed_mode={_pol.get('seed_mode')}"
+                        )
+                except Exception:
+                    pass
+
+            if _ui_simplified:
+                try:
+                    _pol = _yureeka_llm_cache_policy_summary_v1(stage="ui_simplified")
+                    _prof_dbg2 = _yureeka_llm_profile_resolved_v1()
+                    st.info(
+                        f"Simplified mode active. Profile={str((_prof_dbg2 or {}).get('profile_effective') or 'LEGACY')} | "
+                        f"Features={str((_prof_dbg2 or {}).get('features_effective') or 'LEGACY')}"
+                    )
+                    _mini = {}
+                    if isinstance(_pol, dict):
+                        for _k in ["network_allowed_effective", "cache_hit_only_effective", "replay_only", "seed_mode", "attempts", "cache_hits", "network_calls_made", "network_calls_blocked"]:
+                            if _k in _pol:
+                                _mini[_k] = _pol.get(_k)
+                    if _mini:
+                        st.json(_mini, expanded=False)
+                except Exception:
+                    pass
+
+            # Keep dataset/events status visible even in simplified mode
+            if _ui_simplified:
                 with st.expander("LLM dataset status (local)", expanded=False):
                     try:
                         _ds_status = _dataset_dir_status_v1(".yureeka_llm_dataset")
@@ -33790,26 +33912,88 @@ def main():
                     except Exception:
                         st.write("Dataset status unavailable.")
 
+            if (not bool(_ui_simplified)):
+                with st.expander("Advanced LLM flags", expanded=False):
 
-            st.markdown("**Diagnostics**")
-            _llm_ui_checkbox("ENABLE_LLM_SMOKE_TEST", "Run LLM smoke test (connectivity)", default=False, help="Records non-sensitive status in the JSON debug.")
-            _llm_ui_checkbox("LLM_BYPASS_CACHE", "Bypass LLM cache (debug)", default=False, help="Forces cache-miss path; live call still requires Allow network + Seed mode and not Replay-only.")
 
-            _llm_ui_checkbox("LLM_ALLOW_NETWORK_CALLS", "Allow live LLM network calls (master gate)", default=False, help="OFF by default. Live calls still require Seed mode ON, and are blocked when Replay-only is enabled.",
-            disabled=bool(isinstance(_prof_dbg, dict) and bool(_prof_dbg.get("applies")) and isinstance((_prof_dbg.get("derived_flags") or {}), dict) and "LLM_ALLOW_NETWORK_CALLS" in (_prof_dbg.get("derived_flags") or {})),
-            forced_value=(_prof_dbg.get("derived_flags") or {}).get("LLM_ALLOW_NETWORK_CALLS") if isinstance(_prof_dbg, dict) else None
-)
-            _llm_ui_checkbox("LLM_SEED_MODE", "Seed mode (explicit consent for live calls)", default=False, help="OFF by default. Required in addition to Allow network calls. When ON, a warning banner is shown and budgets are surfaced in debug beacons.",
-            disabled=bool(isinstance(_prof_dbg, dict) and bool(_prof_dbg.get("applies")) and isinstance((_prof_dbg.get("derived_flags") or {}), dict) and "LLM_SEED_MODE" in (_prof_dbg.get("derived_flags") or {})),
-            forced_value=(_prof_dbg.get("derived_flags") or {}).get("LLM_SEED_MODE") if isinstance(_prof_dbg, dict) else None
-)
+                    st.caption("LLM01 evidence assist policy (controls acceptance, not metric winners).")
+                    _llm_ui_checkbox(
+                        "LLM01_EVIDENCE_FORCE_CALL",
+                        "Force LLM rank call (debug only)",
+                        default=False,
+                        help="When ON, the LLM rank call runs even without a deterministic tie-set. Proposal is still accepted only on ties unless confidence-gated agreement is detected."
+                    )
+                    _llm_ui_slider_float(
+                        "LLM01_EVIDENCE_CONFIDENCE_THRESHOLD",
+                        "LLM01 confidence threshold (accept ≥)",
+                        min_v=0.0,
+                        max_v=1.0,
+                        step_v=0.05,
+                        default_v=float(globals().get("LLM01_EVIDENCE_CONFIDENCE_THRESHOLD") or 0.75),
+                        help="Higher = more conservative acceptance of the LLM proposal."
+                    )
+                    _llm_ui_slider_float(
+                        "LLM01_EVIDENCE_SCORE_TIE_DELTA",
+                        "LLM01 tie delta (defines ambiguity set)",
+                        min_v=0.05,
+                        max_v=12.0,
+                        step_v=0.25,
+                        default_v=float(globals().get("LLM01_EVIDENCE_SCORE_TIE_DELTA") or 2.5),
+                        help="Larger = more windows treated as a tie-set; makes it easier to see LLM assist in action without changing metric values."
+                    )
 
-            _llm_ui_checkbox("LLM_CACHE_REPLAY_ONLY", "Replay-only (no live LLM calls)", default=False, help="When ON, the sidecar will use cache hits only; live calls are skipped and recorded as cache_replay_only.",
-            disabled=bool(isinstance(_prof_dbg, dict) and bool(_prof_dbg.get("applies")) and isinstance((_prof_dbg.get("derived_flags") or {}), dict) and "LLM_CACHE_REPLAY_ONLY" in (_prof_dbg.get("derived_flags") or {})),
-            forced_value=(_prof_dbg.get("derived_flags") or {}).get("LLM_CACHE_REPLAY_ONLY") if isinstance(_prof_dbg, dict) else None
-)
+                    _llm_ui_checkbox("ENABLE_LLM_SOURCE_CLUSTERING", "Enable LLM source clustering", default=False, help="Experimental.")
+                    _llm_ui_checkbox("ENABLE_LLM_QUERY_FRAME", "Enable LLM query framing", default=False, help="Experimental; may change search terms.")
+                    _llm_ui_checkbox("ENABLE_NLP_QUERY_BOOST", "Enable deterministic NLP query boosting", default=False, help="Deterministic: appends stable keywords from query_frame (no LLM call). May change retrieval terms.")
+                    _llm_ui_checkbox("ENABLE_LLM_QUERY_STRUCTURE_FALLBACK", "Enable LLM query-structure fallback (legacy)", default=False, help="OFF by default. When ON, low-confidence query structure may be refined by the sidecar (confidence-gated); may change retrieval terms.")
+                    _llm_ui_checkbox("ENABLE_LLM_ANOMALY_FLAGS", "Enable LLM anomaly flags", default=False, help="Experimental.")
+                    _llm_ui_checkbox("ENABLE_LLM_DATASET_LOGGING", "Enable LLM dataset logging", default=False, help="Experimental; may write small local logs.")
+                    _llm_ui_checkbox("ENABLE_LLM_EVOLUTION_SUMMARY", "Enable LLM evolution summary", default=False, help="Audit-only: Writes a narrative summary of Evolution diffs. Cache-first/no-op by default; never affects winners.",
+                    disabled=bool(isinstance(_prof_dbg, dict) and bool(_prof_dbg.get("applies")) and isinstance((_prof_dbg.get("derived_flags") or {}), dict) and "ENABLE_LLM_EVOLUTION_SUMMARY" in (_prof_dbg.get("derived_flags") or {})),
+                    forced_value=(_prof_dbg.get("derived_flags") or {}).get("ENABLE_LLM_EVOLUTION_SUMMARY") if isinstance(_prof_dbg, dict) else None)
 
-        # ✅ REFACTOR99: Evolution baseline MUST be an Analysis payload (exclude evolution reports) and default to latest.
+                    # NLP82: local dataset/events status panel (UI-only)
+                    with st.expander("LLM dataset status (local)", expanded=False):
+                        try:
+                            _ds_status = _dataset_dir_status_v1(".yureeka_llm_dataset")
+                            st.caption("Best-effort local scan of dataset/events JSONL logs (no network).")
+                            try:
+                                _es = _nlp85_end_state_declared_v1()
+                                _label = f"NLP/LLM end-state: {str((_es or {}).get('declared_end_state_version') or 'NLP85')}"
+                                if bool((_es or {}).get("hard_validated")):
+                                    st.success(f"✅ {_label} (hard-validated)")
+                                else:
+                                    st.warning(f"⚠️ {_label} (declared; see diagnostics)")
+                                _w = (_es or {}).get("warnings")
+                                if isinstance(_w, list) and _w:
+                                    st.caption("Warnings: " + ", ".join([str(x) for x in _w][:6]))
+                            except Exception:
+                                pass
+                            st.json(_ds_status, expanded=False)
+                        except Exception:
+                            st.write("Dataset status unavailable.")
+
+
+            if (not bool(_ui_simplified)):
+                st.markdown("**Diagnostics**")
+                _llm_ui_checkbox("ENABLE_LLM_SMOKE_TEST", "Run LLM smoke test (connectivity)", default=False, help="Records non-sensitive status in the JSON debug.")
+                _llm_ui_checkbox("LLM_BYPASS_CACHE", "Bypass LLM cache (debug)", default=False, help="Forces cache-miss path; live call still requires Allow network + Seed mode and not Replay-only.")
+
+                _llm_ui_checkbox("LLM_ALLOW_NETWORK_CALLS", "Allow live LLM network calls (master gate)", default=False, help="OFF by default. Live calls still require Seed mode ON, and are blocked when Replay-only is enabled.",
+                disabled=bool(isinstance(_prof_dbg, dict) and bool(_prof_dbg.get("applies")) and isinstance((_prof_dbg.get("derived_flags") or {}), dict) and "LLM_ALLOW_NETWORK_CALLS" in (_prof_dbg.get("derived_flags") or {})),
+                forced_value=(_prof_dbg.get("derived_flags") or {}).get("LLM_ALLOW_NETWORK_CALLS") if isinstance(_prof_dbg, dict) else None
+    )
+                _llm_ui_checkbox("LLM_SEED_MODE", "Seed mode (explicit consent for live calls)", default=False, help="OFF by default. Required in addition to Allow network calls. When ON, a warning banner is shown and budgets are surfaced in debug beacons.",
+                disabled=bool(isinstance(_prof_dbg, dict) and bool(_prof_dbg.get("applies")) and isinstance((_prof_dbg.get("derived_flags") or {}), dict) and "LLM_SEED_MODE" in (_prof_dbg.get("derived_flags") or {})),
+                forced_value=(_prof_dbg.get("derived_flags") or {}).get("LLM_SEED_MODE") if isinstance(_prof_dbg, dict) else None
+    )
+
+                _llm_ui_checkbox("LLM_CACHE_REPLAY_ONLY", "Replay-only (no live LLM calls)", default=False, help="When ON, the sidecar will use cache hits only; live calls are skipped and recorded as cache_replay_only.",
+                disabled=bool(isinstance(_prof_dbg, dict) and bool(_prof_dbg.get("applies")) and isinstance((_prof_dbg.get("derived_flags") or {}), dict) and "LLM_CACHE_REPLAY_ONLY" in (_prof_dbg.get("derived_flags") or {})),
+                forced_value=(_prof_dbg.get("derived_flags") or {}).get("LLM_CACHE_REPLAY_ONLY") if isinstance(_prof_dbg, dict) else None
+    )
+
+            # ✅ REFACTOR99: Evolution baseline MUST be an Analysis payload (exclude evolution reports) and default to latest.
         history_all = get_history() or []
 
         def _r99_is_analysis_payload(h: dict) -> bool:
