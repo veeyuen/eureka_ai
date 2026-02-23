@@ -458,7 +458,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "NLP80"
+_YUREEKA_CODE_VERSION_LOCK = "NLP81"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 # REFACTOR206: Release Candidate freeze (no pipeline behavior change).
 YUREEKA_RELEASE_CANDIDATE_V1 = False
@@ -3511,6 +3511,58 @@ def _dataset_inventory_v1(base_dir: str) -> dict:
         return out
 
 
+
+def _dataset_tail_jsonl_v1(path: str, *, max_lines: int = 5) -> list:
+    """Read last N JSONL records (best-effort). Used for diagnostics only."""
+    out = []
+    try:
+        p = str(path or "")
+    except Exception:
+        return out
+    if not p or (not os.path.exists(p)):
+        return out
+    try:
+        ml = int(max_lines or 0)
+    except Exception:
+        ml = 0
+    if ml <= 0:
+        return out
+    try:
+        with open(p, "rb") as f:
+            f.seek(0, os.SEEK_END)
+            size = f.tell()
+            chunk = 4096
+            data = b""
+            pos = size
+            while pos > 0 and data.count(b"\n") < (ml + 2):
+                step = chunk if pos >= chunk else pos
+                pos -= step
+                f.seek(pos)
+                data = f.read(step) + data
+            lines = [ln for ln in data.splitlines() if ln.strip()]
+            tail = lines[-ml:]
+        for ln in tail:
+            try:
+                obj = json.loads(ln.decode("utf-8", errors="ignore"))
+                if isinstance(obj, dict):
+                    out.append(obj)
+            except Exception:
+                continue
+        return out
+    except Exception:
+        return out
+
+def _dataset_mtime_iso_v1(path: str) -> str:
+    try:
+        p = str(path or "")
+        if not p or (not os.path.exists(p)):
+            return ""
+        ts = os.path.getmtime(p)
+        return datetime.datetime.utcfromtimestamp(float(ts)).replace(tzinfo=datetime.timezone.utc).isoformat()
+    except Exception:
+        return ""
+
+
 def _dataset_redact_url_v1(url: str) -> str:
     """Redact querystring/fragment from URLs for dataset logging safety."""
     try:
@@ -4212,6 +4264,9 @@ def _yureeka_llm_dataset_feature_snapshot_v1(stage: str = "") -> dict:
         "events_records_written": int(snap.get("events_records_written") or 0),
         "events_bytes_written": int(snap.get("events_bytes_written") or 0),
         "events_reason": str(snap.get("events_reason") or ""),
+        "last_write_utc": _dataset_mtime_iso_v1(str(snap.get("effective_path") or snap.get("path") or "")),
+        "events_last_write_utc": _dataset_mtime_iso_v1(str(snap.get("events_effective_path") or snap.get("events_path") or "")),
+        "events_tail_sample": _dataset_tail_jsonl_v1(str(snap.get("events_effective_path") or snap.get("events_path") or ""), max_lines=3),
     }
 
 
@@ -7534,6 +7589,31 @@ try:
 except Exception:
     pass
 
+
+
+# NLP80: patch tracker overlay (NLP stream)
+try:
+    if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "NLP80" for e in PATCH_TRACKER_V1):
+        PATCH_TRACKER_V1.insert(0, {
+            "patch_id": "NLP80",
+            "scope": "nlp_llm_endstate",
+            "summary": "Dataset logging hardening: retention pruning defaults + URL redaction for dataset records; patch tracker hygiene fixes.",
+            "risk": "low",
+        })
+except Exception:
+    pass
+
+# NLP81: patch tracker overlay (NLP stream)
+try:
+    if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "NLP81" for e in PATCH_TRACKER_V1):
+        PATCH_TRACKER_V1.insert(0, {
+            "patch_id": "NLP81",
+            "scope": "nlp_llm_endstate",
+            "summary": "Add dataset status beacon fields (mtime, tail events preview) for UI/debug; no pipeline decision changes.",
+            "risk": "low",
+        })
+except Exception:
+    pass
 
 # REFACTOR194: patch tracker overlay (avoid touching the compressed canonical blob)
 try:
