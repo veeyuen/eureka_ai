@@ -458,7 +458,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "NLP79"
+_YUREEKA_CODE_VERSION_LOCK = "NLP80"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 # REFACTOR206: Release Candidate freeze (no pipeline behavior change).
 YUREEKA_RELEASE_CANDIDATE_V1 = False
@@ -3379,6 +3379,10 @@ LLM_DATASET_LOG_MAX_RECORDS_PER_RUN_V1 = 500
 
 LLM_DATASET_LOG_MAX_PARTS_PER_FILE_V1 = 20
 LLM_DATASET_LOG_INVENTORY_SAMPLE_FILES_V1 = 6
+LLM_DATASET_LOG_RETENTION_MAX_FILES_V1 = 40  # best-effort: prune oldest JSONL files beyond this count
+LLM_DATASET_LOG_RETENTION_MAX_BYTES_TOTAL_V1 = 20_000_000  # 20MB total cap for dataset dir (best-effort)
+LLM_DATASET_LOG_URL_REDACT_QUERYSTRING_V1 = True  # redact ?query and #fragment in logged URLs
+LLM_DATASET_LOG_TEXT_MAXLEN_URL_V1 = 240
 # Stage-keyed, in-memory stats for manifest/debug beacons (non-sensitive).
 _DATASET_LOG_STATE_V1 = {"analysis": {}, "evolution": {}}
 
@@ -3506,6 +3510,134 @@ def _dataset_inventory_v1(base_dir: str) -> dict:
     except Exception:
         return out
 
+
+def _dataset_redact_url_v1(url: str) -> str:
+    """Redact querystring/fragment from URLs for dataset logging safety."""
+    try:
+        u = str(url or "")
+    except Exception:
+        return ""
+    if not u:
+        return ""
+    if not bool(globals().get("LLM_DATASET_LOG_URL_REDACT_QUERYSTRING_V1", True)):
+        try:
+            return u[: int(globals().get("LLM_DATASET_LOG_TEXT_MAXLEN_URL_V1", 240)) ]
+        except Exception:
+            return u
+    try:
+        u2 = u.split("#", 1)[0].split("?", 1)[0]
+    except Exception:
+        u2 = u
+    try:
+        return u2[: int(globals().get("LLM_DATASET_LOG_TEXT_MAXLEN_URL_V1", 240)) ]
+    except Exception:
+        return u2
+
+def _dataset_retention_prune_v1(base_dir: str, *, keep_paths: list, max_files: int, max_bytes_total: int) -> dict:
+    """Best-effort retention pruning for dataset dir (non-fatal)."""
+    out = {
+        "ok": True,
+        "base_dir": str(base_dir or ""),
+        "max_files": int(max_files),
+        "max_bytes_total": int(max_bytes_total),
+        "files_before": 0,
+        "bytes_before": 0,
+        "files_deleted": 0,
+        "bytes_deleted": 0,
+        "reason": "",
+        "error": "",
+    }
+    bd = str(base_dir or "").strip()
+    if not bd or not os.path.isdir(bd):
+        out["reason"] = "no_dir"
+        return out
+    keep = set()
+    try:
+        for kp in (keep_paths or []):
+            if not kp:
+                continue
+            try:
+                keep.add(os.path.abspath(str(kp)))
+            except Exception:
+                continue
+    except Exception:
+        keep = set()
+    files = []
+    try:
+        for fn in os.listdir(bd):
+            if not fn.endswith(".jsonl"):
+                continue
+            fp = os.path.join(bd, fn)
+            try:
+                st_ = os.stat(fp)
+                files.append((fp, int(st_.st_size), float(st_.st_mtime)))
+            except Exception:
+                continue
+    except Exception as e:
+        out["ok"] = False
+        out["error"] = str(e)[:200]
+        out["reason"] = "list_failed"
+        return out
+
+    if not files:
+        out["reason"] = "empty"
+        return out
+
+    out["files_before"] = int(len(files))
+    out["bytes_before"] = int(sum(sz for _, sz, _ in files))
+
+    files_sorted = sorted(files, key=lambda x: (x[2], x[0]))
+
+    def _can_delete(fp: str) -> bool:
+        try:
+            ap = os.path.abspath(fp)
+        except Exception:
+            ap = fp
+        return ap not in keep
+
+    try:
+        while len(files_sorted) > int(max_files) and int(max_files) > 0:
+            fp, sz, mt = files_sorted[0]
+            if not _can_delete(fp):
+                files_sorted = files_sorted[1:] + [(fp, sz, mt)]
+                if all(not _can_delete(f[0]) for f in files_sorted):
+                    out["reason"] = "all_kept_max_files"
+                    break
+                continue
+            try:
+                os.remove(fp)
+                out["files_deleted"] += 1
+                out["bytes_deleted"] += int(sz)
+            except Exception:
+                pass
+            files_sorted = files_sorted[1:]
+    except Exception:
+        pass
+
+    try:
+        cur_bytes = int(sum(sz for _, sz, _ in files_sorted))
+        while cur_bytes > int(max_bytes_total) and int(max_bytes_total) > 0:
+            fp, sz, mt = files_sorted[0]
+            if not _can_delete(fp):
+                files_sorted = files_sorted[1:] + [(fp, sz, mt)]
+                if all(not _can_delete(f[0]) for f in files_sorted):
+                    out["reason"] = "all_kept_max_bytes"
+                    break
+                continue
+            try:
+                os.remove(fp)
+                out["files_deleted"] += 1
+                out["bytes_deleted"] += int(sz)
+            except Exception:
+                pass
+            files_sorted = files_sorted[1:]
+            cur_bytes = int(sum(sz for _, sz, _ in files_sorted))
+    except Exception:
+        pass
+
+    if not out["reason"]:
+        out["reason"] = "ok"
+    return out
 
 
 def _dataset_log_path_v1(*, question: str, stage: str) -> str:
@@ -3865,7 +3997,7 @@ def _dataset_export_from_pmc_v1(*, pmc: dict, question: str, stage: str) -> list
             # Minimal candidate snapshot
             cand = {
                 "candidate_id": str(best.get("candidate_id") or best.get("anchor_hash") or "")[:32],
-                "source_url": str(best.get("source_url") or best.get("url") or ""),
+                "source_url": _dataset_redact_url_v1(best.get("source_url") or best.get("url") or ""),
                 "raw": _dataset_text_sanitize_v1(best.get("raw") or "", max_len=120),
                 "value_norm": best.get("value_norm"),
                 "unit_family": str(best.get("unit_family") or ""),
@@ -3981,7 +4113,29 @@ def _yureeka_dataset_logging_apply_v1(*, wrapper: dict, stage: str) -> dict:
             if isinstance(inv, dict):
                 summary["inventory"] = inv
         except Exception:
+            pass        # NLP80: retention pruning (best-effort; never fatal)
+        try:
+            base_dir = os.path.dirname(str(summary.get("effective_path") or summary.get("path") or "")) or str(LLM_DATASET_LOG_DIR_DEFAULT_V1)
+            keep_paths = []
+            try:
+                if summary.get("effective_path"):
+                    keep_paths.append(str(summary.get("effective_path")))
+                elif summary.get("path"):
+                    keep_paths.append(str(summary.get("path")))
+            except Exception:
+                pass
+            rp = _dataset_retention_prune_v1(
+                str(base_dir or ""),
+                keep_paths=keep_paths,
+                max_files=int(LLM_DATASET_LOG_RETENTION_MAX_FILES_V1),
+                max_bytes_total=int(LLM_DATASET_LOG_RETENTION_MAX_BYTES_TOTAL_V1),
+            )
+            if isinstance(rp, dict):
+                summary["retention"] = rp
+        except Exception:
             pass
+
+
 
         try:
             _dataset_state_update_v1(stg, {
@@ -7332,18 +7486,18 @@ try:
     PATCH_TRACKER_V1 = list(_PATCH_TRACKER_CANONICAL_ENTRIES_V1 or [])
 except Exception:
     PATCH_TRACKER_V1 = []
-    {
-        "patch_id": "NLP76",
-        "date": "2026-02-23",
-        "title": "Seed override for evidence seeding when feature flag off",
-        "notes": [
-            "Allow one-shot LLM seed fill for llm01_evidence_rank even when ENABLE_LLM_EVIDENCE_SNIPPETS is OFF (seed-only; does not change winners/values/snippets).",
-            "Adds seed_only beacons in per-metric evidence_snippet_v1 provenance and keeps deterministic snippet output."
-        ]
-    },
 
-
-
+# NLP76: patch tracker overlay (NLP stream)
+try:
+    if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "NLP76" for e in PATCH_TRACKER_V1):
+        PATCH_TRACKER_V1.insert(0, {
+            "patch_id": "NLP76",
+            "scope": "nlp_llm_endstate",
+            "summary": "Seed-only cache fill can bypass ENABLE_LLM_EVIDENCE_SNIPPETS flag while preserving deterministic winners/values (audit-only).",
+            "risk": "low",
+        })
+except Exception:
+    pass
 
 # NLP77: patch tracker overlay (NLP stream)
 try:
