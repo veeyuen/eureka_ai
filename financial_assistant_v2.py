@@ -458,7 +458,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "NLP88"
+_YUREEKA_CODE_VERSION_LOCK = "NLP89"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 # REFACTOR206: Release Candidate freeze (no pipeline behavior change).
 YUREEKA_RELEASE_CANDIDATE_V1 = False
@@ -485,6 +485,13 @@ ENABLE_LLM_QUERY_FRAME = False
 ENABLE_LLM_QUERY_STRUCTURE_FALLBACK = False
 ENABLE_LLM_ANOMALY_FLAGS = False
 ENABLE_LLM_EVOLUTION_SUMMARY = False
+
+# NLP89: Production-friendly profiles (reduce flag surface)
+# - LLM_PROFILE: OFF | REPLAY | SEED_ONCE | LIVE | (empty/LEGACY = use per-flag toggles)
+# - LLM_FEATURES: NONE | SNIPPETS | EVOLUTION_SUMMARY | SNIPPETS+EVOLUTION_SUMMARY | (empty/LEGACY)
+# These are *derivation controls* only; deterministic deciders remain unchanged.
+LLM_PROFILE = ""
+LLM_FEATURES = ""
 
 # NLP03: Deterministic NLP assist flags (default OFF; determinism preserved)
 ENABLE_NLP_QUERY_BOOST = False
@@ -637,6 +644,242 @@ def _yureeka__parse_csv_list_v1(v: Any) -> List[str]:
     return out
 
 
+
+# NLP89: LLM profile/feature resolver (reduces flag surface; additive-only)
+# This resolver computes *derived overrides* for a small subset of flags/params when
+# LLM_PROFILE and/or LLM_FEATURES are set (UI/secrets/env). Legacy per-flag controls
+# remain fully supported when profile/features are empty/LEGACY.
+_YUREEKA_LLM_PROFILE_RESOLVED_CACHE_V1 = None
+
+def _yureeka__llm_profile_token_norm_v1(raw: str) -> str:
+    try:
+        s = str(raw or "").strip()
+        s = re.sub(r"\s+", "_", s)
+        s = s.replace("-", "_")
+        s = s.upper()
+        return s
+    except Exception:
+        return ""
+
+def _yureeka__llm_profile_is_legacy_v1(tok: str) -> bool:
+    try:
+        t = _yureeka__llm_profile_token_norm_v1(tok)
+        return (t in ("", "LEGACY", "DEFAULT", "PER_FLAG", "PERFLAG", "FLAGS", "RAW"))
+    except Exception:
+        return True
+
+def _yureeka__llm_features_token_norm_v1(raw: str) -> str:
+    try:
+        s = str(raw or "").strip()
+        s = re.sub(r"\s+", "", s)
+        s = s.replace("-", "_")
+        s = s.upper()
+        # common separators
+        s = s.replace("+", "+")
+        s = s.replace(",", "+")
+        s = s.replace("|", "+")
+        return s
+    except Exception:
+        return ""
+
+def _yureeka__llm_features_is_legacy_v1(tok: str) -> bool:
+    try:
+        t = _yureeka__llm_features_token_norm_v1(tok)
+        return (t in ("", "LEGACY", "DEFAULT"))
+    except Exception:
+        return True
+
+def _yureeka__llm_profile_raw_get_v1(param_name: str):
+    """Raw resolver for profile/feature strings without depending on param_effective (avoids recursion risk)."""
+    _pname = str(param_name or "").strip()
+
+    # NLP89: profile/features may derive overrides for params (strings/ints). Skip for self keys.
+    try:
+        if _pname and _pname not in ("LLM_PROFILE", "LLM_FEATURES"):
+            _ov = _yureeka_llm_profile_override_v1(_pname)
+            if _ov is not None:
+                return (_ov[0], str(_ov[1])[:80])
+    except Exception:
+        pass
+
+    _sentinel = object()
+
+    def _get_map_val(mobj, key: str):
+        try:
+            if mobj is None or not key:
+                return _sentinel
+            getf = getattr(mobj, "get", None)
+            if not callable(getf):
+                return _sentinel
+            return getf(key, _sentinel)
+        except Exception:
+            return _sentinel
+
+    # 0) Streamlit session_state override
+    try:
+        _st0 = globals().get("st")
+        _ss0 = getattr(_st0, "session_state", None) if _st0 is not None else None
+        if _ss0 is not None and _pname:
+            for root in ("YUREEKA_LLM_FLAGS", "YUREEKA_FLAGS", "LLM_FLAGS"):
+                try:
+                    sub = _get_map_val(_ss0, root)
+                    if sub is _sentinel:
+                        continue
+                    raw = _get_map_val(sub, _pname)
+                    if raw is not _sentinel:
+                        return (raw, f"ui:{root}.{_pname}")
+                except Exception:
+                    continue
+    except Exception:
+        pass
+
+    # 1) Streamlit secrets override
+    try:
+        _st = globals().get("st")
+        _secrets = getattr(_st, "secrets", None) if _st is not None else None
+        if _secrets is not None and _pname:
+            for root in ("YUREEKA_LLM_FLAGS", "YUREEKA_FLAGS", "LLM_FLAGS", "general", "GENERAL"):
+                try:
+                    sub = _get_map_val(_secrets, root)
+                    if sub is _sentinel:
+                        continue
+                    raw = _get_map_val(sub, _pname)
+                    if raw is not _sentinel:
+                        return (raw, f"secrets:{root}.{_pname}")
+                except Exception:
+                    continue
+            try:
+                raw = _get_map_val(_secrets, _pname)
+                if raw is not _sentinel:
+                    return (raw, f"secrets:{_pname}")
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    # 2) Env override
+    try:
+        env_name = "YUREEKA_" + _pname
+        raw = os.environ.get(env_name)
+        if raw is not None:
+            return (raw, "env:" + env_name)
+    except Exception:
+        pass
+
+    # 3) Code default
+    try:
+        val = globals().get(_pname)
+        if val is not None:
+            return (val, "code:" + _pname)
+    except Exception:
+        pass
+    return ("", "default")
+
+def _yureeka_llm_profile_resolved_v1() -> dict:
+    """Return resolved profile/features + derived overrides (cached per run)."""
+    global _YUREEKA_LLM_PROFILE_RESOLVED_CACHE_V1
+    try:
+        if isinstance(_YUREEKA_LLM_PROFILE_RESOLVED_CACHE_V1, dict):
+            return _YUREEKA_LLM_PROFILE_RESOLVED_CACHE_V1
+    except Exception:
+        pass
+
+    out = {"v": "nlp89_llm_profile_resolved_v1"}
+    prof_raw, prof_src = _yureeka__llm_profile_raw_get_v1("LLM_PROFILE")
+    feat_raw, feat_src = _yureeka__llm_profile_raw_get_v1("LLM_FEATURES")
+
+    prof_tok = _yureeka__llm_profile_token_norm_v1(prof_raw)
+    feat_tok = _yureeka__llm_features_token_norm_v1(feat_raw)
+
+    prof_legacy = _yureeka__llm_profile_is_legacy_v1(prof_tok)
+    feat_legacy = _yureeka__llm_features_is_legacy_v1(feat_tok)
+
+    out["profile_raw"] = str(prof_raw or "")[:64]
+    out["profile_source"] = str(prof_src)[:80]
+    out["profile_effective"] = "LEGACY" if prof_legacy else str(prof_tok)
+    out["features_raw"] = str(feat_raw or "")[:64]
+    out["features_source"] = str(feat_src)[:80]
+    out["features_effective"] = "LEGACY" if feat_legacy else str(feat_tok)
+
+    derived_flags = {}
+    derived_params = {}
+
+    # Profile-derived overrides (network/caching posture)
+    if not prof_legacy:
+        if prof_tok in ("OFF",):
+            derived_flags.update({
+                "LLM_ALLOW_NETWORK_CALLS": False,
+                "LLM_SEED_MODE": False,
+                "LLM_CACHE_REPLAY_ONLY": True,
+                "LLM_FORCE_REFRESH_ONCE": False,
+            })
+        elif prof_tok in ("REPLAY", "REPLAY_ONLY", "CACHE_REPLAY", "CACHE_ONLY"):
+            derived_flags.update({
+                "LLM_ALLOW_NETWORK_CALLS": False,
+                "LLM_SEED_MODE": False,
+                "LLM_CACHE_REPLAY_ONLY": True,
+                "LLM_FORCE_REFRESH_ONCE": False,
+            })
+        elif prof_tok in ("SEED_ONCE", "SEEDONCE", "ONE_SHOT", "ONESHOT"):
+            derived_flags.update({
+                "LLM_ALLOW_NETWORK_CALLS": True,
+                "LLM_SEED_MODE": True,
+                "LLM_CACHE_REPLAY_ONLY": False,
+                "LLM_FORCE_REFRESH_ONCE": True,
+            })
+            # budget nudge (param-level)
+            derived_params["LLM_SEED_MAX_CALLS"] = 1
+        elif prof_tok in ("LIVE", "ONLINE"):
+            derived_flags.update({
+                "LLM_ALLOW_NETWORK_CALLS": True,
+                "LLM_SEED_MODE": True,
+                "LLM_CACHE_REPLAY_ONLY": False,
+                "LLM_FORCE_REFRESH_ONCE": False,
+            })
+
+    # Feature-derived overrides (what outputs are allowed)
+    if not feat_legacy:
+        feats = set([p for p in str(feat_tok).split("+") if p])
+        if "NONE" in feats:
+            derived_flags["ENABLE_LLM_EVIDENCE_SNIPPETS"] = False
+            derived_flags["ENABLE_LLM_EVOLUTION_SUMMARY"] = False
+        else:
+            if "SNIPPETS" in feats or "EVIDENCE" in feats or "EVIDENCE_SNIPPETS" in feats:
+                derived_flags["ENABLE_LLM_EVIDENCE_SNIPPETS"] = True
+            if "EVOLUTION_SUMMARY" in feats or "SUMMARY" in feats:
+                derived_flags["ENABLE_LLM_EVOLUTION_SUMMARY"] = True
+
+    out["derived_flags"] = dict(derived_flags)
+    out["derived_params"] = dict(derived_params)
+    out["applies"] = bool((not prof_legacy) or (not feat_legacy))
+    out["notes"] = "Profile/features override only when set (non-LEGACY). Legacy per-flag toggles remain supported."
+
+    try:
+        _YUREEKA_LLM_PROFILE_RESOLVED_CACHE_V1 = dict(out)
+    except Exception:
+        pass
+    return out
+
+def _yureeka_llm_profile_override_v1(name: str):
+    """Return (value, source) if profile/features provide an override for name; else None."""
+    try:
+        nm = str(name or "").strip()
+        if not nm:
+            return None
+        if nm in ("LLM_PROFILE", "LLM_FEATURES"):
+            return None
+        r = _yureeka_llm_profile_resolved_v1()
+        if not isinstance(r, dict) or not bool(r.get("applies")):
+            return None
+        if isinstance(r.get("derived_flags"), dict) and nm in r["derived_flags"]:
+            return (r["derived_flags"][nm], f"profile_derived:{r.get('profile_effective')}/{r.get('features_effective')}")
+        if isinstance(r.get("derived_params"), dict) and nm in r["derived_params"]:
+            return (r["derived_params"][nm], f"profile_derived:{r.get('profile_effective')}/{r.get('features_effective')}")
+    except Exception:
+        return None
+    return None
+
+
 def _yureeka_llm_param_effective_v1(param_name: str) -> Tuple[Any, str]:
     """Resolve an LLM parameter value (any type) with UI/secrets/env override.
 
@@ -755,6 +998,16 @@ def _yureeka_llm_flag_effective_v1(flag_name: str) -> Tuple[bool, str]:
     object with a working .get(...) as eligible.
     """
     _fname = str(flag_name or '').strip()
+
+    # NLP89: profile/features derived overrides (reduces flag surface). Skip for self keys.
+    try:
+        if _fname and _fname not in ("LLM_PROFILE", "LLM_FEATURES"):
+            _ov = _yureeka_llm_profile_override_v1(_fname)
+            if _ov is not None:
+                return (bool(_ov[0]), str(_ov[1])[:80])
+    except Exception:
+        pass
+
     # NLP09: Backward-compatible flag aliases (fix UI legacy key typo).
     # Some builds stored the query-framing toggle under ENABLE_NLP_QUERY_FRAME.
     _aliases = [_fname]
@@ -894,6 +1147,19 @@ def _yureeka_llm_flags_snapshot_v1() -> dict:
             out[k] = {"value": bool(v), "source": str(src)[:80]}
         except Exception:
             out[k] = {"value": False, "source": "error"}
+
+    # NLP89: surface production-friendly profile/feature knobs (strings)
+    try:
+        v, src = _yureeka_llm_param_effective_v1("LLM_PROFILE")
+        out["LLM_PROFILE"] = {"value": str(v or "")[:64], "source": str(src)[:80]}
+    except Exception:
+        out["LLM_PROFILE"] = {"value": "", "source": "error"}
+    try:
+        v, src = _yureeka_llm_param_effective_v1("LLM_FEATURES")
+        out["LLM_FEATURES"] = {"value": str(v or "")[:64], "source": str(src)[:80]}
+    except Exception:
+        out["LLM_FEATURES"] = {"value": "", "source": "error"}
+
     # LLM12: surface cache-bypass state (non-sensitive).
     try:
         _bypass, _src = _yureeka_llm_flag_effective_v1("LLM_BYPASS_CACHE")
@@ -8063,6 +8329,19 @@ try:
 except Exception:
     pass
 
+# NLP89: patch tracker overlay (NLP stream)
+try:
+    if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "NLP89" for e in PATCH_TRACKER_V1):
+        PATCH_TRACKER_V1.insert(0, {
+            "patch_id": "NLP89",
+            "scope": "nlp_llm_endstate",
+            "summary": "Add production-friendly LLM_PROFILE/LLM_FEATURES resolver to reduce flag surface; profile-derived overrides + UI exposure (no decider changes).",
+            "risk": "low",
+        })
+except Exception:
+    pass
+
+
 
 
 
@@ -9523,7 +9802,7 @@ def _nlp85_end_state_declared_v1(checklist: dict = None) -> dict:
     """End-state declaration beacon for the NLP/LLM stream (NLP85 base; NLP88 narrative polish).
     Pure diagnostics + UI-friendly summary. Never changes winners/values/snippets.
     """
-    out = {"v": "nlp85_end_state_declared_v1", "declared_end_state_version": "NLP88", "declared_end_state_base_version": "NLP85"}
+    out = {"v": "nlp85_end_state_declared_v1", "declared_end_state_version": "NLP89", "declared_end_state_base_version": "NLP85"}
     try:
         out["code_version"] = str(CODE_VERSION_LOCK)
     except Exception:
@@ -33100,6 +33379,7 @@ def main():
                 if isinstance(output.get("debug"), dict):
                     output["debug"].setdefault("runtime_identity_v1", _yureeka_runtime_identity_v1())
                     output["debug"].setdefault("nlp83_end_state_checklist_v1", _nlp83_end_state_checklist_v1())
+                    output["debug"].setdefault("nlp89_llm_profile_resolved_v1", _yureeka_llm_profile_resolved_v1())
                     output["debug"].setdefault("nlp85_end_state_declared_v1", _nlp85_end_state_declared_v1(output["debug"].get("nlp83_end_state_checklist_v1")))
             except Exception:
                 pass
@@ -33349,19 +33629,82 @@ def main():
             except Exception:
                 _llm_ui_flags = {}
 
-            def _llm_ui_checkbox(flag: str, label: str, default: bool = False, help: str = "") -> None:
+            def _llm_ui_checkbox(flag: str, label: str, default: bool = False, help: str = "", disabled: bool = False, forced_value: bool = None) -> None:
                 try:
-                    cur = bool(_llm_ui_flags.get(flag, default))
-                    val = st.checkbox(label, value=cur, key=f"ui_llmflag_{flag}", help=help)
-                    _llm_ui_flags[flag] = bool(val)
+                    if forced_value is not None:
+                        cur = bool(forced_value)
+                    else:
+                        cur = bool(_llm_ui_flags.get(flag, default))
+                    val = st.checkbox(label, value=cur, key=f"ui_llmflag_{flag}", help=help, disabled=bool(disabled))
+                    # Only persist UI override if not disabled/forced (profile-derived flags should not create conflicting state).
+                    if not bool(disabled):
+                        _llm_ui_flags[flag] = bool(val)
                 except Exception:
                     pass
+
+            def _llm_ui_selectbox(flag: str, label: str, options: list, default: str = "LEGACY", help: str = "") -> None:
+                try:
+                    cur = str(_llm_ui_flags.get(flag, default) or default)
+                    # normalize selection
+                    if cur not in options:
+                        cur = default if default in options else (options[0] if options else "")
+                    idx = options.index(cur) if (options and cur in options) else 0
+                    val = st.selectbox(label, options=options, index=int(idx), key=f"ui_llmparam_{flag}", help=help)
+                    _llm_ui_flags[flag] = str(val)
+                except Exception:
+                    pass
+
+
+            # NLP89: Production-friendly profile + features (optional; overrides per-flag toggles when set)
+            try:
+                _llm_profile_opts = [
+                    "LEGACY",
+                    "OFF",
+                    "REPLAY",
+                    "SEED_ONCE",
+                    "LIVE",
+                ]
+                _llm_features_opts = [
+                    "LEGACY",
+                    "NONE",
+                    "SNIPPETS",
+                    "EVOLUTION_SUMMARY",
+                    "SNIPPETS+EVOLUTION_SUMMARY",
+                ]
+                _llm_ui_selectbox(
+                    "LLM_PROFILE",
+                    "LLM profile (recommended)",
+                    options=_llm_profile_opts,
+                    default=str((_llm_ui_flags.get("LLM_PROFILE") or "LEGACY")),
+                    help="LEGACY = use per-flag toggles. REPLAY is safest for production (cache-only). SEED_ONCE fills one missing cache key under explicit consent. LIVE enables network (still sidecar-only).",
+                )
+                _llm_ui_selectbox(
+                    "LLM_FEATURES",
+                    "LLM features",
+                    options=_llm_features_opts,
+                    default=str((_llm_ui_flags.get("LLM_FEATURES") or "LEGACY")),
+                    help="Select what the sidecar may produce (audit-only). LEGACY = use per-flag toggles.",
+                )
+            except Exception:
+                pass
+
+            # Show resolved/derived posture (read-only)
+            try:
+                _prof_dbg = _yureeka_llm_profile_resolved_v1()
+                if isinstance(_prof_dbg, dict) and bool(_prof_dbg.get("applies")):
+                    st.info(f"Profile active: {str(_prof_dbg.get('profile_effective'))} | Features: {str(_prof_dbg.get('features_effective'))} (derived overrides applied)")
+                else:
+                    _prof_dbg = {}
+            except Exception:
+                _prof_dbg = {}
 
             _llm_ui_checkbox(
                 "ENABLE_LLM_EVIDENCE_SNIPPETS",
                 "Enable LLM evidence snippet ranking (assist only)",
                 default=True,
-                help="When ON, the sidecar may rank candidate evidence snippets using cache hits only unless live calls are explicitly enabled (Allow network + Seed mode). Metric winners/values remain deterministic."
+                help="When ON, the sidecar may rank candidate evidence snippets using cache hits only unless live calls are explicitly enabled (Allow network + Seed mode). Metric winners/values remain deterministic.",
+                disabled=bool(isinstance(_prof_dbg, dict) and bool(_prof_dbg.get("applies")) and isinstance((_prof_dbg.get("derived_flags") or {}), dict) and "ENABLE_LLM_EVIDENCE_SNIPPETS" in (_prof_dbg.get("derived_flags") or {})),
+                forced_value=(_prof_dbg.get("derived_flags") or {}).get("ENABLE_LLM_EVIDENCE_SNIPPETS") if isinstance(_prof_dbg, dict) else None,
             )
 
 
@@ -33422,7 +33765,9 @@ def main():
                 _llm_ui_checkbox("ENABLE_LLM_QUERY_STRUCTURE_FALLBACK", "Enable LLM query-structure fallback (legacy)", default=False, help="OFF by default. When ON, low-confidence query structure may be refined by the sidecar (confidence-gated); may change retrieval terms.")
                 _llm_ui_checkbox("ENABLE_LLM_ANOMALY_FLAGS", "Enable LLM anomaly flags", default=False, help="Experimental.")
                 _llm_ui_checkbox("ENABLE_LLM_DATASET_LOGGING", "Enable LLM dataset logging", default=False, help="Experimental; may write small local logs.")
-                _llm_ui_checkbox("ENABLE_LLM_EVOLUTION_SUMMARY", "Enable LLM evolution summary", default=False, help="Audit-only: Writes a narrative summary of Evolution diffs. Cache-first/no-op by default; never affects winners.")
+                _llm_ui_checkbox("ENABLE_LLM_EVOLUTION_SUMMARY", "Enable LLM evolution summary", default=False, help="Audit-only: Writes a narrative summary of Evolution diffs. Cache-first/no-op by default; never affects winners.",
+                disabled=bool(isinstance(_prof_dbg, dict) and bool(_prof_dbg.get("applies")) and isinstance((_prof_dbg.get("derived_flags") or {}), dict) and "ENABLE_LLM_EVOLUTION_SUMMARY" in (_prof_dbg.get("derived_flags") or {})),
+                forced_value=(_prof_dbg.get("derived_flags") or {}).get("ENABLE_LLM_EVOLUTION_SUMMARY") if isinstance(_prof_dbg, dict) else None)
 
                 # NLP82: local dataset/events status panel (UI-only)
                 with st.expander("LLM dataset status (local)", expanded=False):
@@ -33450,10 +33795,19 @@ def main():
             _llm_ui_checkbox("ENABLE_LLM_SMOKE_TEST", "Run LLM smoke test (connectivity)", default=False, help="Records non-sensitive status in the JSON debug.")
             _llm_ui_checkbox("LLM_BYPASS_CACHE", "Bypass LLM cache (debug)", default=False, help="Forces cache-miss path; live call still requires Allow network + Seed mode and not Replay-only.")
 
-            _llm_ui_checkbox("LLM_ALLOW_NETWORK_CALLS", "Allow live LLM network calls (master gate)", default=False, help="OFF by default. Live calls still require Seed mode ON, and are blocked when Replay-only is enabled.")
-            _llm_ui_checkbox("LLM_SEED_MODE", "Seed mode (explicit consent for live calls)", default=False, help="OFF by default. Required in addition to Allow network calls. When ON, a warning banner is shown and budgets are surfaced in debug beacons.")
+            _llm_ui_checkbox("LLM_ALLOW_NETWORK_CALLS", "Allow live LLM network calls (master gate)", default=False, help="OFF by default. Live calls still require Seed mode ON, and are blocked when Replay-only is enabled.",
+            disabled=bool(isinstance(_prof_dbg, dict) and bool(_prof_dbg.get("applies")) and isinstance((_prof_dbg.get("derived_flags") or {}), dict) and "LLM_ALLOW_NETWORK_CALLS" in (_prof_dbg.get("derived_flags") or {})),
+            forced_value=(_prof_dbg.get("derived_flags") or {}).get("LLM_ALLOW_NETWORK_CALLS") if isinstance(_prof_dbg, dict) else None
+)
+            _llm_ui_checkbox("LLM_SEED_MODE", "Seed mode (explicit consent for live calls)", default=False, help="OFF by default. Required in addition to Allow network calls. When ON, a warning banner is shown and budgets are surfaced in debug beacons.",
+            disabled=bool(isinstance(_prof_dbg, dict) and bool(_prof_dbg.get("applies")) and isinstance((_prof_dbg.get("derived_flags") or {}), dict) and "LLM_SEED_MODE" in (_prof_dbg.get("derived_flags") or {})),
+            forced_value=(_prof_dbg.get("derived_flags") or {}).get("LLM_SEED_MODE") if isinstance(_prof_dbg, dict) else None
+)
 
-            _llm_ui_checkbox("LLM_CACHE_REPLAY_ONLY", "Replay-only (no live LLM calls)", default=False, help="When ON, the sidecar will use cache hits only; live calls are skipped and recorded as cache_replay_only.")
+            _llm_ui_checkbox("LLM_CACHE_REPLAY_ONLY", "Replay-only (no live LLM calls)", default=False, help="When ON, the sidecar will use cache hits only; live calls are skipped and recorded as cache_replay_only.",
+            disabled=bool(isinstance(_prof_dbg, dict) and bool(_prof_dbg.get("applies")) and isinstance((_prof_dbg.get("derived_flags") or {}), dict) and "LLM_CACHE_REPLAY_ONLY" in (_prof_dbg.get("derived_flags") or {})),
+            forced_value=(_prof_dbg.get("derived_flags") or {}).get("LLM_CACHE_REPLAY_ONLY") if isinstance(_prof_dbg, dict) else None
+)
 
         # ✅ REFACTOR99: Evolution baseline MUST be an Analysis payload (exclude evolution reports) and default to latest.
         history_all = get_history() or []
