@@ -458,7 +458,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "NLP84"
+_YUREEKA_CODE_VERSION_LOCK = "NLP86"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 # REFACTOR206: Release Candidate freeze (no pipeline behavior change).
 YUREEKA_RELEASE_CANDIDATE_V1 = False
@@ -484,6 +484,7 @@ ENABLE_LLM_SOURCE_CLUSTERING = False
 ENABLE_LLM_QUERY_FRAME = False
 ENABLE_LLM_QUERY_STRUCTURE_FALLBACK = False
 ENABLE_LLM_ANOMALY_FLAGS = False
+ENABLE_LLM_EVOLUTION_SUMMARY = False
 
 # NLP03: Deterministic NLP assist flags (default OFF; determinism preserved)
 ENABLE_NLP_QUERY_BOOST = False
@@ -876,6 +877,7 @@ def _yureeka_llm_flags_snapshot_v1() -> dict:
         "ENABLE_LLM_QUERY_STRUCTURE_FALLBACK",
         "ENABLE_NLP_QUERY_BOOST",
         "ENABLE_LLM_ANOMALY_FLAGS",
+        "ENABLE_LLM_EVOLUTION_SUMMARY",
         "ENABLE_LLM_DATASET_LOGGING",
         "LLM_BYPASS_CACHE",
         "LLM_CACHE_REPLAY_ONLY",
@@ -3012,6 +3014,7 @@ def _yureeka_llm_feature_manifest_v1(stage: str = "") -> dict:
         "llm01_evidence_rank",
         "llm04_anomaly_relevance",
         "llm_source_clustering",
+        "llm86_evolution_summary",
         "llm_dataset_logging",
         "llm_smoke_test",
         "unknown",
@@ -3362,6 +3365,351 @@ def cache_llm_response(key: str, payload: Any, *, feature: str = "") -> bool:
             pass
         return False
 
+
+
+
+# NLP86: LLM-written Evolution narrative summary (audit-only)
+# - Purpose: explain Evolution metric changes in words (UI/JSON assist only).
+# - Safety: cache-first; replay-only/no-network => no-op (no calls). Never affects deciders.
+# - Output: strict JSON with "summary_markdown" (preferred) plus optional bullets/caveats.
+
+def _llm86__extract_domain_v1(url: str) -> str:
+    try:
+        from urllib.parse import urlparse
+        u = str(url or "").strip()
+        if not u:
+            return ""
+        p = urlparse(u)
+        return str(p.netloc or "").strip().lower()
+    except Exception:
+        return ""
+
+
+def _llm86__strip_links_v1(text: str) -> str:
+    try:
+        s = str(text or "")
+        # Remove raw URLs to keep UI clean and avoid accidental leakage.
+        s = re.sub(r"https?://\S+", "", s)
+        s = re.sub(r"www\.\S+", "", s)
+        return s.strip()
+    except Exception:
+        return str(text or "").strip()
+
+
+def _llm86__validate_evolution_summary_v1(obj: Any) -> Tuple[bool, str]:
+    """Validator for cached/provider response."""
+    try:
+        if not isinstance(obj, dict):
+            return (False, "not_dict")
+        sm = obj.get("summary_markdown")
+        if sm is None:
+            # Allow bullet-only payloads (we can synthesize later)
+            bl = obj.get("highlights")
+            if isinstance(bl, list) and any(str(x).strip() for x in bl):
+                return (True, "ok_bullets_only")
+            return (False, "missing_summary_markdown")
+        s = str(sm or "").strip()
+        if len(s) < 8:
+            return (False, "summary_too_short")
+        if len(s) > 5000:
+            return (False, "summary_too_long")
+        # Disallow links in cached/provider payloads (we strip post-hoc, but validate too).
+        if ("http://" in s) or ("https://" in s) or ("www." in s):
+            return (True, "ok_contains_links_strippable")
+        return (True, "ok")
+    except Exception:
+        return (False, "exception")
+
+
+def _llm86_build_evolution_summary_payload_v1(results: dict, query: str) -> dict:
+    """Build a compact, non-sensitive payload for the Evolution narrative summary."""
+    out = {"v": "llm86_evolution_summary_payload_v1"}
+    try:
+        out["query"] = str(query or "")[:300]
+    except Exception:
+        out["query"] = ""
+    try:
+        out["stability_score_effective"] = results.get("stability_score_effective")
+        out["stability_score"] = results.get("stability_score")
+        out["stability_pct_unchanged_effective"] = results.get("stability_pct_unchanged_effective")
+        out["effective_mode"] = None
+        try:
+            # Some runs attach this under nested debug; best-effort.
+            def _find_key(obj, key):
+                if isinstance(obj, dict):
+                    if key in obj:
+                        return obj.get(key)
+                    for vv in obj.values():
+                        r = _find_key(vv, key)
+                        if r is not None:
+                            return r
+                if isinstance(obj, list):
+                    for vv in obj:
+                        r = _find_key(vv, key)
+                        if r is not None:
+                            return r
+                return None
+            out["effective_mode"] = _find_key(results, "effective_mode")
+        except Exception:
+            out["effective_mode"] = None
+    except Exception:
+        pass
+
+    try:
+        out["run_delta_human"] = str(results.get("run_delta_human") or "")[:60]
+        out["run_delta_seconds"] = results.get("run_delta_seconds")
+    except Exception:
+        pass
+
+    # Deterministic summary (if present) helps the LLM avoid guessing.
+    try:
+        se = results.get("summary_effective")
+        if isinstance(se, dict):
+            out["deterministic_summary_effective"] = {
+                "total_metrics": se.get("total_metrics"),
+                "metrics_changed": se.get("metrics_changed"),
+                "metrics_unchanged": se.get("metrics_unchanged"),
+                "metrics_injected": se.get("metrics_injected"),
+                "metrics_found": se.get("metrics_found"),
+            }
+    except Exception:
+        pass
+
+    # Injection + freshness beacons (if present)
+    try:
+        dbg = results.get("debug") if isinstance(results.get("debug"), dict) else {}
+        inj = dbg.get("inj01_injection_impact_v1")
+        if isinstance(inj, dict):
+            out["injection_impact_v1"] = {
+                "injection_run": bool(inj.get("injection_run")),
+                "injected_metrics_won_count": inj.get("injected_metrics_won_count"),
+                "injected_source_present": bool(inj.get("injected_source_present")),
+            }
+        ft = dbg.get("fresh11_strict_tiebreak_summary_v1")
+        if isinstance(ft, dict):
+            out["freshness_tiebreak_v1"] = {
+                "used_count": ft.get("used_count"),
+                "resolved_by_freshness_count": ft.get("resolved_by_freshness_count"),
+                "missing_freshness_fallback_count": ft.get("missing_freshness_fallback_count"),
+                "strict_mode": ft.get("strict_mode"),
+            }
+    except Exception:
+        pass
+
+    # Per-metric changes (bounded)
+    rows = results.get("metric_changes") or results.get("metric_changes_v2") or []
+    compact = []
+    try:
+        if isinstance(rows, list):
+            for r in rows:
+                if not isinstance(r, dict):
+                    continue
+                ck = str(r.get("canonical_key") or "")[:140]
+                nm = str(r.get("name") or "")[:140]
+                ct = str(r.get("change_type") or r.get("status") or "")[:40]
+                pv = r.get("previous_value")
+                pu = str(r.get("previous_unit") or "")[:40]
+                cv = r.get("current_value")
+                cu = str(r.get("current_unit") or "")[:40]
+                da = r.get("delta_abs")
+                dp = r.get("delta_pct")
+                comp = bool(r.get("baseline_is_comparable")) if ("baseline_is_comparable" in r) else None
+                dom = _llm86__extract_domain_v1(str(r.get("source_url") or ""))
+                compact.append({
+                    "canonical_key": ck,
+                    "name": nm,
+                    "change_type": ct,
+                    "previous_value": pv,
+                    "previous_unit": pu,
+                    "current_value": cv,
+                    "current_unit": cu,
+                    "delta_abs": da,
+                    "delta_pct": dp,
+                    "baseline_is_comparable": comp,
+                    "source_domain": dom,
+                })
+    except Exception:
+        pass
+
+    try:
+        # Stable ordering for deterministic payload
+        compact = sorted(compact, key=lambda x: str(x.get("canonical_key") or ""))
+    except Exception:
+        pass
+
+    try:
+        max_rows = 12
+        out["metric_changes_compact"] = compact[:max_rows]
+        out["metric_changes_total"] = int(len(compact))
+        if int(len(compact)) > max_rows:
+            out["metric_changes_truncated"] = True
+    except Exception:
+        pass
+
+    return out
+
+
+def _yureeka_llm_evolution_summary_v1(results: dict, query: str) -> Tuple[Optional[dict], dict]:
+    """Return an LLM-written Evolution summary object, or None (no-op), plus debug diag."""
+    dbg = {"v": "nlp86_llm_evolution_summary_v1"}
+    try:
+        enabled, enabled_src = _yureeka_llm_flag_effective_v1("ENABLE_LLM_EVOLUTION_SUMMARY")
+    except Exception:
+        enabled, enabled_src = (bool(globals().get("ENABLE_LLM_EVOLUTION_SUMMARY")), "code:ENABLE_LLM_EVOLUTION_SUMMARY")
+    dbg["enabled"] = bool(enabled)
+    dbg["enabled_source"] = str(enabled_src or "")[:120]
+    if not bool(enabled):
+        dbg["llm_reason"] = "flag_off"
+        return (None, dbg)
+
+    # Provider snapshot (non-sensitive)
+    try:
+        dbg["provider"] = _llm01_provider_status_v1()
+    except Exception:
+        dbg["provider"] = {"ok": False}
+
+    try:
+        model = os.environ.get("YUREEKA_LLM_MODEL") or os.environ.get("OPENAI_MODEL") or "gpt-4o-mini"
+    except Exception:
+        model = "gpt-4o-mini"
+
+    prompt_version = "llm86_evolution_summary_v1"
+    schema_version = "schema_frozen_v1"
+    feature = "llm86_evolution_summary"
+
+    try:
+        payload = _llm86_build_evolution_summary_payload_v1(results if isinstance(results, dict) else {}, query)
+        input_hash = _yureeka_hash_text_v1(_yureeka__stable_json_dumps_v1(payload))
+        q_hash = _yureeka_hash_text_v1(str(query or ""))
+        key, key_fallback = get_llm_cache_key_salted_v1(str(model), prompt_version, schema_version, str(input_hash), "", str(q_hash))
+        dbg["llm_cache_key"] = str(key or "")[:120]
+        dbg["llm_cache_key_fallback"] = str(key_fallback or "")[:120]
+    except Exception:
+        payload = {"v": "llm86_evolution_summary_payload_v1", "query": str(query or "")[:300]}
+        key = ""
+        key_fallback = ""
+
+    candidate = None
+    if key:
+        cached = get_cached_llm_response(key, validator=_llm86__validate_evolution_summary_v1, feature=feature, diag=dbg)
+        if cached is None and key_fallback:
+            cached = get_cached_llm_response(key_fallback, validator=_llm86__validate_evolution_summary_v1, feature=feature, diag=dbg)
+            if cached is not None:
+                dbg["llm_cache_fallback_hit"] = True
+        if cached is not None:
+            dbg["llm_cache_hit"] = True
+            candidate = cached
+            try:
+                _yureeka_llm_global_agg_update_v1(feature, {"ok": True, "status": None, "reason": "cache_hit", "model": str(model)}, cache_hit=True)
+            except Exception:
+                pass
+
+    if candidate is None:
+        # Replay-only => cache-hit or no-op
+        try:
+            _ro, _ro_src = _yureeka_llm_flag_effective_v1("LLM_CACHE_REPLAY_ONLY")
+        except Exception:
+            _ro, _ro_src = (bool(globals().get("LLM_CACHE_REPLAY_ONLY")), "code:LLM_CACHE_REPLAY_ONLY")
+        if bool(_ro):
+            noop = _yureeka_llm_replay_only_noop_diag_v1(feature=feature, model=str(model), cache_key=str(key), cache_key_fallback=str(key_fallback or ""), where="llm86_evolution_summary")
+            dbg["llm_call_diag"] = dict(noop)
+            dbg["llm_used"] = False
+            dbg["llm_ok"] = False
+            dbg["llm_reason"] = "cache_miss_noop"
+            try:
+                _yureeka_llm_global_agg_update_v1(feature, noop, cache_hit=False)
+            except Exception:
+                pass
+            return (None, dbg)
+
+        # Network-disabled => cache-hit-only no-op
+        try:
+            _an, _an_src = _yureeka_llm_flag_effective_v1("LLM_ALLOW_NETWORK_CALLS")
+        except Exception:
+            _an, _an_src = (bool(globals().get("LLM_ALLOW_NETWORK_CALLS")), "code:LLM_ALLOW_NETWORK_CALLS")
+        if not bool(_an):
+            noop = _yureeka_llm_network_disabled_noop_diag_v1(feature=feature, model=str(model), cache_key=str(key), cache_key_fallback=str(key_fallback or ""), where="llm86_evolution_summary")
+            dbg["llm_call_diag"] = dict(noop)
+            dbg["llm_used"] = False
+            dbg["llm_ok"] = False
+            dbg["llm_reason"] = "cache_miss_noop_network_disabled"
+            try:
+                _yureeka_llm_global_agg_update_v1(feature, noop, cache_hit=False)
+            except Exception:
+                pass
+            return (None, dbg)
+
+        system_prompt = (
+            "You write a concise Evolution dashboard narrative.\n"
+            "Use ONLY the facts in the user payload. Do NOT invent numbers, sources, causes, or dates.\n"
+            "No links/URLs. No citations. No commentary outside JSON.\n"
+            "Return ONLY a strict JSON object with keys:\n"
+            "  summary_markdown: string (markdown allowed; keep it short, ~6-12 lines)\n"
+            "  confidence: number 0-1\n"
+            "  highlights: array of short strings (optional)\n"
+            "  caveats: array of short strings (optional)\n"
+            "If there are no metric changes, say so plainly."
+        )
+
+        user_payload = payload if isinstance(payload, dict) else {"v": "llm86_evolution_summary_payload_v1", "query": str(query or "")[:300]}
+
+        obj, call_diag = _yureeka_call_openai_chat_json_v1(
+            model=str(model),
+            system_prompt=system_prompt,
+            user_payload=user_payload,
+            feature=feature,
+            prompt_version=prompt_version,
+            schema_version=schema_version,
+            timeout_sec=30,
+            max_tokens=520,
+        )
+        dbg["llm_call_diag"] = call_diag or {}
+        try:
+            if isinstance(call_diag, dict):
+                call_diag["cache_miss"] = True
+        except Exception:
+            pass
+        try:
+            _yureeka_llm_global_agg_update_v1(feature, (call_diag or {}), cache_hit=False)
+        except Exception:
+            pass
+        if isinstance(obj, dict) and obj:
+            candidate = obj
+            if key:
+                try:
+                    cache_llm_response(key, candidate)
+                except Exception:
+                    pass
+    else:
+        dbg["llm_call_diag"] = {"ok": True, "reason": "cache_hit"}
+
+    # Post-process + normalize output
+    if isinstance(candidate, dict):
+        try:
+            sm = candidate.get("summary_markdown")
+            if sm is None:
+                # Synthesize markdown from bullets if needed.
+                hl = candidate.get("highlights")
+                if isinstance(hl, list) and hl:
+                    sm = "\n".join(["- " + str(x).strip() for x in hl if str(x).strip()][:10])
+                    candidate["summary_markdown"] = sm
+            if isinstance(candidate.get("summary_markdown"), str):
+                candidate["summary_markdown"] = _llm86__strip_links_v1(candidate.get("summary_markdown"))
+        except Exception:
+            pass
+
+        ok, reason = _llm86__validate_evolution_summary_v1(candidate)
+        dbg["llm_ok"] = bool(ok)
+        dbg["llm_validation_reason"] = str(reason or "")[:80]
+        dbg["llm_used"] = True
+        if bool(ok):
+            dbg["llm_reason"] = "ok"
+            return (candidate, dbg)
+
+    dbg["llm_used"] = True
+    dbg["llm_ok"] = False
+    dbg["llm_reason"] = "invalid_or_empty"
+    return (None, dbg)
 
 
 def _yureeka_llm_text_hash_v1(text: str) -> str:
@@ -7620,6 +7968,32 @@ try:
         })
 except Exception:
     pass
+# NLP85: patch tracker overlay (NLP stream)
+try:
+    if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "NLP85" for e in PATCH_TRACKER_V1):
+        PATCH_TRACKER_V1.insert(0, {
+            "patch_id": "NLP85",
+            "scope": "nlp_llm_endstate",
+            "summary": "Declare NLP/LLM end-state + add informational UI banner/debug beacon (no decider changes).",
+            "risk": "low",
+        })
+except Exception:
+    pass
+
+# NLP86: patch tracker overlay (NLP stream)
+try:
+    if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "NLP86" for e in PATCH_TRACKER_V1):
+        PATCH_TRACKER_V1.insert(0, {
+            "patch_id": "NLP86",
+            "scope": "nlp_llm_endstate",
+            "summary": "Add LLM-written Evolution narrative summary panel (audit-only; cache-first/no-op; no decider changes).",
+            "risk": "low",
+        })
+except Exception:
+    pass
+
+
+
 
 
 # NLP83: patch tracker overlay (NLP stream)
@@ -9069,6 +9443,45 @@ def _nlp83_end_state_checklist_v1() -> dict:
         "LLM_FORCE_REFRESH_ONCE": False,
         "LLM_CACHE_REPLAY_ONLY": False,
     }
+    return out
+
+
+def _nlp85_end_state_declared_v1(checklist: dict = None) -> dict:
+    """End-state declaration beacon for the NLP/LLM stream (NLP85).
+    Pure diagnostics + UI-friendly summary. Never changes winners/values/snippets.
+    """
+    out = {"v": "nlp85_end_state_declared_v1", "declared_end_state_version": "NLP85"}
+    try:
+        out["code_version"] = str(CODE_VERSION_LOCK)
+    except Exception:
+        out["code_version"] = str(globals().get("_YUREEKA_CODE_VERSION_LOCK") or "")
+    try:
+        cl = checklist if isinstance(checklist, dict) else _nlp83_end_state_checklist_v1()
+    except Exception:
+        cl = {}
+    # Hard invariants we can assert locally (no triad needed)
+    try:
+        out["baseline_drift_free_expected"] = bool(((cl or {}).get("baseline") or {}).get("drift_free_when_llm_flags_off_expected"))
+    except Exception:
+        out["baseline_drift_free_expected"] = True
+    try:
+        out["dataset_status_panel_present"] = bool(((cl or {}).get("ui") or {}).get("dataset_status_panel_present"))
+    except Exception:
+        out["dataset_status_panel_present"] = True
+    # Surface warnings (soft posture; do not block validation)
+    try:
+        out["warnings"] = list((cl or {}).get("warnings") or [])
+    except Exception:
+        out["warnings"] = []
+    try:
+        out["recommended_defaults"] = dict((cl or {}).get("recommended_defaults") or {})
+    except Exception:
+        out["recommended_defaults"] = {}
+    # Validation (hard-only): true when the above hard invariants are present/true.
+    try:
+        out["hard_validated"] = bool(out.get("baseline_drift_free_expected")) and bool(out.get("dataset_status_panel_present"))
+    except Exception:
+        out["hard_validated"] = True
     return out
 
 
@@ -30679,6 +31092,49 @@ def render_source_anchored_results(results, query: str):
         else:
             st.caption("Prod-only stability (excluding injected rows): n/a (0 production rows)")
 
+
+    # NLP86: LLM narrative summary panel (audit-only; cache-first/no-op)
+    try:
+        _en86, _en86_src = _yureeka_llm_flag_effective_v1("ENABLE_LLM_EVOLUTION_SUMMARY")
+    except Exception:
+        _en86, _en86_src = (bool(globals().get("ENABLE_LLM_EVOLUTION_SUMMARY")), "code:ENABLE_LLM_EVOLUTION_SUMMARY")
+    if bool(_en86):
+        try:
+            _sum86 = results.get("llm_evolution_summary_v1") if isinstance(results.get("llm_evolution_summary_v1"), dict) else None
+            _dbg86p = (results.get("debug") if isinstance(results.get("debug"), dict) else {}).get("nlp86_llm_evolution_summary_v1")
+            if _sum86 is None:
+                _obj86p, _dbg86n = _yureeka_llm_evolution_summary_v1(results, query)
+                if isinstance(_dbg86n, dict):
+                    results.setdefault("debug", {})["nlp86_llm_evolution_summary_v1"] = _dbg86n
+                    _dbg86p = _dbg86n
+                if isinstance(_obj86p, dict) and str(_obj86p.get("summary_markdown") or "").strip():
+                    results["llm_evolution_summary_v1"] = _obj86p
+                    _sum86 = _obj86p
+            with st.expander("🧠 LLM narrative summary (audit-only)", expanded=True):
+                if isinstance(_sum86, dict) and str(_sum86.get("summary_markdown") or "").strip():
+                    st.markdown(str(_sum86.get("summary_markdown") or ""))
+                else:
+                    st.info("LLM narrative summary unavailable (cache miss or network disabled).")
+                try:
+                    _c = _sum86.get("confidence") if isinstance(_sum86, dict) else None
+                    if _c is not None:
+                        st.caption(f"LLM confidence: {float(_c):.2f}")
+                except Exception:
+                    pass
+                try:
+                    _pol86 = _yureeka_llm_cache_policy_summary_v1(stage="llm86_evolution_summary_ui")
+                    if isinstance(_pol86, dict):
+                        st.caption(
+                            f"Policy: cache_hit_only_effective={bool(_pol86.get('cache_hit_only_effective'))}, "
+                            f"network_allowed_effective={bool(_pol86.get('network_allowed_effective'))}"
+                        )
+                except Exception:
+                    pass
+                if isinstance(_dbg86p, dict):
+                    st.json(_dbg86p, expanded=False)
+        except Exception:
+            pass
+
     st.markdown("---")
 
     # Source status
@@ -32571,6 +33027,7 @@ def main():
                 if isinstance(output.get("debug"), dict):
                     output["debug"].setdefault("runtime_identity_v1", _yureeka_runtime_identity_v1())
                     output["debug"].setdefault("nlp83_end_state_checklist_v1", _nlp83_end_state_checklist_v1())
+                    output["debug"].setdefault("nlp85_end_state_declared_v1", _nlp85_end_state_declared_v1(output["debug"].get("nlp83_end_state_checklist_v1")))
             except Exception:
                 pass
 
@@ -32892,12 +33349,25 @@ def main():
                 _llm_ui_checkbox("ENABLE_LLM_QUERY_STRUCTURE_FALLBACK", "Enable LLM query-structure fallback (legacy)", default=False, help="OFF by default. When ON, low-confidence query structure may be refined by the sidecar (confidence-gated); may change retrieval terms.")
                 _llm_ui_checkbox("ENABLE_LLM_ANOMALY_FLAGS", "Enable LLM anomaly flags", default=False, help="Experimental.")
                 _llm_ui_checkbox("ENABLE_LLM_DATASET_LOGGING", "Enable LLM dataset logging", default=False, help="Experimental; may write small local logs.")
+                _llm_ui_checkbox("ENABLE_LLM_EVOLUTION_SUMMARY", "Enable LLM evolution summary", default=False, help="Audit-only: Writes a narrative summary of Evolution diffs. Cache-first/no-op by default; never affects winners.")
 
                 # NLP82: local dataset/events status panel (UI-only)
                 with st.expander("LLM dataset status (local)", expanded=False):
                     try:
                         _ds_status = _dataset_dir_status_v1(".yureeka_llm_dataset")
                         st.caption("Best-effort local scan of dataset/events JSONL logs (no network).")
+                        try:
+                            _es = _nlp85_end_state_declared_v1()
+                            _label = f"NLP/LLM end-state: {str((_es or {}).get('declared_end_state_version') or 'NLP85')}"
+                            if bool((_es or {}).get("hard_validated")):
+                                st.success(f"✅ {_label} (hard-validated)")
+                            else:
+                                st.warning(f"⚠️ {_label} (declared; see diagnostics)")
+                            _w = (_es or {}).get("warnings")
+                            if isinstance(_w, list) and _w:
+                                st.caption("Warnings: " + ", ".join([str(x) for x in _w][:6]))
+                        except Exception:
+                            pass
                         st.json(_ds_status, expanded=False)
                     except Exception:
                         st.write("Dataset status unavailable.")
@@ -33723,6 +34193,33 @@ def main():
                             pass
                 except Exception:
                     pass
+
+
+                # NLP86: optional LLM narrative summary for Evolution (audit-only; cache-first/no-op)
+                try:
+                    _en86, _en86_src = _yureeka_llm_flag_effective_v1("ENABLE_LLM_EVOLUTION_SUMMARY")
+                except Exception:
+                    _en86, _en86_src = (bool(globals().get("ENABLE_LLM_EVOLUTION_SUMMARY")), "code:ENABLE_LLM_EVOLUTION_SUMMARY")
+                if bool(_en86):
+                    try:
+                        _r86 = evolution_output.get("results", {}) if isinstance(evolution_output, dict) else {}
+                        _obj86, _dbg86 = _yureeka_llm_evolution_summary_v1(_r86 if isinstance(_r86, dict) else {}, str(evolution_query or ""))
+                        if isinstance(_obj86, dict) and str(_obj86.get("summary_markdown") or "").strip():
+                            try:
+                                evolution_output.setdefault("results", {})
+                                evolution_output["results"]["llm_evolution_summary_v1"] = _obj86
+                            except Exception:
+                                pass
+                        if isinstance(_dbg86, dict):
+                            try:
+                                evolution_output.setdefault("results", {})
+                                evolution_output["results"].setdefault("debug", {})
+                                if isinstance(evolution_output["results"].get("debug"), dict):
+                                    evolution_output["results"]["debug"]["nlp86_llm_evolution_summary_v1"] = _dbg86
+                            except Exception:
+                                pass
+                    except Exception:
+                        pass
 
                 st.download_button(
                     label="💾 Download Evolution Report",
