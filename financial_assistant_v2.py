@@ -458,7 +458,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "NLP83"
+_YUREEKA_CODE_VERSION_LOCK = "NLP84"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 # REFACTOR206: Release Candidate freeze (no pipeline behavior change).
 YUREEKA_RELEASE_CANDIDATE_V1 = False
@@ -2056,6 +2056,22 @@ def _yureeka_llm_force_refresh_once_state_v1() -> dict:
             on, src = _yureeka_llm_flag_effective_v1("LLM_FORCE_REFRESH_ONCE")
             st["enabled"] = bool(on)
             st["source"] = str(src)[:80]
+            # NLP84: fail-closed diagnostic guard — FORCE_REFRESH_ONCE requires SEED_MODE (diagnostic only; no behavior change)
+            try:
+                if bool(st.get("enabled")):
+                    _sm, _sm_src = _yureeka_llm_flag_effective_v1("LLM_SEED_MODE")
+                    if not bool(_sm):
+                        if str(st.get("blocked_reason") or "") in ("", "seed_mode_required"):
+                            st["blocked_reason"] = "seed_mode_required"
+                    else:
+                        if str(st.get("blocked_reason") or "") == "seed_mode_required":
+                            st["blocked_reason"] = ""
+                else:
+                    if str(st.get("blocked_reason") or "") == "seed_mode_required":
+                        st["blocked_reason"] = ""
+            except Exception:
+                pass
+
         except Exception:
             pass
         return st
@@ -7593,6 +7609,19 @@ try:
 except Exception:
     PATCH_TRACKER_V1 = []
 
+# NLP84: patch tracker overlay (NLP stream)
+try:
+    if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "NLP84" for e in PATCH_TRACKER_V1):
+        PATCH_TRACKER_V1.insert(0, {
+            "patch_id": "NLP84",
+            "scope": "nlp_llm_endstate",
+            "summary": "Seed toggles hygiene: add checklist warnings + fail-closed FORCE_REFRESH/SEED_MODE mismatch diagnostic (no decider changes).",
+            "risk": "low",
+        })
+except Exception:
+    pass
+
+
 # NLP83: patch tracker overlay (NLP stream)
 try:
     if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "NLP83" for e in PATCH_TRACKER_V1):
@@ -8961,9 +8990,12 @@ def _nlp83_end_state_checklist_v1() -> dict:
     """End-state checklist beacon (additive). Pure diagnostics; does not change winners/values."""
     out = {"v": "nlp83_end_state_checklist_v1"}
     try:
-        out["code_version"] = str(CODE_VERSION_LOCK)
+        out["code_version"] = str(CODE_VERSION)
     except Exception:
         out["code_version"] = ""
+
+    warnings = []
+
     # LLM safety posture (recompute from flags; mirrors policy summary)
     try:
         allow_net = bool(_yureeka_llm_flag_bool_v1("LLM_ALLOW_NETWORK_CALLS"))
@@ -8978,32 +9010,67 @@ def _nlp83_end_state_checklist_v1() -> dict:
     except Exception:
         replay_only = False
     network_allowed_effective = bool(allow_net and seed_mode and (not replay_only))
+
     out["llm_safety"] = {
         "allow_network_calls": bool(allow_net),
         "seed_mode_enabled": bool(seed_mode),
         "cache_replay_only": bool(replay_only),
         "network_allowed_effective": bool(network_allowed_effective),
     }
+
     # One-shot seed capsule presence (best-effort)
     try:
         force_once = bool(_yureeka_llm_flag_bool_v1("LLM_FORCE_REFRESH_ONCE"))
     except Exception:
         force_once = False
+
+    try:
+        _st = _yureeka_llm_force_refresh_once_state_v1()
+        _consumed = bool(_st.get("consumed")) if isinstance(_st, dict) else False
+        _blocked = str(_st.get("blocked_reason") or "")[:80] if isinstance(_st, dict) else ""
+    except Exception:
+        _consumed = False
+        _blocked = ""
+
     out["seed_fill"] = {
         "force_refresh_once_enabled": bool(force_once),
+        "force_refresh_once_consumed": bool(_consumed),
+        "force_refresh_once_blocked_reason": str(_blocked)[:80],
         "one_shot_supported": True,
     }
+
     # Dataset logging posture
     try:
         ds_enabled = bool(_yureeka_llm_flag_bool_v1("ENABLE_LLM_DATASET_LOGGING"))
     except Exception:
         ds_enabled = False
     out["dataset_logging"] = {"enabled": bool(ds_enabled)}
+
     # UI affordance (NLP82 dataset status expander)
     out["ui"] = {"dataset_status_panel_present": True}
+
     # Baseline safety: this is a declarative claim (triad confirms drift-free when flags OFF)
     out["baseline"] = {"drift_free_when_llm_flags_off_expected": True}
+
+    # Misuse-proofing / ergonomics warnings (diagnostic only)
+    if bool(seed_mode) and (not bool(allow_net)):
+        warnings.append("seed_mode_enabled_but_network_off")
+    if bool(force_once) and (not bool(seed_mode)):
+        warnings.append("force_refresh_once_enabled_but_seed_mode_off")
+    if bool(force_once) and (not bool(_consumed)):
+        warnings.append("force_refresh_once_enabled_but_not_consumed")
+
+    out["warnings"] = list(warnings)
+
+    # Optional: recommended defaults for "safe by default" posture
+    out["recommended_defaults"] = {
+        "LLM_ALLOW_NETWORK_CALLS": False,
+        "LLM_SEED_MODE": False,
+        "LLM_FORCE_REFRESH_ONCE": False,
+        "LLM_CACHE_REPLAY_ONLY": False,
+    }
     return out
+
 
 def _yureeka_lock_version_globals_v1():
     """Re-assert global version vars for observability (does not affect the frozen getter)."""
