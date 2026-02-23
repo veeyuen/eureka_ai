@@ -6175,67 +6175,67 @@ def _llm01_llm_rank_windows_v1(
             except Exception:
                 _skip_seed_once = False
             if not bool(_skip_seed_once):
-            try:
-                cand = []
                 try:
-                    if str(cache_key or ""):
-                        cand.append(("primary", str(cache_key)))
-                except Exception:
-                    pass
-                try:
-                    if str(cache_key_fallback or "") and (str(cache_key_fallback) != str(cache_key)):
-                        cand.append(("fallback", str(cache_key_fallback)))
-                except Exception:
-                    pass
-                # record selection candidates into one-shot state (non-sensitive)
-                try:
-                    _st = _yureeka_llm_force_refresh_once_state_v1()
-                    if isinstance(_st, dict):
-                        _st["candidate_keys_n"] = int(len(cand))
-                except Exception:
-                    pass
-
-                for _kind, _k in cand:
-                    if not _k:
-                        continue
-                    _missing = False
+                    cand = []
                     try:
-                        _p = _llm_cache_path_v1(_k)
-                        _missing = (not bool(_p)) or (not os.path.exists(_p))
-                    except Exception:
-                        _missing = False
-                    if bool(_missing):
-                        _selected_key = _k
-                        _selected_kind = _kind
-                        break
-
-                # expose selection outcome into state beacons
-                try:
-                    _st = _yureeka_llm_force_refresh_once_state_v1()
-                    if isinstance(_st, dict):
-                        _st["selected_key"] = str(_selected_key or "")[:120]
-                        _st["selected_kind"] = str(_selected_kind or "")[:40]
-                        _st["selected_disk_missing"] = bool(_selected_key)
-                        _st["key_consistency_ok"] = True
-                        _st["key_consistency_detail"] = ""
-                except Exception:
-                    pass
-
-                if _selected_key:
-                    try:
-                        _armed = bool(_yureeka_llm_force_refresh_once_arm_v1(feature="llm01_evidence_rank", cache_key=str(_selected_key), where="llm01_evidence_rank"))
-                    except Exception:
-                        _armed = False
-                else:
-                    # No missing cache keys => nothing to seed; do not consume.
-                    try:
-                        _st = _yureeka_llm_force_refresh_once_state_v1()
-                        if isinstance(_st, dict) and bool(_st.get("enabled")) and (not bool(_st.get("consumed"))):
-                            _st["blocked_reason"] = "no_missing_cache_keys"
+                        if str(cache_key or ""):
+                            cand.append(("primary", str(cache_key)))
                     except Exception:
                         pass
-            except Exception:
-                _armed = False
+                    try:
+                        if str(cache_key_fallback or "") and (str(cache_key_fallback) != str(cache_key)):
+                            cand.append(("fallback", str(cache_key_fallback)))
+                    except Exception:
+                        pass
+                    # record selection candidates into one-shot state (non-sensitive)
+                    try:
+                        _st = _yureeka_llm_force_refresh_once_state_v1()
+                        if isinstance(_st, dict):
+                            _st["candidate_keys_n"] = int(len(cand))
+                    except Exception:
+                        pass
+
+                    for _kind, _k in cand:
+                        if not _k:
+                            continue
+                        _missing = False
+                        try:
+                            _p = _llm_cache_path_v1(_k)
+                            _missing = (not bool(_p)) or (not os.path.exists(_p))
+                        except Exception:
+                            _missing = False
+                        if bool(_missing):
+                            _selected_key = _k
+                            _selected_kind = _kind
+                            break
+
+                    # expose selection outcome into state beacons
+                    try:
+                        _st = _yureeka_llm_force_refresh_once_state_v1()
+                        if isinstance(_st, dict):
+                            _st["selected_key"] = str(_selected_key or "")[:120]
+                            _st["selected_kind"] = str(_selected_kind or "")[:40]
+                            _st["selected_disk_missing"] = bool(_selected_key)
+                            _st["key_consistency_ok"] = True
+                            _st["key_consistency_detail"] = ""
+                    except Exception:
+                        pass
+
+                    if _selected_key:
+                        try:
+                            _armed = bool(_yureeka_llm_force_refresh_once_arm_v1(feature="llm01_evidence_rank", cache_key=str(_selected_key), where="llm01_evidence_rank"))
+                        except Exception:
+                            _armed = False
+                    else:
+                        # No missing cache keys => nothing to seed; do not consume.
+                        try:
+                            _st = _yureeka_llm_force_refresh_once_state_v1()
+                            if isinstance(_st, dict) and bool(_st.get("enabled")) and (not bool(_st.get("consumed"))):
+                                _st["blocked_reason"] = "no_missing_cache_keys"
+                        except Exception:
+                            pass
+                except Exception:
+                    _armed = False
             if not bool(_armed):
                 noop = _yureeka_llm_network_disabled_noop_diag_v1(
                     feature="llm01_evidence_rank",
