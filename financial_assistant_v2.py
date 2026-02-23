@@ -458,7 +458,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "NLP78"
+_YUREEKA_CODE_VERSION_LOCK = "NLP79"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 # REFACTOR206: Release Candidate freeze (no pipeline behavior change).
 YUREEKA_RELEASE_CANDIDATE_V1 = False
@@ -2048,6 +2048,8 @@ def _yureeka_llm_force_refresh_once_state_v1() -> dict:
                 "selected_kind": "",
                 "selected_disk_missing": False,
                 "candidate_keys_n": 0,
+                "key_consistency_ok": True,
+                "key_consistency_detail": "",
             }
             globals()["_YUREEKA_LLM_FORCE_REFRESH_ONCE_STATE_V1"] = st
         try:
@@ -2180,6 +2182,25 @@ def _yureeka_llm_force_refresh_once_arm_v1(*, feature: str, cache_key: str, wher
         except Exception:
             st["armed_at"] = 0.0
         st["blocked_reason"] = ""
+
+        # NLP79: enforce consistent key beacons (selected/armed/key)
+        try:
+            _sk = str(st.get("selected_key") or "")
+            _k12 = k[:120]
+            if _sk and (_sk != _k12):
+                st["key_consistency_ok"] = False
+                st["key_consistency_detail"] = "selected_key_mismatch_armed_key"
+                # Do not overwrite selected_key; preserve for audit.
+            else:
+                st["selected_key"] = _k12
+                # keep selected_kind if already set (primary/fallback)
+                if not str(st.get("selected_kind") or ""):
+                    st["selected_kind"] = "armed"
+                st["selected_disk_missing"] = True
+                st["key_consistency_ok"] = True
+                st["key_consistency_detail"] = ""
+        except Exception:
+            pass
 
         # Expose a tiny global active capsule so the provider boundary can allow the one-shot call.
         try:
@@ -6143,6 +6164,17 @@ def _llm01_llm_rank_windows_v1(
             _armed = False
             _selected_key = ""
             _selected_kind = ""
+            # NLP79: if the one-shot has already been consumed/armed, do not overwrite selection beacons.
+            _skip_seed_once = False
+            try:
+                _st0 = _yureeka_llm_force_refresh_once_state_v1()
+                if isinstance(_st0, dict) and bool(_st0.get("enabled")) and (bool(_st0.get("consumed")) or bool(_st0.get("armed"))):
+                    _skip_seed_once = True
+                    if not str(_st0.get("blocked_reason") or ""):
+                        _st0["blocked_reason"] = "already_consumed"
+            except Exception:
+                _skip_seed_once = False
+            if not bool(_skip_seed_once):
             try:
                 cand = []
                 try:
@@ -6184,6 +6216,8 @@ def _llm01_llm_rank_windows_v1(
                         _st["selected_key"] = str(_selected_key or "")[:120]
                         _st["selected_kind"] = str(_selected_kind or "")[:40]
                         _st["selected_disk_missing"] = bool(_selected_key)
+                        _st["key_consistency_ok"] = True
+                        _st["key_consistency_detail"] = ""
                 except Exception:
                     pass
 
@@ -7329,6 +7363,18 @@ try:
             "patch_id": "NLP78",
             "scope": "nlp_llm_endstate",
             "summary": "Make one-shot seed refresh unambiguous: never auto-consume on cache hit; deterministically target first disk-missing cache key; add consumed_reason + selection beacons; increment calls_made only on actual armed network call.",
+            "risk": "low",
+        })
+except Exception:
+    pass
+
+# NLP79: patch tracker overlay (NLP stream)
+try:
+    if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "NLP79" for e in PATCH_TRACKER_V1):
+        PATCH_TRACKER_V1.insert(0, {
+            "patch_id": "NLP79",
+            "scope": "nlp_llm_endstate",
+            "summary": "Fix one-shot seed audit consistency: prevent selected_key beacons from being overwritten after consume; add key_consistency_ok/detail; enforce selected vs armed key consistency in arming path.",
             "risk": "low",
         })
 except Exception:
