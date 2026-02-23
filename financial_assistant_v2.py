@@ -458,7 +458,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "NLP87"
+_YUREEKA_CODE_VERSION_LOCK = "NLP88"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 # REFACTOR206: Release Candidate freeze (no pipeline behavior change).
 YUREEKA_RELEASE_CANDIDATE_V1 = False
@@ -3573,9 +3573,12 @@ def _yureeka_llm_evolution_summary_v1(results: dict, query: str) -> Tuple[Option
     except Exception:
         model = "gpt-4o-mini"
 
-    prompt_version = "llm86_evolution_summary_v1"
+    prompt_version = "llm86_evolution_summary_v2"
     schema_version = "schema_frozen_v1"
     feature = "llm86_evolution_summary"
+
+    dbg["prompt_version"] = str(prompt_version)
+    dbg["schema_version"] = str(schema_version)
 
     try:
         payload = _llm86_build_evolution_summary_payload_v1(results if isinstance(results, dict) else {}, query)
@@ -3657,17 +3660,27 @@ def _yureeka_llm_evolution_summary_v1(results: dict, query: str) -> Tuple[Option
             except Exception:
                 pass
             return (None, dbg)
-
         system_prompt = (
-            "You write a concise Evolution dashboard narrative.\n"
-            "Use ONLY the facts in the user payload. Do NOT invent numbers, sources, causes, or dates.\n"
-            "No links/URLs. No citations. No commentary outside JSON.\n"
+            "You write an Evolution dashboard narrative (audit-only).\n"
+            "Use ONLY the facts in the user payload. Do NOT invent numbers, sources, causes, dates, or runtime.\n"
+            "No links/URLs. Domain names are allowed (e.g., example.com).\n"
             "Return ONLY a strict JSON object with keys:\n"
-            "  summary_markdown: string (markdown allowed; keep it short, ~6-12 lines)\n"
+            "  summary_markdown: string (markdown allowed; structured; ~12-24 lines max)\n"
             "  confidence: number 0-1\n"
             "  highlights: array of short strings (optional)\n"
             "  caveats: array of short strings (optional)\n"
-            "If there are no metric changes, say so plainly."
+            "\n"
+            "In summary_markdown, follow this structure:\n"
+            "1) **Title** (1 line).\n"
+            "2) **Executive summary** (2-3 sentences): say whether injected data won (if indicated), how many metrics changed, and the stability score if present.\n"
+            "3) **What changed**: bullet list, up to 6 bullets. Each bullet MUST include metric name + old→new + units, and direction (increased/decreased/unchanged).\n"
+            "   - Include percent change only if delta_pct is provided or can be computed from old/new safely.\n"
+            "4) **Interpretation** (1 short paragraph): keep neutral. If payload indicates injection or freshness tie-break, explain that those mechanisms explain why winners differ; do not claim real-world causes.\n"
+            "5) **Suggested checks**: 2-3 bullets (e.g., verify injected page values, verify units/comparability, rerun without injection if unexpected).\n"
+            "\n"
+            "Runtime rule: mention run time ONLY if run_delta_human or run_delta_seconds exists in the payload; otherwise omit it.\n"
+            "If there are no metric changes, say so plainly and still provide Suggested checks.\n"
+            "No commentary outside JSON."
         )
 
         user_payload = payload if isinstance(payload, dict) else {"v": "llm86_evolution_summary_payload_v1", "query": str(query or "")[:300]}
@@ -3680,7 +3693,7 @@ def _yureeka_llm_evolution_summary_v1(results: dict, query: str) -> Tuple[Option
             prompt_version=prompt_version,
             schema_version=schema_version,
             timeout_sec=30,
-            max_tokens=520,
+            max_tokens=780,
         )
         dbg["llm_call_diag"] = call_diag or {}
         try:
@@ -8038,6 +8051,20 @@ except Exception:
     pass
 
 
+# NLP88: patch tracker overlay (NLP stream)
+try:
+    if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "NLP88" for e in PATCH_TRACKER_V1):
+        PATCH_TRACKER_V1.insert(0, {
+            "patch_id": "NLP88",
+            "scope": "nlp_llm_endstate",
+            "summary": "Polish: make LLM evolution summary more narrative (structured output + no runtime guessing). Cache key bumped (prompt v2).",
+            "risk": "low",
+        })
+except Exception:
+    pass
+
+
+
 
 
 
@@ -9493,10 +9520,10 @@ def _nlp83_end_state_checklist_v1() -> dict:
 
 
 def _nlp85_end_state_declared_v1(checklist: dict = None) -> dict:
-    """End-state declaration beacon for the NLP/LLM stream (NLP85 base; NLP87 hotfix).
+    """End-state declaration beacon for the NLP/LLM stream (NLP85 base; NLP88 narrative polish).
     Pure diagnostics + UI-friendly summary. Never changes winners/values/snippets.
     """
-    out = {"v": "nlp85_end_state_declared_v1", "declared_end_state_version": "NLP87", "declared_end_state_base_version": "NLP85"}
+    out = {"v": "nlp85_end_state_declared_v1", "declared_end_state_version": "NLP88", "declared_end_state_base_version": "NLP85"}
     try:
         out["code_version"] = str(CODE_VERSION_LOCK)
     except Exception:
