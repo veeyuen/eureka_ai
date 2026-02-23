@@ -458,7 +458,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "NLP81"
+_YUREEKA_CODE_VERSION_LOCK = "NLP82"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 # REFACTOR206: Release Candidate freeze (no pipeline behavior change).
 YUREEKA_RELEASE_CANDIDATE_V1 = False
@@ -3551,6 +3551,57 @@ def _dataset_tail_jsonl_v1(path: str, *, max_lines: int = 5) -> list:
         return out
     except Exception:
         return out
+
+
+def _dataset_dir_status_v1(dataset_dir: str = ".yureeka_llm_dataset") -> dict:
+    """Best-effort local scan of dataset/events logs for UI visibility."""
+    out = {
+        "dataset_dir": str(dataset_dir or ""),
+        "files_total": 0,
+        "bytes_total": 0,
+        "dataset_latest_path": "",
+        "dataset_latest_mtime_utc": "",
+        "events_latest_path": "",
+        "events_latest_mtime_utc": "",
+        "events_tail_sample": [],
+    }
+    try:
+        d = str(dataset_dir or "")
+        if not d:
+            return out
+        if not os.path.isdir(d):
+            return out
+        files = []
+        for fn in os.listdir(d):
+            if not isinstance(fn, str):
+                continue
+            if not fn.endswith(".jsonl"):
+                continue
+            fp = os.path.join(d, fn)
+            try:
+                st = os.stat(fp)
+            except Exception:
+                continue
+            files.append((fp, float(getattr(st, "st_mtime", 0.0) or 0.0), int(getattr(st, "st_size", 0) or 0)))
+        out["files_total"] = len(files)
+        out["bytes_total"] = int(sum(x[2] for x in files))
+        # choose latest dataset + events files by mtime
+        ds = [x for x in files if "yureeka_dataset_" in os.path.basename(x[0])]
+        ev = [x for x in files if "yureeka_llm_events_" in os.path.basename(x[0])]
+        if ds:
+            ds.sort(key=lambda t: (t[1], t[0]))
+            out["dataset_latest_path"] = ds[-1][0]
+            out["dataset_latest_mtime_utc"] = _dataset_mtime_iso_v1(ds[-1][0])
+        if ev:
+            ev.sort(key=lambda t: (t[1], t[0]))
+            out["events_latest_path"] = ev[-1][0]
+            out["events_latest_mtime_utc"] = _dataset_mtime_iso_v1(ev[-1][0])
+            out["events_tail_sample"] = _dataset_tail_jsonl_v1(ev[-1][0], max_lines=3)
+    except Exception:
+        return out
+    return out
+
+
 
 def _dataset_mtime_iso_v1(path: str) -> str:
     try:
@@ -7612,6 +7663,17 @@ try:
             "summary": "Add dataset status beacon fields (mtime, tail events preview) for UI/debug; no pipeline decision changes.",
             "risk": "low",
         })
+except Exception:
+    pass
+
+
+try:
+    PATCH_TRACKER_V1.insert(0, {
+        "patch_id": "NLP82",
+        "scope": "nlp_llm_endstate",
+        "summary": "Add Streamlit sidebar dataset status panel (local scan) for dataset/events logs; no decider changes.",
+        "risk": "low",
+    })
 except Exception:
     pass
 
@@ -32700,6 +32762,16 @@ def main():
                 _llm_ui_checkbox("ENABLE_LLM_QUERY_STRUCTURE_FALLBACK", "Enable LLM query-structure fallback (legacy)", default=False, help="OFF by default. When ON, low-confidence query structure may be refined by the sidecar (confidence-gated); may change retrieval terms.")
                 _llm_ui_checkbox("ENABLE_LLM_ANOMALY_FLAGS", "Enable LLM anomaly flags", default=False, help="Experimental.")
                 _llm_ui_checkbox("ENABLE_LLM_DATASET_LOGGING", "Enable LLM dataset logging", default=False, help="Experimental; may write small local logs.")
+
+                # NLP82: local dataset/events status panel (UI-only)
+                with st.expander("LLM dataset status (local)", expanded=False):
+                    try:
+                        _ds_status = _dataset_dir_status_v1(".yureeka_llm_dataset")
+                        st.caption("Best-effort local scan of dataset/events JSONL logs (no network).")
+                        st.json(_ds_status, expanded=False)
+                    except Exception:
+                        st.write("Dataset status unavailable.")
+
 
             st.markdown("**Diagnostics**")
             _llm_ui_checkbox("ENABLE_LLM_SMOKE_TEST", "Run LLM smoke test (connectivity)", default=False, help="Records non-sensitive status in the JSON debug.")
