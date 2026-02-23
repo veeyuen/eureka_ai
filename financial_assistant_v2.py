@@ -458,7 +458,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "NLP86"
+_YUREEKA_CODE_VERSION_LOCK = "NLP87"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 # REFACTOR206: Release Candidate freeze (no pipeline behavior change).
 YUREEKA_RELEASE_CANDIDATE_V1 = False
@@ -3551,7 +3551,7 @@ def _llm86_build_evolution_summary_payload_v1(results: dict, query: str) -> dict
 
 def _yureeka_llm_evolution_summary_v1(results: dict, query: str) -> Tuple[Optional[dict], dict]:
     """Return an LLM-written Evolution summary object, or None (no-op), plus debug diag."""
-    dbg = {"v": "nlp86_llm_evolution_summary_v1"}
+    dbg = {"v": "nlp86_llm_evolution_summary_v1", "hotfix": "nlp87_cache_key_hash_fix_v1"}
     try:
         enabled, enabled_src = _yureeka_llm_flag_effective_v1("ENABLE_LLM_EVOLUTION_SUMMARY")
     except Exception:
@@ -3579,19 +3579,38 @@ def _yureeka_llm_evolution_summary_v1(results: dict, query: str) -> Tuple[Option
 
     try:
         payload = _llm86_build_evolution_summary_payload_v1(results if isinstance(results, dict) else {}, query)
+        dbg["payload_build_ok"] = True
+    except Exception as _e:
+        payload = {"v": "llm86_evolution_summary_payload_v1", "query": str(query or "")[:300]}
+        dbg["payload_build_ok"] = False
+        try:
+            dbg["payload_build_error"] = str(_e)[:160]
+        except Exception:
+            pass
+
+    # Build cache keys (do NOT drop payload if key building fails)
+    key = ""
+    key_fallback = ""
+    try:
         input_hash = _yureeka_hash_text_v1(_yureeka__stable_json_dumps_v1(payload))
         q_hash = _yureeka_hash_text_v1(str(query or ""))
         key, key_fallback = get_llm_cache_key_salted_v1(str(model), prompt_version, schema_version, str(input_hash), "", str(q_hash))
         dbg["llm_cache_key"] = str(key or "")[:120]
         dbg["llm_cache_key_fallback"] = str(key_fallback or "")[:120]
-    except Exception:
-        payload = {"v": "llm86_evolution_summary_payload_v1", "query": str(query or "")[:300]}
-        key = ""
-        key_fallback = ""
+        dbg["llm_cache_key_ok"] = True
+    except Exception as _e2:
+        dbg["llm_cache_key_ok"] = False
+        try:
+            dbg["llm_cache_key_error"] = str(_e2)[:160]
+        except Exception:
+            pass
+
 
     candidate = None
-    if key:
-        cached = get_cached_llm_response(key, validator=_llm86__validate_evolution_summary_v1, feature=feature, diag=dbg)
+    if key or key_fallback:
+        cached = None
+        if key:
+            cached = get_cached_llm_response(key, validator=_llm86__validate_evolution_summary_v1, feature=feature, diag=dbg)
         if cached is None and key_fallback:
             cached = get_cached_llm_response(key_fallback, validator=_llm86__validate_evolution_summary_v1, feature=feature, diag=dbg)
             if cached is not None:
@@ -3719,6 +3738,19 @@ def _yureeka_llm_text_hash_v1(text: str) -> str:
         return h[:16]
     except Exception:
         return ""
+
+def _yureeka_hash_text_v1(text: str) -> str:
+    """Stable short hash for text (compat helper).
+
+    NLP87 hotfix: some LLM cache paths referenced this helper; keep it simple and deterministic.
+    """
+    try:
+        h = hashlib.sha256((text or "").encode("utf-8", errors="ignore")).hexdigest()
+        return h[:16]
+    except Exception:
+        return ""
+
+
 
 
 
@@ -7993,6 +8025,20 @@ except Exception:
     pass
 
 
+# NLP87: patch tracker overlay (NLP stream)
+try:
+    if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "NLP87" for e in PATCH_TRACKER_V1):
+        PATCH_TRACKER_V1.insert(0, {
+            "patch_id": "NLP87",
+            "scope": "nlp_llm_endstate",
+            "summary": "Hotfix: restore LLM cache key hashing helper and preserve rich payload for evolution summary (fixes blank/incorrect LLM narrative + caching).",
+            "risk": "low",
+        })
+except Exception:
+    pass
+
+
+
 
 
 
@@ -9447,10 +9493,10 @@ def _nlp83_end_state_checklist_v1() -> dict:
 
 
 def _nlp85_end_state_declared_v1(checklist: dict = None) -> dict:
-    """End-state declaration beacon for the NLP/LLM stream (NLP85).
+    """End-state declaration beacon for the NLP/LLM stream (NLP85 base; NLP87 hotfix).
     Pure diagnostics + UI-friendly summary. Never changes winners/values/snippets.
     """
-    out = {"v": "nlp85_end_state_declared_v1", "declared_end_state_version": "NLP85"}
+    out = {"v": "nlp85_end_state_declared_v1", "declared_end_state_version": "NLP87", "declared_end_state_base_version": "NLP85"}
     try:
         out["code_version"] = str(CODE_VERSION_LOCK)
     except Exception:
