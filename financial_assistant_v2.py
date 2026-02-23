@@ -458,7 +458,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "NLP77"
+_YUREEKA_CODE_VERSION_LOCK = "NLP78"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 # REFACTOR206: Release Candidate freeze (no pipeline behavior change).
 YUREEKA_RELEASE_CANDIDATE_V1 = False
@@ -2030,6 +2030,7 @@ def _yureeka_llm_force_refresh_once_state_v1() -> dict:
                 "enabled": False,
                 "source": "",
                 "consumed": False,
+                "consumed_reason": "",
                 "key": "",
                 "consumed_at": 0.0,
                 "disk_existed": False,
@@ -2041,7 +2042,12 @@ def _yureeka_llm_force_refresh_once_state_v1() -> dict:
                 "armed_at": 0.0,
                 "calls_budget": 1,
                 "calls_made": 0,
-                "blocked_reason": "" ,
+                "blocked_reason": "",
+                # NLP78: deterministic target selection beacons (non-sensitive)
+                "selected_key": "",
+                "selected_kind": "",
+                "selected_disk_missing": False,
+                "candidate_keys_n": 0,
             }
             globals()["_YUREEKA_LLM_FORCE_REFRESH_ONCE_STATE_V1"] = st
         try:
@@ -2056,43 +2062,39 @@ def _yureeka_llm_force_refresh_once_state_v1() -> dict:
 
 
 def _yureeka_llm_force_refresh_once_should_bypass_v1(key: str) -> bool:
-    """Return True if we should bypass cache for this key (and consume the one-shot)."""
+    """Return True if we should bypass cache for this key.
+
+    NLP78 semantics:
+      - Never "auto-consume" on cache-hit (that made seed testing ambiguous).
+      - Only bypass when a one-shot capsule has been explicitly armed for this exact cache_key.
+    """
     try:
-        st = _yureeka_llm_force_refresh_once_state_v1()
-        if not bool(st.get("enabled")) or bool(st.get("consumed")):
-            return False
         if not key:
             return False
-
-        mem_hit = False
-        try:
-            mem_hit = bool(key in _LLM_CACHE_MEM_V1)
-        except Exception:
-            mem_hit = False
-
-        disk_hit = False
-        try:
-            path = _llm_cache_path_v1(key)
-            disk_hit = bool(path) and os.path.exists(path)
-        except Exception:
-            disk_hit = False
-
-        # Only consume when we would have served from cache (guarantees ≥1 live call).
-        if not (mem_hit or disk_hit):
+        st = _yureeka_llm_force_refresh_once_state_v1()
+        if not isinstance(st, dict) or (not bool(st.get("enabled"))):
             return False
-
-        st["consumed"] = True
-        st["key"] = str(key)
+        # Only bypass when armed capsule matches this key.
         try:
-            st["consumed_at"] = float(time.time())
+            cap = globals().get("_YUREEKA_LLM_FORCE_REFRESH_ONCE_ACTIVE_V1")
+            if not (isinstance(cap, dict) and bool(cap.get("active"))):
+                return False
+            if str(cap.get("cache_key") or "") != str(key or ""):
+                return False
         except Exception:
-            st["consumed_at"] = 0.0
-
-        st["disk_existed"] = bool(disk_hit)
-
-        # LLM30 safety: if disk cache already exists, do NOT overwrite it on this forced refresh.
-        st["disk_write_skipped"] = bool(disk_hit)
-        st["backup_done"] = False
+            return False
+        # Enforce call budget
+        try:
+            calls_budget = int(st.get("calls_budget") or 1)
+        except Exception:
+            calls_budget = 1
+        try:
+            calls_made = int(st.get("calls_made") or 0)
+        except Exception:
+            calls_made = 0
+        if calls_budget and (calls_made >= calls_budget):
+            st["blocked_reason"] = "call_budget_exhausted"
+            return False
         return True
     except Exception:
         return False
@@ -5132,6 +5134,18 @@ def _yureeka_call_openai_chat_json_v1(
         except Exception:
             pass
         diag["network_call_made"] = True
+        # NLP78: one-shot state accounting (only when the one-shot capsule is active).
+        try:
+            if bool(_fr_active):
+                _st = _yureeka_llm_force_refresh_once_state_v1()
+                if isinstance(_st, dict):
+                    try:
+                        _st["calls_made"] = int(_st.get("calls_made") or 0) + 1
+                    except Exception:
+                        _st["calls_made"] = 1
+                    _st["consumed_reason"] = "armed_network_call_attempt"
+        except Exception:
+            pass
         resp = requests.post(url, headers=headers, json=payload, timeout=int(timeout_sec or 30))
         diag["status"] = int(resp.status_code)
         if int(resp.status_code) != 200:
@@ -6124,10 +6138,68 @@ def _llm01_llm_rank_windows_v1(
         except Exception:
             _an, _an_src = (bool(globals().get("LLM_ALLOW_NETWORK_CALLS")), "code:LLM_ALLOW_NETWORK_CALLS")
         if not bool(_an):
-            # NLP75: allow a single one-shot seed refresh without enabling global network calls.
+            # NLP75/NLP78: allow a single one-shot seed refresh without enabling global network calls.
+            # NLP78: deterministically pick the first disk-missing candidate key (primary, then fallback).
             _armed = False
+            _selected_key = ""
+            _selected_kind = ""
             try:
-                _armed = bool(_yureeka_llm_force_refresh_once_arm_v1(feature="llm01_evidence_rank", cache_key=str(cache_key), where="llm01_evidence_rank"))
+                cand = []
+                try:
+                    if str(cache_key or ""):
+                        cand.append(("primary", str(cache_key)))
+                except Exception:
+                    pass
+                try:
+                    if str(cache_key_fallback or "") and (str(cache_key_fallback) != str(cache_key)):
+                        cand.append(("fallback", str(cache_key_fallback)))
+                except Exception:
+                    pass
+                # record selection candidates into one-shot state (non-sensitive)
+                try:
+                    _st = _yureeka_llm_force_refresh_once_state_v1()
+                    if isinstance(_st, dict):
+                        _st["candidate_keys_n"] = int(len(cand))
+                except Exception:
+                    pass
+
+                for _kind, _k in cand:
+                    if not _k:
+                        continue
+                    _missing = False
+                    try:
+                        _p = _llm_cache_path_v1(_k)
+                        _missing = (not bool(_p)) or (not os.path.exists(_p))
+                    except Exception:
+                        _missing = False
+                    if bool(_missing):
+                        _selected_key = _k
+                        _selected_kind = _kind
+                        break
+
+                # expose selection outcome into state beacons
+                try:
+                    _st = _yureeka_llm_force_refresh_once_state_v1()
+                    if isinstance(_st, dict):
+                        _st["selected_key"] = str(_selected_key or "")[:120]
+                        _st["selected_kind"] = str(_selected_kind or "")[:40]
+                        _st["selected_disk_missing"] = bool(_selected_key)
+                except Exception:
+                    pass
+
+                if _selected_key:
+                    try:
+                        _armed = bool(_yureeka_llm_force_refresh_once_arm_v1(feature="llm01_evidence_rank", cache_key=str(_selected_key), where="llm01_evidence_rank"))
+                    except Exception:
+                        _armed = False
+                else:
+                    # No missing cache keys => nothing to seed; do not consume.
+                    try:
+                        _st = _yureeka_llm_force_refresh_once_state_v1()
+                        if isinstance(_st, dict) and bool(_st.get("enabled")) and (not bool(_st.get("consumed"))):
+                            _st["blocked_reason"] = "no_missing_cache_keys"
+                    except Exception:
+                        pass
             except Exception:
                 _armed = False
             if not bool(_armed):
@@ -7250,6 +7322,18 @@ try:
         })
 except Exception:
     pass
+# NLP78: patch tracker overlay (NLP stream)
+try:
+    if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "NLP78" for e in PATCH_TRACKER_V1):
+        PATCH_TRACKER_V1.insert(0, {
+            "patch_id": "NLP78",
+            "scope": "nlp_llm_endstate",
+            "summary": "Make one-shot seed refresh unambiguous: never auto-consume on cache hit; deterministically target first disk-missing cache key; add consumed_reason + selection beacons; increment calls_made only on actual armed network call.",
+            "risk": "low",
+        })
+except Exception:
+    pass
+
 
 # REFACTOR194: patch tracker overlay (avoid touching the compressed canonical blob)
 try:
