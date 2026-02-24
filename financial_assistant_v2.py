@@ -458,7 +458,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "NLP90"
+_YUREEKA_CODE_VERSION_LOCK = "NLP92"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 # REFACTOR206: Release Candidate freeze (no pipeline behavior change).
 YUREEKA_RELEASE_CANDIDATE_V1 = False
@@ -8385,6 +8385,31 @@ try:
         })
 except Exception:
     pass
+
+# NLP91: patch tracker overlay (NLP stream)
+try:
+    if isinstance(PATCH_TRACKER_V1, list):
+        _nlp91_entry = {
+            "patch_id": "NLP91",
+            "scope": "nlp_llm_endstate",
+            "summary": "3-mode assist presets: collapse LLM/NLP controls into Deterministic / Testing (Injected+Live) / Production (Replay) selections; hide legacy knobs in simplified UI (no decider changes).",
+            "risk": "low",
+        }
+        # Ensure NLP91 exists AND is the tracker head (so harness_invariants stays aligned).
+        _rest = []
+        _seen = False
+        for _e in PATCH_TRACKER_V1:
+            try:
+                if isinstance(_e, dict) and str(_e.get("patch_id") or "") == "NLP91":
+                    _seen = True
+                    continue
+            except Exception:
+                pass
+            _rest.append(_e)
+        PATCH_TRACKER_V1[:] = [_nlp91_entry] + _rest
+except Exception:
+    pass
+
 # NLP90: patch tracker overlay (NLP stream)
 try:
     if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "NLP90" for e in PATCH_TRACKER_V1):
@@ -8403,6 +8428,29 @@ except Exception:
 
 
 
+
+
+
+# NLP92: patch tracker overlay (NLP stream)
+try:
+    if isinstance(PATCH_TRACKER_V1, list):
+        _nlp92_entry = {
+            "patch_id": "NLP92",
+            "scope": "nlp_llm_endstate",
+            "summary": "Preset hardening: clearer mode names, preset-wins guardrails, UI warnings for blocked/misused presets, and experiment budget clamps (no decider changes).",
+            "risk": "low",
+        }
+        _rest = []
+        for _e in PATCH_TRACKER_V1:
+            try:
+                if isinstance(_e, dict) and str(_e.get("patch_id") or "") == "NLP92":
+                    continue
+            except Exception:
+                pass
+            _rest.append(_e)
+        PATCH_TRACKER_V1[:] = [_nlp92_entry] + _rest
+except Exception:
+    pass
 
 
 # NLP83: patch tracker overlay (NLP stream)
@@ -9845,12 +9893,56 @@ def _nlp83_end_state_checklist_v1() -> dict:
 
     out["warnings"] = list(warnings)
 
+    # NLP92: assist preset snapshot (diagnostic-only) + guardrail warnings
+    try:
+        _preset92 = None
+        try:
+            _preset92 = st.session_state.get("YUREEKA_ASSIST_PRESET_V1")
+        except Exception:
+            _preset92 = None
+        if isinstance(_preset92, str) and _preset92.strip():
+            out["assist_preset_selected"] = str(_preset92)[:120]
+    except Exception:
+        pass
+    try:
+        _pr92 = _yureeka_llm_profile_resolved_v1()
+        if isinstance(_pr92, dict):
+            out["assist_profile_effective"] = _pr92.get("profile_effective")
+            out["assist_features_effective"] = _pr92.get("features_effective")
+    except Exception:
+        pass
+    try:
+        _pol92 = _yureeka_llm_cache_policy_summary_v1(stage="checklist_nlp92")
+        if isinstance(_pol92, dict):
+            out["assist_policy_v1"] = {
+                "network_allowed_effective": _pol92.get("network_allowed_effective"),
+                "cache_hit_only_effective": _pol92.get("cache_hit_only_effective"),
+                "replay_only": _pol92.get("replay_only"),
+                "seed_mode": _pol92.get("seed_mode"),
+            }
+            try:
+                _p = str(out.get("assist_preset_selected") or "")
+                if _p.startswith("2)") and (not bool(_pol92.get("network_allowed_effective"))):
+                    warnings.append("experiment_preset_but_network_blocked")
+                if _p.startswith("3)") and bool(_pol92.get("network_allowed_effective")):
+                    warnings.append("production_preset_but_network_on")
+                if _p.startswith("3)") and (not bool(_pol92.get("cache_hit_only_effective"))):
+                    warnings.append("production_preset_but_not_cache_only")
+            except Exception:
+                pass
+            out["warnings"] = list(warnings)
+    except Exception:
+        pass
+
+
     # Optional: recommended defaults for "safe by default" posture
     out["recommended_defaults"] = {
+        "LLM_PROFILE": "REPLAY",
+        "LLM_FEATURES": "SNIPPETS+EVOLUTION_SUMMARY",
         "LLM_ALLOW_NETWORK_CALLS": False,
         "LLM_SEED_MODE": False,
         "LLM_FORCE_REFRESH_ONCE": False,
-        "LLM_CACHE_REPLAY_ONLY": False,
+        "LLM_CACHE_REPLAY_ONLY": True,
     }
     return out
 
@@ -9859,7 +9951,7 @@ def _nlp85_end_state_declared_v1(checklist: dict = None) -> dict:
     """End-state declaration beacon for the NLP/LLM stream (NLP85 base; NLP88 narrative polish).
     Pure diagnostics + UI-friendly summary. Never changes winners/values/snippets.
     """
-    out = {"v": "nlp85_end_state_declared_v1", "declared_end_state_version": "NLP90", "declared_end_state_base_version": "NLP85"}
+    out = {"v": "nlp85_end_state_declared_v1", "declared_end_state_version": "NLP92", "declared_end_state_base_version": "NLP85"}
     try:
         out["code_version"] = str(CODE_VERSION_LOCK)
     except Exception:
@@ -31398,6 +31490,19 @@ def render_source_anchored_results(results, query: str):
     inj_gate = dbg.get("row_delta_gating_v4") if isinstance(dbg, dict) else None
     is_injection_run = bool(isinstance(inj_gate, dict) and inj_gate.get("injection_run"))
 
+    # NLP92: preset misuse warning (experiment mode intended for injection runs)
+    try:
+        _preset92 = None
+        try:
+            _preset92 = st.session_state.get("YUREEKA_ASSIST_PRESET_V1")
+        except Exception:
+            _preset92 = None
+        if isinstance(_preset92, str) and _preset92.startswith("2)") and (not bool(is_injection_run)):
+            st.warning("Experiment preset selected, but this Evolution run is not in injection mode (no injected rows detected). For testing, run the injection evolution path or ensure injected URLs are configured.")
+    except Exception:
+        pass
+
+
     summary = results.get("summary") or {}
     if not isinstance(summary, dict):
         summary = {}
@@ -31410,6 +31515,18 @@ def render_source_anchored_results(results, query: str):
     if isinstance(inj_gate, dict):
         production_rows_total = _safe_int(inj_gate.get("production_rows_total"), 0)
         injected_rows_total = _safe_int(inj_gate.get("injected_rows_total"), 0)
+
+
+    try:
+        _preset92 = None
+        try:
+            _preset92 = st.session_state.get("YUREEKA_ASSIST_PRESET_V1")
+        except Exception:
+            _preset92 = None
+        if isinstance(_preset92, str) and _preset92.startswith("2)") and bool(is_injection_run) and int(injected_rows_total or 0) <= 0:
+            st.warning("Experiment preset selected and injection mode is on, but injected_rows_total is 0. Check injected URL wiring and inj01_injection_impact_v1 beacons.")
+    except Exception:
+        pass
 
     stability = raw_stability
 
@@ -31445,6 +31562,7 @@ def render_source_anchored_results(results, query: str):
     metrics_inj = _safe_int(_sum_eff.get("metrics_injected"), injected_rows_total)
     if is_injection_run:
         col4.info(f"🧪 Injection Mode ({metrics_inj} injected)")
+
     elif metrics_inc > metrics_dec:
         col4.success("📈 Trending Up")
     elif metrics_dec > metrics_inc:
@@ -33713,80 +33831,283 @@ def main():
                     pass
 
 
-            # NLP89: Production-friendly profile + features (optional; overrides per-flag toggles when set)
+            # NLP91: 3-mode assist presets (collapse "flag jungle" into 3 high-level choices)
+            # Modes:
+            #   1) Deterministic OFF: full deterministic, sidecar disabled.
+            #   2) Experiment (Injected+Live): sidecar fully ON for testing; recommended for injection runs.
+            #   3) Production (Replay): cache-only sidecar ON (audit-only), no network.
+            #
+            # This is UI/flags only. Deterministic deciders remain unchanged.
             try:
-                _llm_profile_opts = [
-                    "LEGACY",
-                    "OFF",
-                    "REPLAY",
-                    "SEED_ONCE",
-                    "LIVE",
-                ]
-                _llm_features_opts = [
-                    "LEGACY",
-                    "NONE",
-                    "SNIPPETS",
-                    "EVOLUTION_SUMMARY",
-                    "SNIPPETS+EVOLUTION_SUMMARY",
-                ]
-                _llm_ui_selectbox(
-                    "LLM_PROFILE",
-                    "LLM profile (recommended)",
-                    options=_llm_profile_opts,
-                    default=str((_llm_ui_flags.get("LLM_PROFILE") or "LEGACY")),
-                    help="LEGACY = use per-flag toggles. REPLAY is safest for production (cache-only). SEED_ONCE fills one missing cache key under explicit consent. LIVE enables network (still sidecar-only).",
+                _ss = st.session_state
+                if not isinstance(_ss.get("YUREEKA_UI_FLAGS"), dict):
+                    _ss["YUREEKA_UI_FLAGS"] = {}
+                _ui_flags_pre = _ss.get("YUREEKA_UI_FLAGS") or {}
+            except Exception:
+                _ui_flags_pre = {}
+
+            def _nlp91__set_ui_flag_v1(k: str, v: bool) -> None:
+                try:
+                    if not isinstance(_ui_flags_pre, dict):
+                        return
+                    _ui_flags_pre[str(k)] = bool(v)
+                    try:
+                        st.session_state["YUREEKA_UI_FLAGS"] = _ui_flags_pre
+                    except Exception:
+                        pass
+                    # Keep widget keys consistent (if they exist)
+                    try:
+                        if str(k) == "PRODUCTION_MODE":
+                            st.session_state["ui_uiflag_PRODUCTION_MODE"] = bool(v)
+                        elif str(k) == "SHOW_ADVANCED":
+                            st.session_state["ui_uiflag_SHOW_ADVANCED"] = bool(v)
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
+
+            def _nlp91__apply_preset_v1(preset_key: str) -> None:
+                pk = str(preset_key or "").strip()
+                try:
+                    _ss2 = st.session_state
+                    if not isinstance(_ss2.get("YUREEKA_LLM_FLAGS"), dict):
+                        _ss2["YUREEKA_LLM_FLAGS"] = {}
+                    _llm_flags2 = _ss2.get("YUREEKA_LLM_FLAGS") or {}
+                except Exception:
+                    _llm_flags2 = _llm_ui_flags if isinstance(_llm_ui_flags, dict) else {}
+
+                # Always keep UI simplified by default in preset mode.
+                _nlp91__set_ui_flag_v1("PRODUCTION_MODE", True)
+                _nlp91__set_ui_flag_v1("SHOW_ADVANCED", False)
+
+                # Baseline reset of optional assists (avoid surprise drift unless preset asks for it)
+                _base_off = {
+                    "ENABLE_NLP_QUERY_BOOST": False,
+                    "ENABLE_LLM_SOURCE_CLUSTERING": False,
+                    "ENABLE_LLM_QUERY_FRAME": False,
+                    "ENABLE_LLM_QUERY_STRUCTURE_FALLBACK": False,
+                    "ENABLE_LLM_ANOMALY_FLAGS": False,
+                    "LLM_BYPASS_CACHE": False,
+                }
+                for _k, _v in _base_off.items():
+                    try:
+                        _llm_flags2[_k] = bool(_v)
+                    except Exception:
+                        pass
+
+                if pk.startswith("1)"):
+                    # 1) Everything OFF (full deterministic)
+                    _llm_flags2["LLM_PROFILE"] = "OFF"
+                    _llm_flags2["LLM_FEATURES"] = "NONE"
+                    _llm_flags2["ENABLE_LLM_EVIDENCE_SNIPPETS"] = False
+                    _llm_flags2["ENABLE_LLM_EVOLUTION_SUMMARY"] = False
+
+                elif pk.startswith("2)"):
+                    # 2) Experiment (Injected+Live): enable sidecar + optional assists for experimentation.
+                    _llm_flags2["LLM_PROFILE"] = "LIVE"
+                    _llm_flags2["LLM_FEATURES"] = "SNIPPETS+EVOLUTION_SUMMARY"
+                    # NLP92: clamp experiment-mode seed budgets (avoid runaway live calls)
+                    try:
+                        _llm_flags2["LLM_SEED_MAX_CALLS"] = 25
+                    except Exception:
+                        pass
+                    try:
+                        _llm_flags2["LLM_SEED_MAX_TOKENS"] = int(_llm_flags2.get("LLM_SEED_MAX_TOKENS") or 0) or 1200
+                    except Exception:
+                        pass
+                    try:
+                        _llm_flags2["LLM_SEED_MAX_LATENCY_MS"] = int(_llm_flags2.get("LLM_SEED_MAX_LATENCY_MS") or 0) or 20000
+                    except Exception:
+                        pass
+                    # deterministic NLP assist (may change retrieval terms; testing only)
+                    _llm_flags2["ENABLE_NLP_QUERY_BOOST"] = True
+                    # extra LLM assists (testing only)
+                    _llm_flags2["ENABLE_LLM_SOURCE_CLUSTERING"] = True
+                    _llm_flags2["ENABLE_LLM_QUERY_FRAME"] = True
+                    _llm_flags2["ENABLE_LLM_QUERY_STRUCTURE_FALLBACK"] = True
+                    _llm_flags2["ENABLE_LLM_ANOMALY_FLAGS"] = True
+
+                else:
+                    # 3) Production (Replay): cache-only, audit-only features; no network.
+                    _llm_flags2["LLM_PROFILE"] = "REPLAY"
+                    _llm_flags2["LLM_FEATURES"] = "SNIPPETS+EVOLUTION_SUMMARY"
+                    # keep query-changing assists OFF in production by default (explanations only)
+                    _llm_flags2["ENABLE_NLP_QUERY_BOOST"] = False
+                    _llm_flags2["ENABLE_LLM_SOURCE_CLUSTERING"] = False
+                    _llm_flags2["ENABLE_LLM_QUERY_FRAME"] = False
+                    _llm_flags2["ENABLE_LLM_QUERY_STRUCTURE_FALLBACK"] = False
+                    _llm_flags2["ENABLE_LLM_ANOMALY_FLAGS"] = False
+
+                try:
+                    st.session_state["YUREEKA_LLM_FLAGS"] = _llm_flags2
+                except Exception:
+                    pass
+
+            # infer preset if not yet chosen (best-effort)
+            _preset_opts = [
+                "1) Deterministic (OFF / full deterministic)",
+                "2) Experiment (Injected + LIVE sidecar)",
+                "3) Production (REPLAY / cache-only)",
+            ]
+            try:
+                _cur = st.session_state.get("YUREEKA_ASSIST_PRESET_V1")
+            except Exception:
+                _cur = None
+
+            if not isinstance(_cur, str) or _cur not in _preset_opts:
+                try:
+                    _pr = _yureeka_llm_profile_resolved_v1()
+                    _pe = str((_pr or {}).get("profile_effective") or "LEGACY")
+                    _fe = str((_pr or {}).get("features_effective") or "LEGACY")
+                    if _pe == "OFF":
+                        _cur = _preset_opts[0]
+                    elif _pe in ("REPLAY", "REPLAY_ONLY", "CACHE_REPLAY", "CACHE_ONLY") and ("SNIPPETS" in _fe or "SUMMARY" in _fe or "EVOLUTION_SUMMARY" in _fe):
+                        _cur = _preset_opts[2]
+                    elif _pe in ("LIVE", "ONLINE") and ("SNIPPETS" in _fe or "SUMMARY" in _fe or "EVOLUTION_SUMMARY" in _fe):
+                        _cur = _preset_opts[1]
+                    else:
+                        _cur = _preset_opts[2]  # safe default: production replay
+                except Exception:
+                    _cur = _preset_opts[2]
+                try:
+                    st.session_state["YUREEKA_ASSIST_PRESET_V1"] = _cur
+                    _nlp91__apply_preset_v1(_cur)
+                except Exception:
+                    pass
+
+            try:
+                _sel = st.selectbox(
+                    "Assist setup (3 modes)",
+                    options=_preset_opts,
+                    index=int(_preset_opts.index(str(_cur))),
+                    key="ui_assist_preset_v1",
+                    help="Production-friendly presets. These set LLM_PROFILE/LLM_FEATURES and hide legacy knobs in simplified UI. Deterministic deciders remain unchanged.",
                 )
-                _llm_ui_selectbox(
-                    "LLM_FEATURES",
-                    "LLM features",
-                    options=_llm_features_opts,
-                    default=str((_llm_ui_flags.get("LLM_FEATURES") or "LEGACY")),
-                    help="Select what the sidecar may produce (audit-only). LEGACY = use per-flag toggles.",
-                )
+                if isinstance(_sel, str) and _sel in _preset_opts and _sel != str(_cur):
+                    st.session_state["YUREEKA_ASSIST_PRESET_V1"] = _sel
+                    _nlp91__apply_preset_v1(_sel)
+            except Exception:
+                _sel = str(_cur)
+
+            # Determine simplified posture early (pre-render) so we can hide legacy knobs above.
+            try:
+                _prod_pre = bool(_ui_flags_pre.get("PRODUCTION_MODE", True))
+                _adv_pre = bool(_ui_flags_pre.get("SHOW_ADVANCED", False))
+                _ui_simplified_pre = bool(_prod_pre) and (not bool(_adv_pre))
+            except Exception:
+                _ui_simplified_pre = True
+
+            try:
+                _pr2 = _yureeka_llm_profile_resolved_v1()
+                _pp = str((_pr2 or {}).get("profile_effective") or "LEGACY")
+                _ff = str((_pr2 or {}).get("features_effective") or "LEGACY")
+                st.caption(f"Effective: profile={_pp} | features={_ff}")
             except Exception:
                 pass
 
-            # Show resolved/derived posture (read-only)
+            # NLP92: preset hardening warnings (UI-only diagnostics)
             try:
-                _prof_dbg = _yureeka_llm_profile_resolved_v1()
-                if isinstance(_prof_dbg, dict) and bool(_prof_dbg.get("applies")):
-                    st.info(f"Profile active: {str(_prof_dbg.get('profile_effective'))} | Features: {str(_prof_dbg.get('features_effective'))} (derived overrides applied)")
-                else:
-                    _prof_dbg = {}
-            except Exception:
-                _prof_dbg = {}
-
-            _llm_ui_checkbox(
-                "ENABLE_LLM_EVIDENCE_SNIPPETS",
-                "Enable LLM evidence snippet ranking (assist only)",
-                default=True,
-                help="When ON, the sidecar may rank candidate evidence snippets using cache hits only unless live calls are explicitly enabled (Allow network + Seed mode). Metric winners/values remain deterministic.",
-                disabled=bool(isinstance(_prof_dbg, dict) and bool(_prof_dbg.get("applies")) and isinstance((_prof_dbg.get("derived_flags") or {}), dict) and "ENABLE_LLM_EVIDENCE_SNIPPETS" in (_prof_dbg.get("derived_flags") or {})),
-                forced_value=(_prof_dbg.get("derived_flags") or {}).get("ENABLE_LLM_EVIDENCE_SNIPPETS") if isinstance(_prof_dbg, dict) else None,
-            )
-
-
-
-            # LLM01 evidence-snippet assist acceptance policy (UI controls; defaults preserve baseline)
-            try:
-                _ss = st.session_state
-                if not isinstance(_ss.get("YUREEKA_LLM_POLICY"), dict):
-                    _ss["YUREEKA_LLM_POLICY"] = {}
-                _llm_ui_policy = _ss.get("YUREEKA_LLM_POLICY") or {}
-            except Exception:
-                _llm_ui_policy = {}
-
-            def _llm_ui_slider_float(key: str, label: str, min_v: float, max_v: float, step_v: float, default_v: float, help: str = "") -> None:
-                try:
-                    cur = _llm_ui_policy.get(key, default_v)
+                _pol92 = _yureeka_llm_cache_policy_summary_v1(stage="ui_preset")
+                _net92 = bool((_pol92 or {}).get("network_allowed_effective"))
+                _cache_only92 = bool((_pol92 or {}).get("cache_hit_only_effective"))
+                if isinstance(_sel, str) and _sel.startswith("2)") and (not _net92):
+                    st.warning("Experiment preset selected, but network is blocked by policy. LLM sidecar will be cache-only/no-op until seeding/network is allowed.")
+                if isinstance(_sel, str) and _sel.startswith("3)") and _net92:
+                    st.warning("Production preset expects cache-only (no network), but network is currently allowed. Check secrets/session overrides and LLM_PROFILE=REPLAY.")
+                if isinstance(_sel, str) and _sel.startswith("3)") and (not _cache_only92):
+                    st.warning("Production preset expects cache replay-only, but cache_hit_only_effective is false. Check LLM_PROFILE=REPLAY and replay-only posture.")
+                if isinstance(_sel, str) and _sel.startswith("2)"):
                     try:
-                        cur_f = float(cur)
+                        _mc, _mc_src = _yureeka_llm_param_effective_v1("LLM_SEED_MAX_CALLS")
                     except Exception:
-                        cur_f = float(default_v)
-                    val = st.slider(label, min_value=float(min_v), max_value=float(max_v), value=float(cur_f), step=float(step_v), key=f"ui_llmpol_{key}", help=help)
-                    _llm_ui_policy[key] = float(val)
+                        _mc = None
+                    st.caption(f"Experiment budget clamp: LLM_SEED_MAX_CALLS={_mc if _mc is not None else 25} (per run, best-effort).")
+            except Exception:
+                pass
+
+
+            if isinstance(_sel, str) and _sel.startswith("2)"):
+                st.info("Experiment preset: run Evolution with your injected URL(s) to see changes clearly. (Triad injection run recommended.)")
+
+            if not bool(_ui_simplified_pre):
+                # NLP89: Production-friendly profile + features (optional; overrides per-flag toggles when set)
+                try:
+                    _llm_profile_opts = [
+                        "LEGACY",
+                        "OFF",
+                        "REPLAY",
+                        "SEED_ONCE",
+                        "LIVE",
+                    ]
+                    _llm_features_opts = [
+                        "LEGACY",
+                        "NONE",
+                        "SNIPPETS",
+                        "EVOLUTION_SUMMARY",
+                        "SNIPPETS+EVOLUTION_SUMMARY",
+                    ]
+                    _llm_ui_selectbox(
+                        "LLM_PROFILE",
+                        "LLM profile (recommended)",
+                        options=_llm_profile_opts,
+                        default=str((_llm_ui_flags.get("LLM_PROFILE") or "LEGACY")),
+                        help="LEGACY = use per-flag toggles. REPLAY is safest for production (cache-only). SEED_ONCE fills one missing cache key under explicit consent. LIVE enables network (still sidecar-only).",
+                    )
+                    _llm_ui_selectbox(
+                        "LLM_FEATURES",
+                        "LLM features",
+                        options=_llm_features_opts,
+                        default=str((_llm_ui_flags.get("LLM_FEATURES") or "LEGACY")),
+                        help="Select what the sidecar may produce (audit-only). LEGACY = use per-flag toggles.",
+                    )
                 except Exception:
                     pass
+
+                # Show resolved/derived posture (read-only)
+                try:
+                    _prof_dbg = _yureeka_llm_profile_resolved_v1()
+                    if isinstance(_prof_dbg, dict) and bool(_prof_dbg.get("applies")):
+                        st.info(f"Profile active: {str(_prof_dbg.get('profile_effective'))} | Features: {str(_prof_dbg.get('features_effective'))} (derived overrides applied)")
+                    else:
+                        _prof_dbg = {}
+                except Exception:
+                    _prof_dbg = {}
+
+                _llm_ui_checkbox(
+                    "ENABLE_LLM_EVIDENCE_SNIPPETS",
+                    "Enable LLM evidence snippet ranking (assist only)",
+                    default=True,
+                    help="When ON, the sidecar may rank candidate evidence snippets using cache hits only unless live calls are explicitly enabled (Allow network + Seed mode). Metric winners/values remain deterministic.",
+                    disabled=bool(isinstance(_prof_dbg, dict) and bool(_prof_dbg.get("applies")) and isinstance((_prof_dbg.get("derived_flags") or {}), dict) and "ENABLE_LLM_EVIDENCE_SNIPPETS" in (_prof_dbg.get("derived_flags") or {})),
+                    forced_value=(_prof_dbg.get("derived_flags") or {}).get("ENABLE_LLM_EVIDENCE_SNIPPETS") if isinstance(_prof_dbg, dict) else None,
+                )
+
+
+
+                # LLM01 evidence-snippet assist acceptance policy (UI controls; defaults preserve baseline)
+                try:
+                    _ss = st.session_state
+                    if not isinstance(_ss.get("YUREEKA_LLM_POLICY"), dict):
+                        _ss["YUREEKA_LLM_POLICY"] = {}
+                    _llm_ui_policy = _ss.get("YUREEKA_LLM_POLICY") or {}
+                except Exception:
+                    _llm_ui_policy = {}
+
+                def _llm_ui_slider_float(key: str, label: str, min_v: float, max_v: float, step_v: float, default_v: float, help: str = "") -> None:
+                    try:
+                        cur = _llm_ui_policy.get(key, default_v)
+                        try:
+                            cur_f = float(cur)
+                        except Exception:
+                            cur_f = float(default_v)
+                        val = st.slider(label, min_value=float(min_v), max_value=float(max_v), value=float(cur_f), step=float(step_v), key=f"ui_llmpol_{key}", help=help)
+                        _llm_ui_policy[key] = float(val)
+                    except Exception:
+                        pass
+
+
+            else:
+                st.caption("Legacy LLM/NLP knobs are hidden in simplified mode. Toggle 'Show advanced settings' to reveal them.")
 
             # NLP90: Production UI simplified mode (reduce flag surface in production)
             # - In simplified mode, prefer LLM_PROFILE + LLM_FEATURES and hide legacy per-flag toggles.
