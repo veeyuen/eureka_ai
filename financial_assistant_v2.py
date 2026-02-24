@@ -458,7 +458,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "NLP92"
+_YUREEKA_CODE_VERSION_LOCK = "NLP94"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 # REFACTOR206: Release Candidate freeze (no pipeline behavior change).
 YUREEKA_RELEASE_CANDIDATE_V1 = False
@@ -486,6 +486,7 @@ ENABLE_LLM_QUERY_STRUCTURE_FALLBACK = False
 ENABLE_LLM_ANOMALY_FLAGS = False
 ENABLE_LLM_EVOLUTION_SUMMARY = False
 
+ENABLE_LLM_CANONICALISATION_SHADOW = False  # NLP94: shadow-only canonical key/matching proposals (audit-only)
 # NLP89: Production-friendly profiles (reduce flag surface)
 # - LLM_PROFILE: OFF | REPLAY | SEED_ONCE | LIVE | (empty/LEGACY = use per-flag toggles)
 # - LLM_FEATURES: NONE | SNIPPETS | EVOLUTION_SUMMARY | SNIPPETS+EVOLUTION_SUMMARY | (empty/LEGACY)
@@ -692,6 +693,14 @@ def _yureeka__llm_features_is_legacy_v1(tok: str) -> bool:
 def _yureeka__llm_profile_raw_get_v1(param_name: str):
     """Raw resolver for profile/feature strings without depending on param_effective (avoids recursion risk)."""
     _pname = str(param_name or "").strip()
+
+    # NLP93: preset param enforcement (LLM_PROFILE/LLM_FEATURES + experiment budget clamps)
+    try:
+        _pevp = _yureeka_nlp93_preset_enforced_param_v1(_pname)
+        if _pevp is not None:
+            return (_pevp[0], str(_pevp[1])[:80])
+    except Exception:
+        pass
 
     # NLP89: profile/features may derive overrides for params (strings/ints). Skip for self keys.
     try:
@@ -931,6 +940,14 @@ def _yureeka_llm_param_effective_v1(param_name: str) -> Tuple[Any, str]:
     Mirrors _yureeka_llm_flag_effective_v1 precedence, but does NOT coerce to bool.
     """
     _pname = str(param_name or "").strip()
+
+    # NLP93: preset param enforcement (LLM_PROFILE/LLM_FEATURES + experiment budget clamps)
+    try:
+        _pevp = _yureeka_nlp93_preset_enforced_param_v1(_pname)
+        if _pevp is not None:
+            return (_pevp[0], str(_pevp[1])[:80])
+    except Exception:
+        pass
     _sentinel = object()
 
     def _get_map_val(mobj: Any, key: str):
@@ -1022,6 +1039,245 @@ def _yureeka_llm_param_csv_list_effective_v1(param_name: str) -> Tuple[List[str]
     return (_yureeka__parse_csv_list_v1(raw), src)
 
 
+def _yureeka_nlp93_assist_preset_effective_v1() -> Tuple[str, str]:
+    """Best-effort resolve the active 3-mode assist preset.
+
+    Sources (highest → lowest):
+      - st.session_state['YUREEKA_ASSIST_PRESET_V1'] or ['ui_assist_preset_v1']
+      - st.secrets['YUREEKA_UI_FLAGS']['ASSIST_PRESET'] or top-level ASSIST_PRESET/YUREEKA_ASSIST_PRESET_V1
+      - env: YUREEKA_ASSIST_PRESET
+    """
+    preset = ""
+    src = "none"
+    try:
+        _st = globals().get("st")
+        _ss = getattr(_st, "session_state", None) if _st is not None else None
+        if _ss is not None:
+            for k in ("YUREEKA_ASSIST_PRESET_V1", "ui_assist_preset_v1"):
+                try:
+                    v = _ss.get(k)
+                except Exception:
+                    v = None
+                if isinstance(v, str) and v.strip():
+                    preset = v.strip()
+                    src = "session_state:" + str(k)
+                    break
+    except Exception:
+        pass
+    if not preset:
+        try:
+            _st = globals().get("st")
+            _sec = getattr(_st, "secrets", None) if _st is not None else None
+            if _sec is not None:
+                # common patterns
+                try:
+                    v = _sec.get("YUREEKA_ASSIST_PRESET_V1")
+                    if isinstance(v, str) and v.strip():
+                        preset = v.strip()
+                        src = "secrets:YUREEKA_ASSIST_PRESET_V1"
+                except Exception:
+                    pass
+                if not preset:
+                    try:
+                        v = _sec.get("ASSIST_PRESET")
+                        if isinstance(v, str) and v.strip():
+                            preset = v.strip()
+                            src = "secrets:ASSIST_PRESET"
+                    except Exception:
+                        pass
+                if not preset:
+                    try:
+                        ui = _sec.get("YUREEKA_UI_FLAGS")
+                        if hasattr(ui, "get"):
+                            v = ui.get("ASSIST_PRESET")
+                            if isinstance(v, str) and v.strip():
+                                preset = v.strip()
+                                src = "secrets:YUREEKA_UI_FLAGS.ASSIST_PRESET"
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+    if not preset:
+        try:
+            v = os.environ.get("YUREEKA_ASSIST_PRESET")
+            if isinstance(v, str) and v.strip():
+                preset = v.strip()
+                src = "env:YUREEKA_ASSIST_PRESET"
+        except Exception:
+            pass
+    return (str(preset or ""), str(src or "")[:80])
+
+
+def _yureeka_nlp93_assist_preset_class_v1(preset_value: str) -> str:
+    p = str(preset_value or "").strip()
+    if p.startswith("1)"):
+        return "DETERMINISTIC"
+    if p.startswith("2)"):
+        return "EXPERIMENT"
+    if p.startswith("3)"):
+        return "PRODUCTION"
+    return ""
+
+
+def _yureeka_nlp93_preset_enforced_bool_flag_v1(flag_name: str) -> Optional[Tuple[bool, str]]:
+    """Return enforced (value, source) for certain flags when a 3-mode preset is active.
+
+    NLP93 hardening: Deterministic/Production presets must be fail-closed even if secrets/env say otherwise.
+    """
+    try:
+        preset, psrc = _yureeka_nlp93_assist_preset_effective_v1()
+        cls = _yureeka_nlp93_assist_preset_class_v1(preset)
+        nm = str(flag_name or "").strip()
+        if not cls or not nm:
+            return None
+
+        # Deterministic & Production are fail-closed for network + seed mechanics.
+        if cls in ("DETERMINISTIC", "PRODUCTION"):
+            enforced = {
+                "LLM_ALLOW_NETWORK_CALLS": False,
+                "LLM_SEED_MODE": False,
+                "LLM_CACHE_REPLAY_ONLY": True,
+                "LLM_FORCE_REFRESH_ONCE": False,
+                "LLM_BYPASS_CACHE": False,
+                    "ENABLE_LLM_CANONICALISATION_SHADOW": False,
+            }
+            # Deterministic also forces features OFF.
+            if cls == "DETERMINISTIC":
+                enforced.update(
+                    {
+                        "ENABLE_LLM_EVIDENCE_SNIPPETS": False,
+                        "ENABLE_LLM_EVOLUTION_SUMMARY": False,
+                        "ENABLE_NLP_QUERY_BOOST": False,
+                        "ENABLE_LLM_SOURCE_CLUSTERING": False,
+                        "ENABLE_LLM_QUERY_FRAME": False,
+                        "ENABLE_LLM_QUERY_STRUCTURE_FALLBACK": False,
+                        "ENABLE_LLM_ANOMALY_FLAGS": False,
+                         "ENABLE_LLM_CANONICALISATION_SHADOW": False,
+                        "ENABLE_LLM_CANONICALISATION_SHADOW": False,
+                    }
+                )
+            # Production is explanations-only: keep assists that change retrieval OFF.
+            if cls == "PRODUCTION":
+                enforced.update(
+                    {
+                        "ENABLE_NLP_QUERY_BOOST": False,
+                        "ENABLE_LLM_SOURCE_CLUSTERING": False,
+                        "ENABLE_LLM_QUERY_FRAME": False,
+                        "ENABLE_LLM_QUERY_STRUCTURE_FALLBACK": False,
+                        "ENABLE_LLM_ANOMALY_FLAGS": False,
+                        # Ensure the two audit features are ON (safe under REPLAY).
+                        "ENABLE_LLM_EVIDENCE_SNIPPETS": True,
+                        "ENABLE_LLM_EVOLUTION_SUMMARY": True,
+                    }
+                )
+            if nm in enforced:
+                return (bool(enforced[nm]), f"preset_enforced:{cls}:{psrc}")
+        return None
+    except Exception:
+        return None
+
+
+def _yureeka_nlp93_preset_enforced_param_v1(param_name: str) -> Optional[Tuple[Any, str]]:
+    """Return enforced (value, source) for certain params when a 3-mode preset is active."""
+    try:
+        preset, psrc = _yureeka_nlp93_assist_preset_effective_v1()
+        cls = _yureeka_nlp93_assist_preset_class_v1(preset)
+        nm = str(param_name or "").strip()
+        if not cls or not nm:
+            return None
+        # Enforce profile/features as the single source of truth.
+        if nm in ("LLM_PROFILE", "LLM_FEATURES"):
+            if cls == "DETERMINISTIC":
+                return ("OFF" if nm == "LLM_PROFILE" else "NONE", f"preset_enforced:{cls}:{psrc}")
+            if cls == "EXPERIMENT":
+                return ("LIVE" if nm == "LLM_PROFILE" else "SNIPPETS+EVOLUTION_SUMMARY", f"preset_enforced:{cls}:{psrc}")
+            if cls == "PRODUCTION":
+                return ("REPLAY" if nm == "LLM_PROFILE" else "SNIPPETS+EVOLUTION_SUMMARY", f"preset_enforced:{cls}:{psrc}")
+        # Clamp experiment seed budgets (best-effort) to avoid runaway.
+        if cls == "EXPERIMENT":
+            if nm == "LLM_SEED_MAX_CALLS":
+                return (25, f"preset_enforced:{cls}:{psrc}")
+            if nm == "LLM_SEED_MAX_TOKENS":
+                return (1200, f"preset_enforced:{cls}:{psrc}")
+            if nm == "LLM_SEED_MAX_LATENCY_MS":
+                return (20000, f"preset_enforced:{cls}:{psrc}")
+        return None
+    except Exception:
+        return None
+
+
+def _yureeka_nlp93__peek_secret_scalar_v1(key: str) -> Tuple[Any, str]:
+    """Peek a scalar value from st.secrets without invoking flag resolvers (avoids recursion)."""
+    k = str(key or "").strip()
+    if not k:
+        return (None, "none")
+    try:
+        _st = globals().get("st")
+        _sec = getattr(_st, "secrets", None) if _st is not None else None
+        if _sec is None:
+            return (None, "none")
+        # top-level
+        try:
+            v = _sec.get(k)
+            if v is not None:
+                return (v, "secrets:" + k)
+        except Exception:
+            pass
+        # common sections
+        for root in ("general", "YUREEKA_LLM_FLAGS", "YUREEKA_FLAGS", "LLM_FLAGS", "YUREEKA_UI_FLAGS"):
+            try:
+                sub = _sec.get(root)
+                if hasattr(sub, "get"):
+                    v = sub.get(k)
+                    if v is not None:
+                        return (v, "secrets:" + root + "." + k)
+            except Exception:
+                pass
+        return (None, "none")
+    except Exception:
+        return (None, "none")
+
+
+def _yureeka_nlp93_preset_enforcement_report_v1() -> dict:
+    """Diagnostic report: whether presets are enforcing posture over secrets/env."""
+    out = {"v": "nlp93_preset_enforcement_v1"}
+    try:
+        preset, psrc = _yureeka_nlp93_assist_preset_effective_v1()
+        cls = _yureeka_nlp93_assist_preset_class_v1(preset)
+        out["preset_selected"] = str(preset)[:140]
+        out["preset_class"] = str(cls)[:40]
+        out["preset_source"] = str(psrc)[:80]
+    except Exception:
+        cls = ""
+    conflicts = []
+    try:
+        if cls in ("DETERMINISTIC", "PRODUCTION"):
+            for nm, enforced in {
+                "LLM_ALLOW_NETWORK_CALLS": False,
+                "LLM_SEED_MODE": False,
+                "LLM_CACHE_REPLAY_ONLY": True,
+                "LLM_FORCE_REFRESH_ONCE": False,
+            }.items():
+                sv, ssrc = _yureeka_nlp93__peek_secret_scalar_v1(nm)
+                ev = os.environ.get("YUREEKA_" + nm)
+                # normalize
+                svb = _yureeka__parse_boolish_v1(sv) if sv is not None else None
+                evb = _yureeka__parse_boolish_v1(ev) if ev is not None else None
+                if (svb is not None) and (bool(svb) != bool(enforced)):
+                    conflicts.append({"name": nm, "enforced": bool(enforced), "conflict_value": bool(svb), "conflict_source": ssrc})
+                elif (evb is not None) and (bool(evb) != bool(enforced)):
+                    conflicts.append({"name": nm, "enforced": bool(enforced), "conflict_value": bool(evb), "conflict_source": "env:YUREEKA_" + nm})
+    except Exception:
+        pass
+    out["conflicts"] = conflicts
+    try:
+        out["conflicts_count"] = int(len(conflicts))
+    except Exception:
+        out["conflicts_count"] = 0
+    return out
+
+
+
 
 def _yureeka_llm_flag_effective_v1(flag_name: str) -> Tuple[bool, str]:
     """Resolve effective flag value with optional UI/secrets/env override.
@@ -1043,6 +1299,14 @@ def _yureeka_llm_flag_effective_v1(flag_name: str) -> Tuple[bool, str]:
     object with a working .get(...) as eligible.
     """
     _fname = str(flag_name or '').strip()
+
+    # NLP93: preset enforcement (3-mode assist presets are master; fail-closed in deterministic/production)
+    try:
+        _pev = _yureeka_nlp93_preset_enforced_bool_flag_v1(_fname)
+        if _pev is not None:
+            return (bool(_pev[0]), str(_pev[1])[:80])
+    except Exception:
+        pass
 
     # NLP89: profile/features derived overrides (reduces flag surface). Skip for self keys.
     try:
@@ -1176,6 +1440,7 @@ def _yureeka_llm_flags_snapshot_v1() -> dict:
         "ENABLE_NLP_QUERY_BOOST",
         "ENABLE_LLM_ANOMALY_FLAGS",
         "ENABLE_LLM_EVOLUTION_SUMMARY",
+        "ENABLE_LLM_CANONICALISATION_SHADOW",
         "ENABLE_LLM_DATASET_LOGGING",
         "LLM_BYPASS_CACHE",
         "LLM_CACHE_REPLAY_ONLY",
@@ -4046,6 +4311,331 @@ def _yureeka_llm_evolution_summary_v1(results: dict, query: str) -> Tuple[Option
         dbg["llm_validation_reason"] = str(reason or "")[:80]
         dbg["llm_used"] = True
         if bool(ok):
+            dbg["llm_reason"] = "ok"
+            return (candidate, dbg)
+
+    dbg["llm_used"] = True
+    dbg["llm_ok"] = False
+    dbg["llm_reason"] = "invalid_or_empty"
+    return (None, dbg)
+
+
+
+def _llm94__validate_canonicalisation_shadow_v1(obj: Any) -> Tuple[bool, str]:
+    """Validate LLM canonicalisation shadow output (v1). Keep permissive but structured."""
+    if not isinstance(obj, dict):
+        return (False, "not_dict")
+    props = obj.get("proposals")
+    if props is None:
+        return (False, "missing_proposals")
+    if not isinstance(props, list):
+        return (False, "proposals_not_list")
+    # Bound per-item fields (best-effort)
+    for p in props[:25]:
+        if not isinstance(p, dict):
+            return (False, "proposal_not_dict")
+        # Must identify a metric
+        mk = p.get("metric_key") or p.get("current_canonical_key") or p.get("metric_name")
+        if not isinstance(mk, str) or not mk.strip():
+            return (False, "proposal_missing_metric_key")
+        # Candidates must be list if present
+        cands = p.get("proposed_canonical_key_candidates")
+        if cands is not None and not isinstance(cands, list):
+            return (False, "candidates_not_list")
+    return (True, "ok")
+
+
+def _llm94_build_canonicalisation_shadow_payload_v1(primary_response: dict, query: str) -> dict:
+    """Build a compact, deterministic payload for canonicalisation-assist shadow mode (no scraped content)."""
+    out: dict = {"v": "llm94_canonicalisation_shadow_payload_v1", "query": str(query or "")[:500]}
+    pr = primary_response if isinstance(primary_response, dict) else {}
+
+    # Frozen schema (authoritative keyspace)
+    schema = pr.get("metric_schema_frozen") or {}
+    schema_keys = []
+    if isinstance(schema, dict):
+        for k, spec in schema.items():
+            if not isinstance(spec, dict):
+                continue
+            schema_keys.append({
+                "canonical_key": str(spec.get("canonical_key") or k),
+                "name": str(spec.get("name") or "")[:120],
+                "dimension": str(spec.get("dimension") or "")[:40],
+                "unit_family": str(spec.get("unit_family") or "")[:40],
+                "unit_tag": str(spec.get("unit_tag") or "")[:24],
+                "keywords": list((spec.get("keywords") or [])[:16]),
+            })
+    try:
+        schema_keys = sorted(schema_keys, key=lambda x: str(x.get("canonical_key") or ""))
+    except Exception:
+        pass
+    out["schema_keys"] = schema_keys[:32]
+    out["schema_key_count"] = int(len(schema_keys))
+
+    # Extracted metrics (canonical + provisional)
+    extracted = []
+
+    def _push_metric(current_key: str, m: dict, provisional: bool = False) -> None:
+        if not isinstance(m, dict):
+            return
+        extracted.append({
+            "metric_key": str(current_key or "")[:140],
+            "metric_name": str(m.get("name") or m.get("original_name") or "")[:140],
+            "original_name": str(m.get("original_name") or m.get("name") or "")[:140],
+            "value": m.get("value"),
+            "unit": str(m.get("unit") or "")[:32],
+            "dimension": str(m.get("dimension") or "")[:40],
+            "unit_family": str(m.get("unit_family") or "")[:40],
+            "unit_tag": str(m.get("unit_tag") or "")[:24],
+            "time_scope": str(((m.get("identity_tuple_v1") or {}).get("time_scope")) or "")[:40] if isinstance(m.get("identity_tuple_v1"), dict) else "",
+            "geo_scope": str(((m.get("identity_tuple_v1") or {}).get("geo_scope")) or "")[:40] if isinstance(m.get("identity_tuple_v1"), dict) else "",
+            "provisional": bool(provisional),
+        })
+
+    pmc = pr.get("primary_metrics_canonical") or {}
+    if isinstance(pmc, dict):
+        for ckey, m in pmc.items():
+            if isinstance(m, dict):
+                _push_metric(str(ckey), m, provisional=False)
+
+    prov = pr.get("primary_metrics_provisional") or {}
+    if isinstance(prov, dict):
+        for pkey, m in prov.items():
+            if isinstance(m, dict):
+                _push_metric(str(pkey), m, provisional=True)
+
+    try:
+        extracted = sorted(extracted, key=lambda x: (str(x.get("provisional")), str(x.get("metric_key") or "")))
+    except Exception:
+        pass
+    out["extracted_metrics"] = extracted[:48]
+    out["extracted_metric_count"] = int(len(extracted))
+    return out
+
+
+def _yureeka_llm_canonicalisation_shadow_v1(primary_response: dict, query: str) -> Tuple[Optional[dict], dict]:
+    """LLM canonicalisation assist (shadow-only): proposes canonical_key candidates; never applied to winners/values."""
+    dbg: dict = {"v": "nlp94_canonicalisation_shadow_v1"}
+    try:
+        enabled, enabled_src = _yureeka_llm_flag_effective_v1("ENABLE_LLM_CANONICALISATION_SHADOW")
+    except Exception:
+        enabled, enabled_src = (bool(globals().get("ENABLE_LLM_CANONICALISATION_SHADOW")), "code:ENABLE_LLM_CANONICALISATION_SHADOW")
+    dbg["enabled"] = bool(enabled)
+    dbg["enabled_source"] = str(enabled_src or "")[:120]
+    if not bool(enabled):
+        dbg["llm_reason"] = "flag_off"
+        return (None, dbg)
+
+    # Provider snapshot (non-sensitive)
+    try:
+        dbg["provider"] = _llm01_provider_status_v1()
+    except Exception:
+        dbg["provider"] = {"ok": False}
+
+    try:
+        model = os.environ.get("YUREEKA_LLM_MODEL") or os.environ.get("OPENAI_MODEL") or "gpt-4o-mini"
+    except Exception:
+        model = "gpt-4o-mini"
+
+    prompt_version = "llm94_canonicalisation_shadow_v1"
+    schema_version = "schema_frozen_v1"
+    feature = "llm94_canonicalisation_shadow"
+
+    dbg["prompt_version"] = str(prompt_version)
+    dbg["schema_version"] = str(schema_version)
+
+    try:
+        payload = _llm94_build_canonicalisation_shadow_payload_v1(primary_response if isinstance(primary_response, dict) else {}, query)
+        dbg["payload_build_ok"] = True
+    except Exception as _e:
+        payload = {"v": "llm94_canonicalisation_shadow_payload_v1", "query": str(query or "")[:300]}
+        dbg["payload_build_ok"] = False
+        try:
+            dbg["payload_build_error"] = str(_e)[:160]
+        except Exception:
+            pass
+
+    # Build cache keys
+    key = ""
+    key_fallback = ""
+    try:
+        input_hash = _yureeka_hash_text_v1(_yureeka__stable_json_dumps_v1(payload))
+        q_hash = _yureeka_hash_text_v1(str(query or ""))
+        key, key_fallback = get_llm_cache_key_salted_v1(str(model), prompt_version, schema_version, str(input_hash), "", str(q_hash))
+        dbg["llm_cache_key"] = str(key or "")[:120]
+        dbg["llm_cache_key_fallback"] = str(key_fallback or "")[:120]
+        dbg["llm_cache_key_ok"] = True
+    except Exception as _e2:
+        dbg["llm_cache_key_ok"] = False
+        try:
+            dbg["llm_cache_key_error"] = str(_e2)[:160]
+        except Exception:
+            pass
+
+    candidate = None
+
+    # Cache read
+    if key or key_fallback:
+        cached = None
+        if key:
+            cached = get_cached_llm_response(key, validator=_llm94__validate_canonicalisation_shadow_v1, feature=feature, diag=dbg)
+        if cached is None and key_fallback:
+            cached = get_cached_llm_response(key_fallback, validator=_llm94__validate_canonicalisation_shadow_v1, feature=feature, diag=dbg)
+            if cached is not None:
+                dbg["llm_cache_fallback_hit"] = True
+        if cached is not None:
+            dbg["llm_cache_hit"] = True
+            candidate = cached
+            try:
+                _yureeka_llm_global_agg_update_v1(feature, {"ok": True, "status": None, "reason": "cache_hit", "model": str(model)}, cache_hit=True)
+            except Exception:
+                pass
+
+    # Cache miss: decide whether we can call live
+    if candidate is None:
+        try:
+            pol = _yureeka_llm_cache_policy_summary_v1(stage="llm94")
+        except Exception:
+            pol = {}
+        try:
+            dbg["policy"] = {
+                "network_allowed_effective": bool((pol or {}).get("network_allowed_effective")),
+                "cache_hit_only_effective": bool((pol or {}).get("cache_hit_only_effective")),
+                "allow_network_calls": bool((pol or {}).get("allow_network_calls")),
+                "seed_mode": bool((pol or {}).get("seed_mode")),
+                "replay_only": bool((pol or {}).get("replay_only")),
+            }
+        except Exception:
+            pass
+
+        # Replay-only => cache-hit or no-op
+        try:
+            _ro, _ro_src = _yureeka_llm_flag_effective_v1("LLM_CACHE_REPLAY_ONLY")
+        except Exception:
+            _ro, _ro_src = (bool(globals().get("LLM_CACHE_REPLAY_ONLY")), "code:LLM_CACHE_REPLAY_ONLY")
+        if bool(_ro):
+            noop = _yureeka_llm_replay_only_noop_diag_v1(feature=feature, model=str(model), cache_key=str(key), cache_key_fallback=str(key_fallback or ""), where="llm94")
+            dbg["llm_call_diag"] = dict(noop)
+            dbg["llm_used"] = False
+            dbg["llm_ok"] = False
+            dbg["llm_reason"] = "cache_miss_noop"
+            try:
+                _yureeka_llm_global_agg_update_v1(feature, noop, cache_hit=False)
+            except Exception:
+                pass
+            return (None, dbg)
+
+        # Require effective network allowed (allow_network_calls AND seed_mode)
+        try:
+            net_allowed_eff = bool((pol or {}).get("network_allowed_effective"))
+        except Exception:
+            net_allowed_eff = False
+        if not bool(net_allowed_eff):
+            # Distinguish common misconfig: allow_network_calls=true but seed_mode=false
+            try:
+                allow_net = bool((pol or {}).get("allow_network_calls"))
+                seed_mode = bool((pol or {}).get("seed_mode"))
+            except Exception:
+                allow_net = False
+                seed_mode = False
+            noop = _yureeka_llm_network_disabled_noop_diag_v1(feature=feature, model=str(model), cache_key=str(key), cache_key_fallback=str(key_fallback or ""), where="llm94")
+            try:
+                if bool(allow_net) and (not bool(seed_mode)):
+                    noop["blocked_reason"] = "seed_mode_required"
+            except Exception:
+                pass
+            dbg["llm_call_diag"] = dict(noop)
+            dbg["llm_used"] = False
+            dbg["llm_ok"] = False
+            dbg["llm_reason"] = "cache_miss_noop_network_not_allowed"
+            try:
+                _yureeka_llm_global_agg_update_v1(feature, noop, cache_hit=False)
+            except Exception:
+                pass
+            return (None, dbg)
+
+        system_prompt = (
+            "You assist metric canonicalisation (shadow-only).\n"
+            "You are given: (a) a frozen schema keyspace (canonical_key + name + unit_family/dimension + keywords), "
+            "and (b) extracted metrics (metric_name, current metric_key, unit_family/dimension).\n"
+            "Task: For EACH extracted metric, propose the best matching schema canonical_key candidates.\n"
+            "Rules:\n"
+            " - Use ONLY the facts in the payload. Do NOT invent numbers, sources, or new schema keys.\n"
+            " - If no schema key matches, set proposed_best_canonical_key to the current metric_key and include a note.\n"
+            " - Keep conservative: prefer unit_family/dimension alignment over name similarity.\n"
+            "Return ONLY strict JSON with keys:\n"
+            "  proposals: array of objects with:\n"
+            "    metric_key: string (current key)\n"
+            "    metric_name: string\n"
+            "    current_canonical_key: string\n"
+            "    proposed_best_canonical_key: string\n"
+            "    proposed_canonical_key_candidates: array (max 3) of {canonical_key, confidence(0-1), reason_tags[]}\n"
+            "    flags: {unit_family_mismatch?:bool, dimension_mismatch?:bool, time_scope_mismatch?:bool, scope_mismatch?:bool}\n"
+            "    would_change_key: bool\n"
+            "  confidence: number 0-1 (overall)\n"
+            "  notes: array of short strings (optional)\n"
+            "No commentary outside JSON."
+        )
+
+        user_payload = payload if isinstance(payload, dict) else {"v": "llm94_canonicalisation_shadow_payload_v1", "query": str(query or "")[:300]}
+
+        obj, call_diag = _yureeka_call_openai_chat_json_v1(
+            model=str(model),
+            system_prompt=system_prompt,
+            user_payload=user_payload,
+            feature=feature,
+            prompt_version=prompt_version,
+            schema_version=schema_version,
+            timeout_sec=30,
+            max_tokens=900,
+        )
+        dbg["llm_call_diag"] = call_diag or {}
+        try:
+            if isinstance(call_diag, dict):
+                call_diag["cache_miss"] = True
+        except Exception:
+            pass
+        try:
+            _yureeka_llm_global_agg_update_v1(feature, (call_diag or {}), cache_hit=False)
+        except Exception:
+            pass
+        if isinstance(obj, dict) and obj:
+            candidate = obj
+            if key:
+                try:
+                    cache_llm_response(key, candidate)
+                except Exception:
+                    pass
+    else:
+        dbg["llm_call_diag"] = {"ok": True, "reason": "cache_hit"}
+
+    # Normalize + validate
+    if isinstance(candidate, dict):
+        ok, reason = _llm94__validate_canonicalisation_shadow_v1(candidate)
+        dbg["llm_ok"] = bool(ok)
+        dbg["llm_validation_reason"] = str(reason or "")[:80]
+        dbg["llm_used"] = True
+        if bool(ok):
+            # Stable ordering for proposals
+            try:
+                props = candidate.get("proposals") or []
+                if isinstance(props, list):
+                    candidate["proposals"] = sorted(props, key=lambda x: str((x or {}).get("metric_key") or (x or {}).get("current_canonical_key") or ""))
+            except Exception:
+                pass
+            # Compute would_change_count deterministically (best-effort)
+            try:
+                wc = 0
+                for p in (candidate.get("proposals") or [])[:50]:
+                    if not isinstance(p, dict):
+                        continue
+                    curk = str(p.get("current_canonical_key") or p.get("metric_key") or "")
+                    best = str(p.get("proposed_best_canonical_key") or "")
+                    if curk and best and (curk != best):
+                        wc += 1
+                dbg["would_change_key_count"] = int(wc)
+            except Exception:
+                pass
             dbg["llm_reason"] = "ok"
             return (candidate, dbg)
 
@@ -8431,6 +9021,28 @@ except Exception:
 
 
 
+
+# NLP93: patch tracker overlay (NLP stream)
+try:
+    if isinstance(PATCH_TRACKER_V1, list):
+        _nlp93_entry = {
+            "patch_id": "NLP93",
+            "scope": "nlp_llm_endstate",
+            "summary": "Misuse-proof preset enforcement: Deterministic/Production presets force network OFF (and other posture flags) regardless of secrets/env; add conflict warnings (diagnostic-only).",
+            "risk": "low",
+        }
+        _rest = []
+        for _e in PATCH_TRACKER_V1:
+            try:
+                if isinstance(_e, dict) and str(_e.get("patch_id") or "") == "NLP93":
+                    continue
+            except Exception:
+                pass
+            _rest.append(_e)
+        PATCH_TRACKER_V1[:] = [_nlp93_entry] + _rest
+except Exception:
+    pass
+
 # NLP92: patch tracker overlay (NLP stream)
 try:
     if isinstance(PATCH_TRACKER_V1, list):
@@ -8452,6 +9064,28 @@ try:
 except Exception:
     pass
 
+
+
+# NLP94: patch tracker overlay (NLP stream)
+try:
+    if isinstance(PATCH_TRACKER_V1, list):
+        _nlp94_entry = {
+            "patch_id": "NLP94",
+            "scope": "nlp_llm_endstate",
+            "summary": "Canonicalisation assist (shadow-only): LLM proposes canonical_key/matching candidates for extracted metrics (audit-only; cache-first/no-op; never applied to winners/values).",
+            "risk": "low",
+        }
+        _rest = []
+        for _e in PATCH_TRACKER_V1:
+            try:
+                if isinstance(_e, dict) and str(_e.get("patch_id") or "") == "NLP94":
+                    continue
+            except Exception:
+                pass
+            _rest.append(_e)
+        PATCH_TRACKER_V1[:] = [_nlp94_entry] + _rest
+except Exception:
+    pass
 
 # NLP83: patch tracker overlay (NLP stream)
 try:
@@ -9877,6 +10511,22 @@ def _nlp83_end_state_checklist_v1() -> dict:
         ds_enabled = False
     out["dataset_logging"] = {"enabled": bool(ds_enabled)}
 
+
+    # NLP94: canonicalisation assist (shadow-only) flag snapshot
+    try:
+        canon_shadow_enabled = bool(_yureeka_llm_flag_bool_v1("ENABLE_LLM_CANONICALISATION_SHADOW"))
+    except Exception:
+        canon_shadow_enabled = bool(globals().get("ENABLE_LLM_CANONICALISATION_SHADOW", False))
+    out.setdefault("features", {})
+    if isinstance(out.get("features"), dict):
+        out["features"]["canonicalisation_shadow_enabled"] = bool(canon_shadow_enabled)
+    try:
+        _p94, _ps94 = _yureeka_nlp93_assist_preset_effective_v1()
+        _cls94 = _yureeka_nlp93_assist_preset_class_v1(_p94)
+        if bool(canon_shadow_enabled) and _cls94 in ("DETERMINISTIC", "PRODUCTION"):
+            warnings.append("canonicalisation_shadow_enabled_in_" + _cls94.lower())
+    except Exception:
+        pass
     # UI affordance (NLP82 dataset status expander)
     out["ui"] = {"dataset_status_panel_present": True}
 
@@ -9904,6 +10554,28 @@ def _nlp83_end_state_checklist_v1() -> dict:
             out["assist_preset_selected"] = str(_preset92)[:120]
     except Exception:
         pass
+
+    # NLP93: preset enforcement report + conflict warnings (diagnostic-only)
+    try:
+        _rep93 = _yureeka_nlp93_preset_enforcement_report_v1()
+        if isinstance(_rep93, dict):
+            out["preset_enforcement_v1"] = _rep93
+            try:
+                if int(_rep93.get("conflicts_count") or 0) > 0:
+                    warnings.append("preset_enforced_overrode_config")
+            except Exception:
+                pass
+            try:
+                for _c in (_rep93.get("conflicts") or [])[:6]:
+                    nm = str((_c or {}).get("name") or "")
+                    if nm:
+                        warnings.append("preset_conflict_" + nm.lower())
+            except Exception:
+                pass
+            out["warnings"] = list(warnings)
+    except Exception:
+        pass
+
     try:
         _pr92 = _yureeka_llm_profile_resolved_v1()
         if isinstance(_pr92, dict):
@@ -9951,7 +10623,7 @@ def _nlp85_end_state_declared_v1(checklist: dict = None) -> dict:
     """End-state declaration beacon for the NLP/LLM stream (NLP85 base; NLP88 narrative polish).
     Pure diagnostics + UI-friendly summary. Never changes winners/values/snippets.
     """
-    out = {"v": "nlp85_end_state_declared_v1", "declared_end_state_version": "NLP92", "declared_end_state_base_version": "NLP85"}
+    out = {"v": "nlp85_end_state_declared_v1", "declared_end_state_version": "NLP94", "declared_end_state_base_version": "NLP85"}
     try:
         out["code_version"] = str(CODE_VERSION_LOCK)
     except Exception:
@@ -33569,6 +34241,20 @@ def main():
             except Exception:
                 pass
 
+            # NLP94: Canonicalisation assist (shadow-only; audit). Proposes schema canonical_key matches; never applied.
+            try:
+                _n94_obj, _n94_dbg = _yureeka_llm_canonicalisation_shadow_v1(primary_data if isinstance(primary_data, dict) else {}, str(query or ""))
+                output.setdefault("debug", {})
+                if isinstance(output.get("debug"), dict):
+                    output["debug"]["nlp94_canonicalisation_shadow_v1"] = _n94_dbg
+                if _n94_obj is not None:
+                    output.setdefault("results", {})
+                    if isinstance(output.get("results"), dict):
+                        output["results"]["llm94_canonicalisation_shadow_v1"] = _n94_obj
+            except Exception:
+                pass
+
+
             try:
                 if isinstance(output.get("primary_response"), dict):
                     output["primary_response"]["code_version"] = _yureeka_get_code_version()
@@ -33927,6 +34613,7 @@ def main():
                     _llm_flags2["ENABLE_LLM_QUERY_STRUCTURE_FALLBACK"] = True
                     _llm_flags2["ENABLE_LLM_ANOMALY_FLAGS"] = True
 
+                    _llm_flags2["ENABLE_LLM_CANONICALISATION_SHADOW"] = True  # NLP94 shadow-only
                 else:
                     # 3) Production (Replay): cache-only, audit-only features; no network.
                     _llm_flags2["LLM_PROFILE"] = "REPLAY"
@@ -33988,6 +34675,24 @@ def main():
                     _nlp91__apply_preset_v1(_sel)
             except Exception:
                 _sel = str(_cur)
+
+            # NLP93: preset enforcement conflict warning (misuse-proofing)
+            try:
+                _rep93_ui = _yureeka_nlp93_preset_enforcement_report_v1()
+                if isinstance(_rep93_ui, dict) and int(_rep93_ui.get("conflicts_count") or 0) > 0:
+                    _names = []
+                    try:
+                        for _c in (_rep93_ui.get("conflicts") or [])[:4]:
+                            nm = str((_c or {}).get("name") or "")
+                            if nm:
+                                _names.append(nm)
+                    except Exception:
+                        pass
+                    st.warning(
+                        "Preset enforcement: conflicting secrets/env values were ignored for fail-closed safety." + (" Conflicts: " + ", ".join(_names) if _names else "")
+                    )
+            except Exception:
+                pass
 
             # Determine simplified posture early (pre-render) so we can hide legacy knobs above.
             try:
@@ -34273,6 +34978,8 @@ def main():
                     disabled=bool(isinstance(_prof_dbg, dict) and bool(_prof_dbg.get("applies")) and isinstance((_prof_dbg.get("derived_flags") or {}), dict) and "ENABLE_LLM_EVOLUTION_SUMMARY" in (_prof_dbg.get("derived_flags") or {})),
                     forced_value=(_prof_dbg.get("derived_flags") or {}).get("ENABLE_LLM_EVOLUTION_SUMMARY") if isinstance(_prof_dbg, dict) else None)
 
+
+                    _llm_ui_checkbox("ENABLE_LLM_CANONICALISATION_SHADOW", "Enable LLM canonicalisation assist (shadow-only)", default=False, help="Audit-only: LLM proposes canonical_key/matching suggestions for extracted metrics. Never applied to winners/values.", disabled=False)
                     # NLP82: local dataset/events status panel (UI-only)
                     with st.expander("LLM dataset status (local)", expanded=False):
                         try:
