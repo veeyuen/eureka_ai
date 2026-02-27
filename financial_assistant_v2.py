@@ -458,7 +458,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "NLP94"
+_YUREEKA_CODE_VERSION_LOCK = "NLP95"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 # REFACTOR206: Release Candidate freeze (no pipeline behavior change).
 YUREEKA_RELEASE_CANDIDATE_V1 = False
@@ -839,9 +839,10 @@ def _yureeka_llm_profile_resolved_v1() -> dict:
             # budget nudge (param-level)
             derived_params["LLM_SEED_MAX_CALLS"] = 1
         elif prof_tok in ("LIVE", "ONLINE"):
+            # NLP95 UX: LIVE means "network eligible", but does NOT automatically imply seed/fill-cache.
+            # Seed/fill-cache remains an explicit toggle (LLM_SEED_MODE) under Experiment preset.
             derived_flags.update({
                 "LLM_ALLOW_NETWORK_CALLS": True,
-                "LLM_SEED_MODE": True,
                 "LLM_CACHE_REPLAY_ONLY": False,
                 "LLM_FORCE_REFRESH_ONCE": False,
             })
@@ -9087,6 +9088,28 @@ try:
 except Exception:
     pass
 
+
+# NLP95: patch tracker overlay (NLP stream)
+try:
+    if isinstance(PATCH_TRACKER_V1, list):
+        _nlp95_entry = {
+            "patch_id": "NLP95",
+            "scope": "nlp_llm_endstate",
+            "summary": "UX: Add explicit Experiment 'Seed/fill cache' toggle (LIVE no longer implies seed); remove redundant 'Advanced: freshness' box from main UI (sidebar-only).",
+            "risk": "low",
+        }
+        _rest = []
+        for _e in PATCH_TRACKER_V1:
+            try:
+                if isinstance(_e, dict) and str(_e.get("patch_id") or "") == "NLP95":
+                    continue
+            except Exception:
+                pass
+            _rest.append(_e)
+        PATCH_TRACKER_V1[:] = [_nlp95_entry] + _rest
+except Exception:
+    pass
+
 # NLP83: patch tracker overlay (NLP stream)
 try:
     if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "NLP83" for e in PATCH_TRACKER_V1):
@@ -10623,7 +10646,7 @@ def _nlp85_end_state_declared_v1(checklist: dict = None) -> dict:
     """End-state declaration beacon for the NLP/LLM stream (NLP85 base; NLP88 narrative polish).
     Pure diagnostics + UI-friendly summary. Never changes winners/values/snippets.
     """
-    out = {"v": "nlp85_end_state_declared_v1", "declared_end_state_version": "NLP94", "declared_end_state_base_version": "NLP85"}
+    out = {"v": "nlp85_end_state_declared_v1", "declared_end_state_version": "NLP95", "declared_end_state_base_version": "NLP85"}
     try:
         out["code_version"] = str(CODE_VERSION_LOCK)
     except Exception:
@@ -33913,7 +33936,7 @@ def main():
             placeholder="e.g., What is the size of the global EV battery market?"
         )
 
-        col_opt1, col_opt2 = st.columns(2)
+        col_opt1 = st.container()
         with col_opt1:
             use_web = st.checkbox(
                 "Enable web search (recommended)",
@@ -33940,43 +33963,8 @@ def main():
             )
 
 
-        with col_opt2:
-            with st.expander("Advanced: freshness", expanded=False):
-                try:
-                    _ss = st.session_state
-                    if not isinstance(_ss.get("YUREEKA_FLAGS"), dict):
-                        _ss["YUREEKA_FLAGS"] = {}
-                    _ui_flags = _ss.get("YUREEKA_FLAGS") or {}
-                except Exception:
-                    _ui_flags = {}
-
-                def _ui_flag_checkbox_tab1(flag: str, label: str, default: bool = False, help: str = "") -> None:
-                    try:
-                        if isinstance(_ui_flags, dict) and (flag in _ui_flags):
-                            cur = bool(_ui_flags.get(flag))
-                        else:
-                            try:
-                                cur = bool(_yureeka_llm_flag_effective_v1(flag)[0])
-                            except Exception:
-                                cur = bool(default)
-                        val = st.checkbox(label, value=cur, key=f"ui_tab1_flag_{flag}", help=help)
-                        if isinstance(_ui_flags, dict):
-                            _ui_flags[flag] = bool(val)
-                    except Exception:
-                        pass
-
-                _ui_flag_checkbox_tab1(
-                    "ENABLE_SOURCE_FRESHNESS",
-                    "Enable source freshness extraction",
-                    default=bool(globals().get("ENABLE_SOURCE_FRESHNESS", True)),
-                    help="When OFF, publish-date hints and freshness scores are not computed/attached."
-                )
-                _ui_flag_checkbox_tab1(
-                    "ENABLE_SOURCE_FRESHNESS_TIEBREAK",
-                    "Enable strict freshness tie-break",
-                    default=bool(globals().get("ENABLE_SOURCE_FRESHNESS_TIEBREAK", False)),
-                    help="When ON, resolves exact score ties using freshness signals (still conservative; requires freshness extraction)."
-                )
+        # NLP95 UX: Freshness toggles moved to sidebar to avoid redundant controls.
+        st.caption("Freshness controls are available in the sidebar; the in-panel \"Advanced: freshness\" box was removed.")
 
         if st.button("🔍 Analyze", type="primary") and query:
             if len(query.strip()) < 5:
@@ -34592,6 +34580,22 @@ def main():
                     # 2) Experiment (Injected+Live): enable sidecar + optional assists for experimentation.
                     _llm_flags2["LLM_PROFILE"] = "LIVE"
                     _llm_flags2["LLM_FEATURES"] = "SNIPPETS+EVOLUTION_SUMMARY"
+                    # NLP95 UX: Experiment preset separates "network eligibility" (LIVE) from "seed/fill-cache".
+                    # Seed/fill-cache is explicit: when OFF, Experiment behaves cache-only/no-op even though LIVE is selected.
+                    try:
+                        _seed_fill = st.session_state.get("YUREEKA_EXPERIMENT_SEED_FILL_V1")
+                    except Exception:
+                        _seed_fill = None
+                    if _seed_fill is None:
+                        _seed_fill = True
+                        try:
+                            st.session_state["YUREEKA_EXPERIMENT_SEED_FILL_V1"] = True
+                        except Exception:
+                            pass
+                    _llm_flags2["LLM_SEED_MODE"] = bool(_seed_fill)
+                    if not bool(_seed_fill):
+                        # If not filling cache, ensure one-shot refresh is not armed.
+                        _llm_flags2["LLM_FORCE_REFRESH_ONCE"] = False
                     # NLP92: clamp experiment-mode seed budgets (avoid runaway live calls)
                     try:
                         _llm_flags2["LLM_SEED_MAX_CALLS"] = 25
@@ -34732,6 +34736,44 @@ def main():
 
 
             if isinstance(_sel, str) and _sel.startswith("2)"):
+                # NLP95 UX: explicit seed/fill-cache toggle for Experiment preset.
+                try:
+                    _seed_cur = st.session_state.get("YUREEKA_EXPERIMENT_SEED_FILL_V1")
+                except Exception:
+                    _seed_cur = None
+                if _seed_cur is None:
+                    _seed_cur = True
+                    try:
+                        st.session_state["YUREEKA_EXPERIMENT_SEED_FILL_V1"] = True
+                    except Exception:
+                        pass
+                try:
+                    _seed_val = st.checkbox(
+                        "Seed / fill cache (enable live LLM calls on cache miss)",
+                        value=bool(_seed_cur),
+                        key="ui_experiment_seed_fill_v1",
+                        help="When ON, enables LLM_SEED_MODE so cache misses may trigger live LLM calls (subject to budgets/whitelist). When OFF, Experiment runs cache-only/no-op.",
+                    )
+                except Exception:
+                    _seed_val = bool(_seed_cur)
+
+                try:
+                    st.session_state["YUREEKA_EXPERIMENT_SEED_FILL_V1"] = bool(_seed_val)
+                except Exception:
+                    pass
+
+                # Apply into current session flags immediately (so policy beacons reflect it on rerun).
+                try:
+                    _lf = st.session_state.get("YUREEKA_LLM_FLAGS")
+                    if not isinstance(_lf, dict):
+                        _lf = {}
+                    _lf["LLM_SEED_MODE"] = bool(_seed_val)
+                    if not bool(_seed_val):
+                        _lf["LLM_FORCE_REFRESH_ONCE"] = False
+                    st.session_state["YUREEKA_LLM_FLAGS"] = _lf
+                except Exception:
+                    pass
+
                 st.info("Experiment preset: run Evolution with your injected URL(s) to see changes clearly. (Triad injection run recommended.)")
 
             if not bool(_ui_simplified_pre):
