@@ -458,7 +458,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "NLP96"
+_YUREEKA_CODE_VERSION_LOCK = "NLP97"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 # REFACTOR206: Release Candidate freeze (no pipeline behavior change).
 YUREEKA_RELEASE_CANDIDATE_V1 = False
@@ -9132,6 +9132,28 @@ try:
 except Exception:
     pass
 
+
+# NLP97: patch tracker overlay (NLP stream)
+try:
+    if isinstance(PATCH_TRACKER_V1, list):
+        _nlp97_entry = {
+            "patch_id": "NLP97",
+            "scope": "nlp_llm_endstate",
+            "summary": "History robustness polish: normalize disk history entries for Evolution rehydration, tag history sources (sheet/session/disk), and emit local_history_read_v1 debug beacon (no decider changes).",
+            "risk": "low",
+        }
+        _rest = []
+        for _e in PATCH_TRACKER_V1:
+            try:
+                if isinstance(_e, dict) and str(_e.get("patch_id") or "") == "NLP97":
+                    continue
+            except Exception:
+                pass
+            _rest.append(_e)
+        PATCH_TRACKER_V1[:] = [_nlp97_entry] + _rest
+except Exception:
+    pass
+
 # NLP83: patch tracker overlay (NLP stream)
 try:
     if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "NLP83" for e in PATCH_TRACKER_V1):
@@ -13108,6 +13130,9 @@ def _yureeka_compact_analysis_for_local_history_v1(analysis: dict) -> dict:
             pr_res.get("snapshot_store_ref"),
             "",
         ) or "")
+        if (not snap_ref) and snap_ref_stable:
+            snap_ref = snap_ref_stable
+
         ssh_stable = str(_pick(
             analysis.get("source_snapshot_hash_stable"),
             res.get("source_snapshot_hash_stable"),
@@ -13115,8 +13140,32 @@ def _yureeka_compact_analysis_for_local_history_v1(analysis: dict) -> dict:
             pr_res.get("source_snapshot_hash_stable"),
             analysis.get("source_snapshot_hash"),
             res.get("source_snapshot_hash"),
+            pr.get("source_snapshot_hash"),
+            pr_res.get("source_snapshot_hash"),
             "",
         ) or "")
+        ssh = str(_pick(
+            analysis.get("source_snapshot_hash"),
+            res.get("source_snapshot_hash"),
+            pr.get("source_snapshot_hash"),
+            pr_res.get("source_snapshot_hash"),
+            ssh_stable,
+            "",
+        ) or "")
+        if (not ssh) and ssh_stable:
+            ssh = ssh_stable
+
+        # Small preset metadata (helps Evolution baseline UX after restart; does NOT affect deciders).
+        _preset_selected = ""
+        _preset_class = ""
+        try:
+            _dbg = res.get("debug") if isinstance(res.get("debug"), dict) else {}
+            _pe = _dbg.get("preset_enforcement_v1") if isinstance(_dbg.get("preset_enforcement_v1"), dict) else {}
+            _preset_selected = str(_pe.get("preset_selected") or "")
+            _preset_class = str(_pe.get("preset_class") or "")
+        except Exception:
+            _preset_selected = ""
+            _preset_class = ""
 
         entry = {
             "analysis_type": "analysis",
@@ -13127,9 +13176,13 @@ def _yureeka_compact_analysis_for_local_history_v1(analysis: dict) -> dict:
             "code_version_lock": str(globals().get("_YUREEKA_CODE_VERSION_LOCK") or ""),
             "metric_schema_frozen": schema,
             "primary_metrics_canonical": pmc_compact,
+            "history_source": "disk",
+            "assist_preset_selected": _preset_selected,
+            "assist_preset_class": _preset_class,
             "snapshot_store_ref_stable": snap_ref_stable,
             "snapshot_store_ref": snap_ref,
             "source_snapshot_hash_stable": ssh_stable,
+            "source_snapshot_hash": ssh,
             "full_store_ref": str(_pick(analysis.get("full_store_ref"), res.get("full_store_ref"), "") or ""),
         }
 
@@ -13223,6 +13276,29 @@ def _yureeka_local_history_load_v1(limit: int = 50) -> list:
             try:
                 d = json.loads(ln)
                 if isinstance(d, dict):
+                    # NLP97: normalize minimal fields so Evolution treats disk history as rehydratable baselines.
+                    try:
+                        if not d.get("history_source"):
+                            d["history_source"] = "disk"
+                    except Exception:
+                        pass
+                    try:
+                        if (not d.get("snapshot_store_ref")) and d.get("snapshot_store_ref_stable"):
+                            d["snapshot_store_ref"] = d.get("snapshot_store_ref_stable")
+                    except Exception:
+                        pass
+                    try:
+                        if (not d.get("source_snapshot_hash")) and d.get("source_snapshot_hash_stable"):
+                            d["source_snapshot_hash"] = d.get("source_snapshot_hash_stable")
+                    except Exception:
+                        pass
+                    try:
+                        if not d.get("timestamp"):
+                            d["timestamp"] = (d.get("primary_response") or {}).get("timestamp") or (d.get("results") or {}).get("timestamp") or ""
+                        if not d.get("question"):
+                            d["question"] = (d.get("primary_response") or {}).get("question") or (d.get("results") or {}).get("question") or ""
+                    except Exception:
+                        pass
                     out.append(d)
             except Exception:
                 continue
@@ -13249,7 +13325,78 @@ def get_history(limit: int = MAX_HISTORY_ITEMS) -> List[Dict]:
     # This prevents Evolution from being blocked by transient Sheets failures.
     try:
         if st.session_state.get("fix2d66_force_session_history"):
-            return st.session_state.get('analysis_history', [])
+            # NLP97: when Sheets is unreliable, still allow Evolution to discover disk baselines after restart.
+            try:
+                _sess = st.session_state.get('analysis_history', []) or []
+            except Exception:
+                _sess = []
+            try:
+                _local = _yureeka_local_history_load_v1(limit=limit) or []
+            except Exception:
+                _local = []
+            try:
+                _lh_dbg = {"v": "local_history_read_v1", "ok": True, "path": _yureeka_local_history_index_path_v1(), "count": (len(_local) if isinstance(_local, list) else None), "used": True, "reason": "force_session_history"}
+                st.session_state["_local_history_last_read_v1"] = _lh_dbg
+            except Exception:
+                pass
+
+            merged = []
+            seen = set()
+            def _k(_h):
+                try:
+                    if not isinstance(_h, dict):
+                        return None
+                    _t = _h.get("timestamp") or (_h.get("results") or {}).get("timestamp") or ""
+                    _q = (_h.get("question") or (_h.get("results") or {}).get("question") or "").strip()
+                    if not _t and not _q:
+                        return None
+                    return (str(_t), str(_q))
+                except Exception:
+                    return None
+
+            # precedence: session then disk
+            for _h in (_sess or []):
+                try:
+                    if isinstance(_h, dict) and not _h.get("history_source"):
+                        _h = dict(_h); _h["history_source"] = "session"
+                except Exception:
+                    pass
+                kk = _k(_h)
+                if kk and kk not in seen:
+                    seen.add(kk)
+                    merged.append(_h)
+            for _h in (_local or []):
+                try:
+                    if isinstance(_h, dict) and not _h.get("history_source"):
+                        _h = dict(_h); _h["history_source"] = "disk"
+                except Exception:
+                    pass
+                kk = _k(_h)
+                if kk and kk not in seen:
+                    seen.add(kk)
+                    merged.append(_h)
+
+            try:
+                def _ts(_h):
+                    try:
+                        _t = (
+                            (_h.get("timestamp") if isinstance(_h, dict) else "")
+                            or ((_h.get("results") or {}).get("timestamp") if isinstance(_h.get("results"), dict) else "")
+                            or ((_h.get("primary_response") or {}).get("timestamp") if isinstance(_h.get("primary_response"), dict) else "")
+                            or ""
+                        )
+                        _dt = _parse_iso_dt(_t) if _t else None
+                        return _dt.timestamp() if _dt else 0.0
+                    except Exception:
+                        return 0.0
+                merged.sort(key=_ts, reverse=True)
+            except Exception:
+                pass
+
+            if isinstance(limit, int) and limit > 0 and len(merged) > limit:
+                merged = merged[:limit]
+
+            return merged
     except Exception:
         pass
     if not sheet:
@@ -13262,6 +13409,13 @@ def get_history(limit: int = MAX_HISTORY_ITEMS) -> List[Dict]:
             _local = _yureeka_local_history_load_v1(limit=limit) or []
         except Exception:
             _local = []
+
+        # NLP97: emit a debug beacon so Evolution triads can confirm disk history was read.
+        try:
+            _lh_dbg = {"v": "local_history_read_v1", "ok": True, "path": _yureeka_local_history_index_path_v1(), "count": (len(_local) if isinstance(_local, list) else None), "used": True, "reason": "no_sheet"}
+            st.session_state["_local_history_last_read_v1"] = _lh_dbg
+        except Exception:
+            pass
 
         # Merge newest-first, de-dup by (timestamp, question)
         merged = []
@@ -13279,11 +13433,23 @@ def get_history(limit: int = MAX_HISTORY_ITEMS) -> List[Dict]:
                 return None
 
         for _h in (_sess or []):
+            try:
+                if isinstance(_h, dict) and not _h.get("history_source"):
+                    _h = dict(_h)
+                    _h["history_source"] = "session"
+            except Exception:
+                pass
             kk = _k(_h)
             if kk and kk not in seen:
                 seen.add(kk)
                 merged.append(_h)
         for _h in (_local or []):
+            try:
+                if isinstance(_h, dict) and not _h.get("history_source"):
+                    _h = dict(_h)
+                    _h["history_source"] = "disk"
+            except Exception:
+                pass
             kk = _k(_h)
             if kk and kk not in seen:
                 seen.add(kk)
@@ -13397,6 +13563,11 @@ def get_history(limit: int = MAX_HISTORY_ITEMS) -> List[Dict]:
                 try:
                     data = json.loads(raw_cell)
                     data['_sheet_id'] = row[0]  # Keep track of sheet row ID
+                    try:
+                        if not data.get('history_source'):
+                            data['history_source'] = 'sheet'
+                    except Exception:
+                        pass
 
                     # (your existing GH2 / ES1G / GH1 / GH3 logic unchanged)
                     # ...
@@ -13421,6 +13592,13 @@ def get_history(limit: int = MAX_HISTORY_ITEMS) -> List[Dict]:
             _local_hist = _yureeka_local_history_load_v1(limit=limit) or []
         except Exception:
             _local_hist = []
+
+        # NLP97: emit a debug beacon so Evolution triads can confirm disk history was read even when Sheets is available.
+        try:
+            _lh_dbg = {"v": "local_history_read_v1", "ok": True, "path": _yureeka_local_history_index_path_v1(), "count": (len(_local_hist) if isinstance(_local_hist, list) else None), "used": True, "reason": "merge_with_sheet"}
+            st.session_state["_local_history_last_read_v1"] = _lh_dbg
+        except Exception:
+            pass
         try:
             _sess_last = st.session_state.get("last_analysis")
         except Exception:
@@ -13450,6 +13628,12 @@ def get_history(limit: int = MAX_HISTORY_ITEMS) -> List[Dict]:
 
             if isinstance(_sess_hist, list):
                 for _h in _sess_hist:
+                    try:
+                        if isinstance(_h, dict) and not _h.get("history_source"):
+                            _h = dict(_h)
+                            _h["history_source"] = "session"
+                    except Exception:
+                        pass
                     _k = _r105_hist_key(_h)
                     if _k and _k not in _seen:
                         _seen.add(_k)
@@ -13457,12 +13641,24 @@ def get_history(limit: int = MAX_HISTORY_ITEMS) -> List[Dict]:
 
             if isinstance(_local_hist, list):
                 for _h in _local_hist:
+                    try:
+                        if isinstance(_h, dict) and not _h.get("history_source"):
+                            _h = dict(_h)
+                            _h["history_source"] = "disk"
+                    except Exception:
+                        pass
                     _k = _r105_hist_key(_h)
                     if _k and _k not in _seen:
                         _seen.add(_k)
                         _merged.append(_h)
 
             if isinstance(_sess_last, dict):
+                try:
+                    if not _sess_last.get("history_source"):
+                        _sess_last = dict(_sess_last)
+                        _sess_last["history_source"] = "session"
+                except Exception:
+                    pass
                 _k = _r105_hist_key(_sess_last)
                 if _k and _k not in _seen:
                     _seen.add(_k)
@@ -13496,7 +13692,72 @@ def get_history(limit: int = MAX_HISTORY_ITEMS) -> List[Dict]:
 
     except Exception as e:
         st.warning(f"⚠️ Failed to load from Google Sheets: {e}")
-        return st.session_state.get('analysis_history', [])
+        # NLP97: if Sheets read fails, still return disk/session history so Evolution remains usable.
+        try:
+            _sess = st.session_state.get('analysis_history', []) or []
+        except Exception:
+            _sess = []
+        try:
+            _local = _yureeka_local_history_load_v1(limit=limit) or []
+        except Exception:
+            _local = []
+        try:
+            _lh_dbg = {"v": "local_history_read_v1", "ok": True, "path": _yureeka_local_history_index_path_v1(), "count": (len(_local) if isinstance(_local, list) else None), "used": True, "reason": "sheet_exception"}
+            st.session_state["_local_history_last_read_v1"] = _lh_dbg
+        except Exception:
+            pass
+        merged = []
+        seen = set()
+        def _k(_h):
+            try:
+                if not isinstance(_h, dict):
+                    return None
+                _t = _h.get("timestamp") or (_h.get("results") or {}).get("timestamp") or ""
+                _q = (_h.get("question") or (_h.get("results") or {}).get("question") or "").strip()
+                if not _t and not _q:
+                    return None
+                return (str(_t), str(_q))
+            except Exception:
+                return None
+        for _h in (_sess or []):
+            try:
+                if isinstance(_h, dict) and not _h.get("history_source"):
+                    _h = dict(_h); _h["history_source"] = "session"
+            except Exception:
+                pass
+            kk = _k(_h)
+            if kk and kk not in seen:
+                seen.add(kk)
+                merged.append(_h)
+        for _h in (_local or []):
+            try:
+                if isinstance(_h, dict) and not _h.get("history_source"):
+                    _h = dict(_h); _h["history_source"] = "disk"
+            except Exception:
+                pass
+            kk = _k(_h)
+            if kk and kk not in seen:
+                seen.add(kk)
+                merged.append(_h)
+        try:
+            def _ts(_h):
+                try:
+                    _t = (
+                        (_h.get("timestamp") if isinstance(_h, dict) else "")
+                        or ((_h.get("results") or {}).get("timestamp") if isinstance(_h.get("results"), dict) else "")
+                        or ((_h.get("primary_response") or {}).get("timestamp") if isinstance(_h.get("primary_response"), dict) else "")
+                        or ""
+                    )
+                    _dt = _parse_iso_dt(_t) if _t else None
+                    return _dt.timestamp() if _dt else 0.0
+                except Exception:
+                    return 0.0
+            merged.sort(key=_ts, reverse=True)
+        except Exception:
+            pass
+        if isinstance(limit, int) and limit > 0 and len(merged) > limit:
+            merged = merged[:limit]
+        return merged
 
 # 1. CONFIGURATION & API KEY VALIDATION
 
@@ -35655,8 +35916,27 @@ def main():
             st.info("📭 No previous analyses found. Run an analysis in the 'New Analysis' tab first.")
             return
 
+        # NLP97: show provenance + code_version in baseline picker (helps diagnose history sources).
+        def _nlp97_hist_label(_h: dict) -> str:
+            try:
+                if not isinstance(_h, dict):
+                    return "N/A"
+                _q = str(_h.get("question") or (_h.get("results") or {}).get("question") or "N/A")
+                _ts = str(_h.get("timestamp") or (_h.get("results") or {}).get("timestamp") or "")
+                _src = str(_h.get("history_source") or "unknown")
+                _cv = str(_h.get("code_version") or (_h.get("results") or {}).get("code_version") or "")
+                _pc = str(_h.get("assist_preset_class") or "")
+                _pc = (f" preset={_pc}" if _pc else "")
+                _cv = (f" v={_cv}" if _cv else "")
+                return f"[{_src}] {_q}  ({_ts}){_cv}{_pc}"
+            except Exception:
+                try:
+                    return str(_h.get("question") or "N/A")
+                except Exception:
+                    return "N/A"
+
         baseline_options = [
-            f"{i+1}. {h.get('question', 'N/A')}  ({h.get('timestamp', '')})"
+            f"{i+1}. {_nlp97_hist_label(h)}"
             for i, h in enumerate(history)
         ]
         _r104_baseline_select_key = "baseline_select"
@@ -36252,6 +36532,17 @@ def main():
                         (previous_data if "previous_data" in locals() else baseline_data),
                         web_context if "web_context" in locals() else {},
                     )
+                except Exception:
+                    pass
+
+                # NLP97: attach local history read diagnostic to Evolution output (for triad verification).
+                try:
+                    _lh_dbg = st.session_state.get("_local_history_last_read_v1")
+                    if isinstance(_lh_dbg, dict):
+                        if isinstance(results, dict):
+                            results.setdefault("debug", {})
+                            if isinstance(results.get("debug"), dict) and ("local_history_read_v1" not in results["debug"]):
+                                results["debug"]["local_history_read_v1"] = _lh_dbg
                 except Exception:
                     pass
 
