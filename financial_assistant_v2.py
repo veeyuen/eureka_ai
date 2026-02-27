@@ -458,7 +458,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "NLP95"
+_YUREEKA_CODE_VERSION_LOCK = "NLP96"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 # REFACTOR206: Release Candidate freeze (no pipeline behavior change).
 YUREEKA_RELEASE_CANDIDATE_V1 = False
@@ -9110,6 +9110,28 @@ try:
 except Exception:
     pass
 
+
+# NLP96: patch tracker overlay (NLP stream)
+try:
+    if isinstance(PATCH_TRACKER_V1, list):
+        _nlp96_entry = {
+            "patch_id": "NLP96",
+            "scope": "nlp_llm_endstate",
+            "summary": "Hotfix UX/ops: persist compact Analysis history to local disk and load it in Evolution when Sheets/session history is unavailable (fixes 'No previous analyses found' despite saved snapshots).",
+            "risk": "low",
+        }
+        _rest = []
+        for _e in PATCH_TRACKER_V1:
+            try:
+                if isinstance(_e, dict) and str(_e.get("patch_id") or "") == "NLP96":
+                    continue
+            except Exception:
+                pass
+            _rest.append(_e)
+        PATCH_TRACKER_V1[:] = [_nlp96_entry] + _rest
+except Exception:
+    pass
+
 # NLP83: patch tracker overlay (NLP stream)
 try:
     if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "NLP83" for e in PATCH_TRACKER_V1):
@@ -10646,7 +10668,7 @@ def _nlp85_end_state_declared_v1(checklist: dict = None) -> dict:
     """End-state declaration beacon for the NLP/LLM stream (NLP85 base; NLP88 narrative polish).
     Pure diagnostics + UI-friendly summary. Never changes winners/values/snippets.
     """
-    out = {"v": "nlp85_end_state_declared_v1", "declared_end_state_version": "NLP95", "declared_end_state_base_version": "NLP85"}
+    out = {"v": "nlp85_end_state_declared_v1", "declared_end_state_version": "NLP96", "declared_end_state_base_version": "NLP85"}
     try:
         out["code_version"] = str(CODE_VERSION_LOCK)
     except Exception:
@@ -11474,6 +11496,106 @@ def add_to_history(analysis: dict) -> bool:
         pass
         sheet = None
 
+
+    # NLP96: Ensure local snapshot pointers are persisted even when Google Sheets is unavailable.
+    # This enables Evolution to rehydrate baselines from snapshot_store_ref_stable without requiring Sheets.
+    try:
+        _has_ptr = False
+        try:
+            _has_ptr = bool(
+                analysis.get("snapshot_store_ref_stable")
+                or (analysis.get("results") or {}).get("snapshot_store_ref_stable")
+                or analysis.get("snapshot_store_ref")
+                or (analysis.get("results") or {}).get("snapshot_store_ref")
+            )
+        except Exception:
+            _has_ptr = False
+
+        if not _has_ptr:
+            _bsc = None
+            try:
+                _bsc = (analysis.get("results", {}) or {}).get("baseline_sources_cache") or analysis.get("baseline_sources_cache")
+            except Exception:
+                _bsc = None
+
+            # Rebuild from evidence_records when summarized shapes are present (deterministic; no refetch).
+            try:
+                if (not isinstance(_bsc, list)) and isinstance(analysis, dict):
+                    _er = None
+                    if isinstance(analysis.get("results"), dict):
+                        _er = analysis["results"].get("evidence_records")
+                    if _er is None:
+                        _er = analysis.get("evidence_records")
+                    _rebuilt = build_baseline_sources_cache_from_evidence_records(_er)
+                    if isinstance(_rebuilt, list) and _rebuilt:
+                        _bsc = _rebuilt
+            except Exception:
+                pass
+
+            if isinstance(_bsc, list) and _bsc:
+                _ssh = compute_source_snapshot_hash(_bsc)
+                _ssh_v2 = None
+                try:
+                    _ssh_v2 = compute_source_snapshot_hash_v2(_bsc)
+                except Exception:
+                    _ssh_v2 = None
+
+                _ref_local = ""
+                try:
+                    _ref_local = store_full_snapshots_local(_bsc, _ssh)
+                except Exception:
+                    _ref_local = ""
+
+                if _ref_local:
+                    # Attach pointer fields (stable = local path here; may be overwritten by Sheet refs later).
+                    try:
+                        analysis["source_snapshot_hash"] = analysis.get("source_snapshot_hash") or _ssh
+                        if _ssh_v2:
+                            analysis["source_snapshot_hash_v2"] = analysis.get("source_snapshot_hash_v2") or _ssh_v2
+                            analysis["source_snapshot_hash_stable"] = analysis.get("source_snapshot_hash_stable") or (_ssh_v2 or _ssh)
+                    except Exception:
+                        pass
+
+                    try:
+                        analysis["snapshot_store_ref"] = analysis.get("snapshot_store_ref") or _ref_local
+                        analysis["snapshot_store_ref_stable"] = analysis.get("snapshot_store_ref_stable") or _ref_local
+                    except Exception:
+                        pass
+
+                    try:
+                        analysis.setdefault("results", {})
+                        if isinstance(analysis.get("results"), dict):
+                            analysis["results"]["source_snapshot_hash"] = (analysis["results"].get("source_snapshot_hash") or _ssh)
+                            if _ssh_v2:
+                                analysis["results"]["source_snapshot_hash_v2"] = analysis["results"].get("source_snapshot_hash_v2") or _ssh_v2
+                                analysis["results"]["source_snapshot_hash_stable"] = analysis["results"].get("source_snapshot_hash_stable") or (_ssh_v2 or _ssh)
+                            analysis["results"]["snapshot_store_ref"] = analysis["results"].get("snapshot_store_ref") or _ref_local
+                            analysis["results"]["snapshot_store_ref_stable"] = analysis["results"].get("snapshot_store_ref_stable") or _ref_local
+                    except Exception:
+                        pass
+
+                    # Add a compact debug manifest
+                    try:
+                        if isinstance(analysis.get("results"), dict):
+                            _dbg = analysis["results"].get("debug")
+                            if not isinstance(_dbg, dict):
+                                _dbg = {}
+                                analysis["results"]["debug"] = _dbg
+                            _dbg["snapshot_store_write_v1"] = _dbg.get("snapshot_store_write_v1") or {
+                                "ssh_v1": str(_ssh or ""),
+                                "ssh_v2": str(_ssh_v2 or ""),
+                                "gs_ref_v1": "",
+                                "gs_ref_v2": "",
+                                "local_ref_v1": str(_ref_local or ""),
+                                "final_snapshot_store_ref": str(analysis.get("snapshot_store_ref") or ""),
+                                "final_snapshot_store_ref_stable": str(analysis.get("snapshot_store_ref_stable") or ""),
+                                "note": "nlp96_local_only_pre_sheets",
+                            }
+                    except Exception:
+                        pass
+    except Exception:
+        pass
+
     if not sheet:
         # Sheets unavailable: fall back to in-session history and exit early
         try:
@@ -11484,6 +11606,19 @@ def add_to_history(analysis: dict) -> bool:
             pass
         try:
             st.session_state["last_analysis"] = analysis
+        except Exception:
+            pass
+        # NLP96: persist compact local history so Evolution can find baselines after restart (Sheets may be unavailable).
+        try:
+            _lh = _yureeka_local_history_write_v1(analysis)
+            try:
+                analysis.setdefault("results", {})
+                if isinstance(analysis.get("results"), dict):
+                    _dbg = (analysis["results"].get("debug") if isinstance(analysis["results"].get("debug"), dict) else {})
+                    analysis["results"]["debug"] = _dbg
+                    _dbg["local_history_write_v1"] = _lh
+            except Exception:
+                pass
         except Exception:
             pass
         return True
@@ -11861,6 +11996,20 @@ def add_to_history(analysis: dict) -> bool:
         except Exception:
             pass
 
+        # NLP96: persist compact local history even when Sheets writes succeed (makes Evolution robust to Sheets outages).
+        try:
+            _lh = _yureeka_local_history_write_v1(analysis)
+            try:
+                analysis.setdefault("results", {})
+                if isinstance(analysis.get("results"), dict):
+                    _dbg = (analysis["results"].get("debug") if isinstance(analysis["results"].get("debug"), dict) else {})
+                    analysis["results"]["debug"] = _dbg
+                    _dbg["local_history_write_v1"] = _lh
+            except Exception:
+                pass
+        except Exception:
+            pass
+
         return True
 
     except Exception as e:
@@ -11878,6 +12027,20 @@ def add_to_history(analysis: dict) -> bool:
         st.session_state.analysis_history.append(analysis)
         try:
             st.session_state["last_analysis"] = analysis
+        except Exception:
+            pass
+
+        # NLP96: persist compact local history even when Sheets writes fail (keeps Evolution usable).
+        try:
+            _lh = _yureeka_local_history_write_v1(analysis)
+            try:
+                analysis.setdefault("results", {})
+                if isinstance(analysis.get("results"), dict):
+                    _dbg = (analysis["results"].get("debug") if isinstance(analysis["results"].get("debug"), dict) else {})
+                    analysis["results"]["debug"] = _dbg
+                    _dbg["local_history_write_v1"] = _lh
+            except Exception:
+                pass
         except Exception:
             pass
 
@@ -12830,6 +12993,256 @@ def _refactor27_candidate_rejected_currency_date_fragment_v1(cand: dict, spec: d
     except Exception:
         return False
 
+
+# NLP96: Local Analysis History (disk) for Evolution baseline selection
+# Why:
+# - Evolution baseline selector historically relies on Google Sheets history OR in-session state.
+# - In production / after a restart, session_state can be empty and Sheets may be unavailable.
+# - Users may still have local snapshot_store refs written, but Evolution cannot discover a baseline wrapper.
+# What:
+# - Persist a compact, deterministic Analysis wrapper (question/timestamp/schema/pmc + snapshot refs) to disk.
+# - get_history() merges Sheets + session_state + local history, newest-first.
+# Notes:
+# - Additive-only: does not change deciders, winners, or values.
+# - Best-effort I/O: never blocks Analysis or Evolution if disk I/O fails.
+
+def _yureeka_local_history_dir_v1() -> str:
+    try:
+        d = str(os.getenv("YUREEKA_LOCAL_HISTORY_DIR", "") or "").strip()
+        if not d:
+            d = os.path.join(os.getcwd(), "local_history")
+        os.makedirs(d, exist_ok=True)
+        return d
+    except Exception:
+        try:
+            d = os.path.join(os.getcwd(), "local_history")
+            os.makedirs(d, exist_ok=True)
+            return d
+        except Exception:
+            return ""
+
+def _yureeka_local_history_index_path_v1() -> str:
+    try:
+        d = _yureeka_local_history_dir_v1()
+        if not d:
+            return ""
+        return os.path.join(d, "yureeka_history_index.jsonl")
+    except Exception:
+        return ""
+
+def _yureeka_compact_analysis_for_local_history_v1(analysis: dict) -> dict:
+    try:
+        if not isinstance(analysis, dict):
+            return {}
+
+        def _pick(*vals):
+            for v in vals:
+                if v is None:
+                    continue
+                if isinstance(v, str) and not v.strip():
+                    continue
+                return v
+            return None
+
+        res = analysis.get("results") if isinstance(analysis.get("results"), dict) else {}
+        pr = analysis.get("primary_response") if isinstance(analysis.get("primary_response"), dict) else {}
+        pr_res = pr.get("results") if isinstance(pr.get("results"), dict) else {}
+
+        q = str(_pick(analysis.get("question"), res.get("question"), pr.get("question"), pr_res.get("question"), "") or "")
+        ts = str(_pick(analysis.get("timestamp"), res.get("timestamp"), pr.get("timestamp"), pr_res.get("timestamp"), "") or "")
+
+        schema = (
+            analysis.get("metric_schema_frozen")
+            or pr.get("metric_schema_frozen")
+            or res.get("metric_schema_frozen")
+            or pr_res.get("metric_schema_frozen")
+            or {}
+        )
+        schema = schema if isinstance(schema, dict) else {}
+
+        pmc = (
+            analysis.get("primary_metrics_canonical")
+            or pr.get("primary_metrics_canonical")
+            or res.get("primary_metrics_canonical")
+            or pr_res.get("primary_metrics_canonical")
+            or {}
+        )
+        pmc = pmc if isinstance(pmc, dict) else {}
+
+        pmc_compact = {}
+        for k, v in pmc.items():
+            if not isinstance(k, str) or not k or not isinstance(v, dict):
+                continue
+            row = {}
+            for kk in (
+                "name", "value", "unit", "unit_tag", "value_range",
+                "source_url", "url",
+                "published_at", "published_at_raw",
+                "freshness_score", "confidence",
+                "source_title",
+            ):
+                if kk in v and v.get(kk) is not None:
+                    row[kk] = v.get(kk)
+            # keep minimal evidence pointer if present (do not carry full evidence arrays)
+            if v.get("anchor_hash"):
+                row["anchor_hash"] = v.get("anchor_hash")
+            if row:
+                pmc_compact[k] = row
+
+        # Snapshot pointers (stable) for deterministic rehydration in Evolution
+        snap_ref_stable = str(_pick(
+            analysis.get("snapshot_store_ref_stable"),
+            res.get("snapshot_store_ref_stable"),
+            pr.get("snapshot_store_ref_stable"),
+            pr_res.get("snapshot_store_ref_stable"),
+            analysis.get("snapshot_store_ref"),
+            res.get("snapshot_store_ref"),
+            pr.get("snapshot_store_ref"),
+            pr_res.get("snapshot_store_ref"),
+            "",
+        ) or "")
+        snap_ref = str(_pick(
+            analysis.get("snapshot_store_ref"),
+            res.get("snapshot_store_ref"),
+            pr.get("snapshot_store_ref"),
+            pr_res.get("snapshot_store_ref"),
+            "",
+        ) or "")
+        ssh_stable = str(_pick(
+            analysis.get("source_snapshot_hash_stable"),
+            res.get("source_snapshot_hash_stable"),
+            pr.get("source_snapshot_hash_stable"),
+            pr_res.get("source_snapshot_hash_stable"),
+            analysis.get("source_snapshot_hash"),
+            res.get("source_snapshot_hash"),
+            "",
+        ) or "")
+
+        entry = {
+            "analysis_type": "analysis",
+            "question": q,
+            "timestamp": ts,
+            "final_confidence": analysis.get("final_confidence", res.get("final_confidence", "")),
+            "code_version": str(_pick(analysis.get("code_version"), res.get("code_version"), globals().get("_YUREEKA_CODE_VERSION_LOCK"), "") or ""),
+            "code_version_lock": str(globals().get("_YUREEKA_CODE_VERSION_LOCK") or ""),
+            "metric_schema_frozen": schema,
+            "primary_metrics_canonical": pmc_compact,
+            "snapshot_store_ref_stable": snap_ref_stable,
+            "snapshot_store_ref": snap_ref,
+            "source_snapshot_hash_stable": ssh_stable,
+            "full_store_ref": str(_pick(analysis.get("full_store_ref"), res.get("full_store_ref"), "") or ""),
+        }
+
+        # Mirror small pieces under primary_response so older readers still see them.
+        entry["primary_response"] = {
+            "metric_schema_frozen": schema,
+            "primary_metrics_canonical": pmc_compact,
+        }
+
+        return entry
+    except Exception:
+        return {}
+
+def _yureeka_local_history_write_v1(analysis: dict, max_entries: int = 220, max_bytes: int = 8_000_000) -> dict:
+    dbg = {"ok": False, "path": "", "wrote": False, "pruned": False, "kept": None, "reason": ""}
+    try:
+        path = _yureeka_local_history_index_path_v1()
+        dbg["path"] = path
+        if not path:
+            dbg["reason"] = "no_path"
+            return dbg
+
+        entry = _yureeka_compact_analysis_for_local_history_v1(analysis)
+        if not isinstance(entry, dict) or not entry.get("timestamp") or not entry.get("question"):
+            dbg["reason"] = "missing_ts_or_q"
+            return dbg
+
+        line = json.dumps(entry, ensure_ascii=False, default=str)
+        if not isinstance(line, str) or not line.strip():
+            dbg["reason"] = "empty_line"
+            return dbg
+
+        try:
+            with open(path, "a", encoding="utf-8") as f:
+                f.write(line + "\n")
+            dbg["wrote"] = True
+        except Exception as e:
+            dbg["reason"] = f"write_failed:{e}"
+            return dbg
+
+        # Best-effort prune (bounded file)
+        try:
+            do_prune = False
+            try:
+                if os.path.exists(path) and os.path.getsize(path) > int(max_bytes or 8_000_000):
+                    do_prune = True
+            except Exception:
+                pass
+
+            if not do_prune:
+                # If line count is high, prune too.
+                try:
+                    with open(path, "r", encoding="utf-8") as f:
+                        lines = f.readlines()
+                    if isinstance(lines, list) and len(lines) > int(max_entries or 220) * 2:
+                        do_prune = True
+                except Exception:
+                    lines = None
+
+            if do_prune:
+                try:
+                    if 'lines' not in locals() or lines is None:
+                        with open(path, "r", encoding="utf-8") as f:
+                            lines = f.readlines()
+                    keep_n = int(max_entries or 220)
+                    tail = lines[-keep_n:] if isinstance(lines, list) and keep_n > 0 else (lines or [])
+                    with open(path, "w", encoding="utf-8") as f:
+                        f.writelines(tail)
+                    dbg["pruned"] = True
+                    dbg["kept"] = len(tail) if isinstance(tail, list) else None
+                except Exception as e:
+                    dbg["reason"] = f"prune_failed:{e}"
+        except Exception:
+            pass
+
+        dbg["ok"] = True
+        return dbg
+    except Exception as e:
+        dbg["reason"] = f"exception:{e}"
+        return dbg
+
+def _yureeka_local_history_load_v1(limit: int = 50) -> list:
+    try:
+        path = _yureeka_local_history_index_path_v1()
+        if not path or not os.path.exists(path):
+            return []
+        with open(path, "r", encoding="utf-8") as f:
+            lines = f.readlines()
+        out = []
+        for ln in (lines or [])[-int(limit or 50):]:
+            try:
+                d = json.loads(ln)
+                if isinstance(d, dict):
+                    out.append(d)
+            except Exception:
+                continue
+        # newest-first
+        try:
+            def _ts(_h):
+                try:
+                    _t = str(_h.get("timestamp") or "")
+                    _dt = _parse_iso_dt(_t) if _t else None
+                    return _dt.timestamp() if _dt else 0.0
+                except Exception:
+                    return 0.0
+            out.sort(key=_ts, reverse=True)
+        except Exception:
+            pass
+        return out
+    except Exception:
+        return []
+
+
 def get_history(limit: int = MAX_HISTORY_ITEMS) -> List[Dict]:
     """Load analysis history from Google Sheet"""
     sheet = get_google_sheet()
@@ -12840,8 +13253,64 @@ def get_history(limit: int = MAX_HISTORY_ITEMS) -> List[Dict]:
     except Exception:
         pass
     if not sheet:
-        # Fallback to session state
-        return st.session_state.get('analysis_history', [])
+        # Fallback to local disk history + session state (Evolution should still work after restart when Sheets is down).
+        try:
+            _sess = st.session_state.get('analysis_history', []) or []
+        except Exception:
+            _sess = []
+        try:
+            _local = _yureeka_local_history_load_v1(limit=limit) or []
+        except Exception:
+            _local = []
+
+        # Merge newest-first, de-dup by (timestamp, question)
+        merged = []
+        seen = set()
+        def _k(_h):
+            try:
+                if not isinstance(_h, dict):
+                    return None
+                _t = _h.get("timestamp") or (_h.get("results") or {}).get("timestamp") or ""
+                _q = (_h.get("question") or (_h.get("results") or {}).get("question") or "").strip()
+                if not _t and not _q:
+                    return None
+                return (str(_t), str(_q))
+            except Exception:
+                return None
+
+        for _h in (_sess or []):
+            kk = _k(_h)
+            if kk and kk not in seen:
+                seen.add(kk)
+                merged.append(_h)
+        for _h in (_local or []):
+            kk = _k(_h)
+            if kk and kk not in seen:
+                seen.add(kk)
+                merged.append(_h)
+
+        # Sort newest-first
+        try:
+            def _ts(_h):
+                try:
+                    _t = (
+                        (_h.get("timestamp") if isinstance(_h, dict) else "")
+                        or ((_h.get("results") or {}).get("timestamp") if isinstance(_h.get("results"), dict) else "")
+                        or ((_h.get("primary_response") or {}).get("timestamp") if isinstance(_h.get("primary_response"), dict) else "")
+                        or ""
+                    )
+                    _dt = _parse_iso_dt(_t) if _t else None
+                    return _dt.timestamp() if _dt else 0.0
+                except Exception:
+                    return 0.0
+            merged.sort(key=_ts, reverse=True)
+        except Exception:
+            pass
+
+        if isinstance(limit, int) and limit > 0 and len(merged) > limit:
+            merged = merged[:limit]
+
+        return merged
 
     try:
         # Why:
@@ -12949,6 +13418,10 @@ def get_history(limit: int = MAX_HISTORY_ITEMS) -> List[Dict]:
         except Exception:
             _sess_hist = []
         try:
+            _local_hist = _yureeka_local_history_load_v1(limit=limit) or []
+        except Exception:
+            _local_hist = []
+        try:
             _sess_last = st.session_state.get("last_analysis")
         except Exception:
             _sess_last = None
@@ -12977,6 +13450,13 @@ def get_history(limit: int = MAX_HISTORY_ITEMS) -> List[Dict]:
 
             if isinstance(_sess_hist, list):
                 for _h in _sess_hist:
+                    _k = _r105_hist_key(_h)
+                    if _k and _k not in _seen:
+                        _seen.add(_k)
+                        _merged.append(_h)
+
+            if isinstance(_local_hist, list):
+                for _h in _local_hist:
                     _k = _r105_hist_key(_h)
                     if _k and _k not in _seen:
                         _seen.add(_k)
