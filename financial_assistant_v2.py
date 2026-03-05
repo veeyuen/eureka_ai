@@ -458,7 +458,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "NLP97"
+_YUREEKA_CODE_VERSION_LOCK = "NLP98"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 # REFACTOR206: Release Candidate freeze (no pipeline behavior change).
 YUREEKA_RELEASE_CANDIDATE_V1 = False
@@ -9151,6 +9151,28 @@ try:
                 pass
             _rest.append(_e)
         PATCH_TRACKER_V1[:] = [_nlp97_entry] + _rest
+except Exception:
+    pass
+
+
+# NLP98: patch tracker overlay (NLP stream)
+try:
+    if isinstance(PATCH_TRACKER_V1, list):
+        _nlp98_entry = {
+            "patch_id": "NLP98",
+            "scope": "nlp_llm_endstate",
+            "summary": "UX: render NLP94 canonicalisation shadow assist proposals in the Analysis UI (audit-only; no decider/winner/value changes).",
+            "risk": "low",
+        }
+        _rest = []
+        for _e in PATCH_TRACKER_V1:
+            try:
+                if isinstance(_e, dict) and str(_e.get("patch_id") or "") == "NLP98":
+                    continue
+            except Exception:
+                pass
+            _rest.append(_e)
+        PATCH_TRACKER_V1[:] = [_nlp98_entry] + _rest
 except Exception:
     pass
 
@@ -34149,6 +34171,169 @@ def _yureeka_render_diagnostics_expander_v1(payload: Dict, web_context: Optional
     except Exception:
         pass
 
+
+def _yureeka_render_nlp98_canonicalisation_shadow_panel_v1(wrapper_output: dict) -> None:
+    """
+    NLP98 UX: Render NLP94 canonicalisation assist (shadow-only) inside the Analysis UI.
+
+    Notes:
+    - Audit-only: never changes winners/values/keys.
+    - Intended to make the shadow proposals visible without requiring JSON inspection.
+    """
+    try:
+        w = wrapper_output if isinstance(wrapper_output, dict) else {}
+        dbg = (w.get("debug") or {}).get("nlp94_canonicalisation_shadow_v1") if isinstance(w.get("debug"), dict) else None
+        obj = (w.get("results") or {}).get("llm94_canonicalisation_shadow_v1") if isinstance(w.get("results"), dict) else None
+        if not isinstance(dbg, dict) and not isinstance(obj, dict):
+            return
+
+        with st.expander("🧩 Canonicalisation Assist (Shadow, audit-only)", expanded=False):
+            st.caption("Audit-only: proposals are NOT applied to winners/values. Use this to spot mismatches or schema-key opportunities.")
+            # Status snapshot
+            enabled = bool((dbg or {}).get("enabled")) if isinstance(dbg, dict) else False
+            llm_used = bool((dbg or {}).get("llm_used")) if isinstance(dbg, dict) else False
+            llm_ok = bool((dbg or {}).get("llm_ok")) if isinstance(dbg, dict) else False
+            llm_reason = str((dbg or {}).get("llm_reason") or "")[:120] if isinstance(dbg, dict) else ""
+            cache_hit = (dbg or {}).get("llm_cache_hit") if isinstance(dbg, dict) else None
+            would_change = (dbg or {}).get("would_change_key_count") if isinstance(dbg, dict) else None
+
+            schema_count = None
+            extracted_count = None
+            proposals = []
+            extracted_map = {}
+            if isinstance(obj, dict):
+                schema_count = obj.get("schema_key_count")
+                extracted_count = obj.get("extracted_metric_count")
+                proposals = obj.get("proposals") or []
+                if isinstance(obj.get("extracted_metrics"), list):
+                    for em in obj.get("extracted_metrics")[:200]:
+                        if not isinstance(em, dict):
+                            continue
+                        mk = str(em.get("metric_key") or "")[:180]
+                        if mk:
+                            extracted_map[mk] = em
+
+            # Derived would-change if missing
+            if would_change is None and isinstance(proposals, list):
+                try:
+                    wc = 0
+                    for p in proposals[:200]:
+                        if not isinstance(p, dict):
+                            continue
+                        curk = str(p.get("current_canonical_key") or p.get("metric_key") or "")
+                        best = str(p.get("proposed_best_canonical_key") or "")
+                        if curk and best and (curk != best):
+                            wc += 1
+                    would_change = wc
+                except Exception:
+                    would_change = None
+
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("Enabled", "Yes" if enabled else "No")
+            c2.metric("LLM Used", "Yes" if llm_used else "No")
+            c3.metric("Would-change keys", str(would_change) if would_change is not None else "N/A")
+            c4.metric("Cache hit", "Yes" if bool(cache_hit) else ("No" if cache_hit is False else "N/A"))
+
+            if llm_reason:
+                st.caption(f"LLM reason: `{llm_reason}`" + ("" if llm_ok else " (not ok)"))
+
+            if schema_count is not None or extracted_count is not None:
+                st.caption(f"Schema keys: **{schema_count if schema_count is not None else 'N/A'}** · Extracted metrics: **{extracted_count if extracted_count is not None else 'N/A'}**")
+
+            # Table
+            show_only_changes = st.checkbox("Show only rows that would change key (or have a mismatch flag)", value=True, key="nlp98_show_only_changes")
+            show_raw = st.checkbox("Show raw JSON payloads", value=False, key="nlp98_show_raw")
+
+            rows = []
+            if isinstance(proposals, list) and proposals:
+                for p in proposals[:400]:
+                    if not isinstance(p, dict):
+                        continue
+                    cur_key = str(p.get("current_canonical_key") or p.get("metric_key") or "")[:220]
+                    metric_key = str(p.get("metric_key") or cur_key or "")[:220]
+                    metric_name = str(p.get("metric_name") or "")[:180]
+                    best = str(p.get("proposed_best_canonical_key") or cur_key or "")[:220]
+                    would = bool(cur_key and best and cur_key != best)
+                    cands = p.get("proposed_canonical_key_candidates") or []
+                    cand_s = ""
+                    if isinstance(cands, list) and cands:
+                        parts = []
+                        for c in cands[:3]:
+                            if not isinstance(c, dict):
+                                continue
+                            ck = str(c.get("canonical_key") or "")[:220]
+                            conf = c.get("confidence")
+                            try:
+                                conf_s = f"{float(conf):.2f}" if conf is not None else ""
+                            except Exception:
+                                conf_s = ""
+                            tags = c.get("reason_tags") or []
+                            tag_s = ""
+                            if isinstance(tags, list) and tags:
+                                tag_s = ",".join([str(t)[:32] for t in tags[:6]])
+                            parts.append(f"{ck} ({conf_s})" + (f" [{tag_s}]" if tag_s else ""))
+                        cand_s = "; ".join([x for x in parts if x])
+                    flags = p.get("flags") or []
+                    flag_s = ""
+                    if isinstance(flags, list) and flags:
+                        flag_s = ",".join([str(f)[:32] for f in flags[:10]])
+
+                    # merge extracted metric context (unit/dimension/provisional)
+                    em = extracted_map.get(metric_key) or extracted_map.get(cur_key) or {}
+                    unit_family = str(em.get("unit_family") or p.get("unit_family") or "")[:40]
+                    dimension = str(em.get("dimension") or p.get("dimension") or "")[:40]
+                    unit = str(em.get("unit") or "")[:24]
+                    provisional = bool(em.get("provisional")) if isinstance(em, dict) else False
+
+                    if show_only_changes and not (would or flag_s):
+                        continue
+
+                    rows.append({
+                        "metric_name": metric_name,
+                        "current_key": cur_key,
+                        "proposed_best_key": best,
+                        "would_change": "YES" if would else "",
+                        "unit_family": unit_family,
+                        "dimension": dimension,
+                        "unit": unit,
+                        "provisional": "YES" if provisional else "",
+                        "top_candidates": cand_s,
+                        "flags": flag_s,
+                    })
+
+            if rows:
+                try:
+                    import pandas as _pd
+                    df = _pd.DataFrame(rows)
+                    st.dataframe(df, use_container_width=True, hide_index=True)
+                    # CSV download
+                    try:
+                        csv_bytes = df.to_csv(index=False).encode("utf-8")
+                        st.download_button(
+                            "⬇️ Download canonicalisation proposals (CSV)",
+                            data=csv_bytes,
+                            file_name="yureeka_canonicalisation_shadow_nlp98.csv",
+                            mime="text/csv",
+                        )
+                    except Exception:
+                        pass
+                except Exception:
+                    for r in rows[:120]:
+                        st.write(r)
+            else:
+                st.info("No proposals available (or none matched the current filter).")
+
+            if show_raw:
+                if isinstance(dbg, dict):
+                    st.markdown("**Debug (nlp94_canonicalisation_shadow_v1):**")
+                    st.json(dbg)
+                if isinstance(obj, dict):
+                    st.markdown("**Shadow output (llm94_canonicalisation_shadow_v1):**")
+                    st.json(obj)
+    except Exception:
+        # UI-only; never fail the dashboard
+        pass
+
 def render_dashboard(
     primary_json: str,
     final_conf: float,
@@ -34412,6 +34597,13 @@ def render_dashboard(
             pass
         st.markdown("---")
         _yureeka_render_data_visualization_panel_v1(data)
+
+        # NLP98: canonicalisation shadow assist panel (audit-only)
+        try:
+            if isinstance(wrapper_output, dict):
+                _yureeka_render_nlp98_canonicalisation_shadow_panel_v1(wrapper_output)
+        except Exception:
+            pass
     except Exception:
         pass
 
