@@ -31,6 +31,48 @@
 #   [MOD:LLM_SIDECAR] [MOD:LLM01_EVIDENCE] [MOD:LLM00_QSTRUCT]
 #   [MOD:PIPELINE_CORE] [MOD:DIFF_CORE] [MOD:UI_APP]
 # =============================================================================
+# ====================
+# DEVELOPER ORIENTATION (NLP99)
+# ====================
+# This codebase is intentionally a Streamlit-safe **single-file** build. It is organized using:
+#   - a "MODULE INDEX (v1)" header near the top
+#   - `[MOD:...]` markers throughout the file (virtual modules, modularization-friendly)
+#   - a PATCH_TRACKER_V1 registry (append-only history, head patch must match CODE_VERSION)
+#
+# Start here (maintainers / QA):
+#   1) Run the app:
+#        streamlit run NLP99.py
+#   2) Standard triad workflow (release evidence):
+#        - New Analysis  → Analysis JSON
+#        - Evolution (prod) → Evolution JSON
+#        - Evolution (injection) → Evolution JSON (injected URL)
+#   3) Regression question (stable):
+#        "what is the size of the global ev market?"
+#   4) Injection URL (stable):
+#        https://veeyuen.github.io/injected-content/
+#
+# Critical invariants (do not regress):
+#   - REFACTOR206 is ground truth when NLP/LLM flags are OFF.
+#   - No drift when flags OFF: winners/values/snippets/tie-breaks must not change.
+#   - Presets enforce posture:
+#       * Deterministic + Production force network OFF.
+#       * Experiment can allow live calls only when explicitly enabled (seed toggle).
+#   - History robustness (NLP96+):
+#       * Analysis writes local disk history JSONL: local_history/yureeka_history_index.jsonl
+#       * Evolution merges history from sheet/session/disk so baselines survive restart.
+#
+# Where the main flows start (search anchors):
+#   - UI (New Analysis):   if st.button("🔍 Analyze"
+#   - UI (Evolution):     if st.button("🧬 Run Evolution Analysis"
+#   - Analysis core:      query_perplexity → evidence_based_veracity → canonicalize_metrics → freeze_metric_schema
+#   - Evolution core:     get_history → run_source_anchored_evolution → compute_source_anchored_diff
+#   - History (disk):     _yureeka_local_history_write_v1 / _yureeka_local_history_load_v1
+#
+# Notes:
+#   - Comments/docstrings added in NLP99 are **readability-only** and must not alter behavior.
+#   - If you touch posture/history/snapshot/diff gating, add debug beacons and run the triad.
+# ====================
+
 
 import io
 import os
@@ -458,7 +500,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "NLP98"
+_YUREEKA_CODE_VERSION_LOCK = "NLP99"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 # REFACTOR206: Release Candidate freeze (no pipeline behavior change).
 YUREEKA_RELEASE_CANDIDATE_V1 = False
@@ -9176,6 +9218,27 @@ try:
 except Exception:
     pass
 
+# NLP99: patch tracker overlay (NLP stream)
+try:
+    if isinstance(PATCH_TRACKER_V1, list):
+        _nlp99_entry = {
+            "patch_id": "NLP99",
+            "scope": "docs_only",
+            "summary": "Docs/comments only: add Developer Orientation header, add maintainer docstrings to key entrypoints, and add stage banner comments in large functions (no behavior changes).",
+            "risk": "low",
+        }
+        _rest = []
+        for _e in PATCH_TRACKER_V1:
+            try:
+                if isinstance(_e, dict) and str(_e.get("patch_id") or "") == "NLP99":
+                    continue
+            except Exception:
+                pass
+            _rest.append(_e)
+        PATCH_TRACKER_V1[:] = [_nlp99_entry] + _rest
+except Exception:
+    pass
+
 # NLP83: patch tracker overlay (NLP stream)
 try:
     if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "NLP83" for e in PATCH_TRACKER_V1):
@@ -13219,6 +13282,34 @@ def _yureeka_compact_analysis_for_local_history_v1(analysis: dict) -> dict:
         return {}
 
 def _yureeka_local_history_write_v1(analysis: dict, max_entries: int = 220, max_bytes: int = 8_000_000) -> dict:
+
+    """
+
+    Append a durable analysis-history entry to local disk JSONL.
+
+
+
+    Path (relative):
+
+    - local_history/yureeka_history_index.jsonl
+
+
+
+    Called on every successful Analysis run (NLP96+), so Evolution can discover baselines
+
+    even if Google Sheets is unavailable and Streamlit session_state is reset.
+
+
+
+    Contract (best-effort):
+
+    - include timestamp/question/code_version/schema_frozen pointers
+
+    - include snapshot pointers (stable preferred)
+
+    - never raise fatals; failures are recorded in debug beacons and warnings
+
+    """
     dbg = {"ok": False, "path": "", "wrote": False, "pruned": False, "kept": None, "reason": ""}
     try:
         path = _yureeka_local_history_index_path_v1()
@@ -13287,6 +13378,30 @@ def _yureeka_local_history_write_v1(analysis: dict, max_entries: int = 220, max_
         return dbg
 
 def _yureeka_local_history_load_v1(limit: int = 50) -> list:
+
+    """
+
+    Load durable analysis-history entries from local disk JSONL.
+
+
+
+    Reads:
+
+    - local_history/yureeka_history_index.jsonl
+
+
+
+    Behavior:
+
+    - newest-first ordering
+
+    - tolerates missing file and corrupt lines (skips bad lines)
+
+    - tags entries with history_source="disk"
+
+    - normalizes stable snapshot pointers into non-stable aliases where needed (NLP97)
+
+    """
     try:
         path = _yureeka_local_history_index_path_v1()
         if not path or not os.path.exists(path):
@@ -27365,6 +27480,18 @@ def _fix2d82_sanitize_pmc_percent_keys_v2(pmc: dict, metric_schema_frozen: dict 
         return pmc, dbg
 
 def compute_source_anchored_diff(previous_data: dict, web_context: dict = None) -> dict:
+
+    # === NLP99 NOTE: DIFF ENGINE STAGES (comments only) ===
+
+    # Stage A: Normalize inputs and load schema-frozen canonical keys
+
+    # Stage B: Rehydrate/align baseline & current anchors (year/unit/family) for comparability
+
+    # Stage C: Build per-metric diff rows (value/unit/year/source/evidence deltas)
+
+    # Stage D: Apply gating (Δt / anchors / unit-family) and compute stability
+
+    # Stage E: Emit harness invariants + debug summaries and return
     """
     Tight source-anchored evolution:
       - Prefer snapshots from analysis (baseline_sources_cache)
@@ -34818,6 +34945,28 @@ def render_native_comparison(baseline: Dict, compare: Dict):
 
 # [MOD:UI_APP]
 def main():
+    """
+    Streamlit application entrypoint (UI orchestration).
+
+    Responsibilities:
+    - Configure Streamlit page and sidebar controls.
+    - Enforce preset posture (Deterministic / Experiment / Production) and display effective flags.
+    - Run the New Analysis workflow when the user clicks Analyze.
+    - Run the Evolution workflow (baseline selection + diff + stability) when the user clicks Run Evolution.
+    - Render panels and provide artifact downloads (Analysis JSON / Evolution JSON).
+
+    Key invariants (must hold):
+    - When NLP/LLM flags are OFF, behavior must match REFACTOR206 (no drift in winners/values/snippets/ties).
+    - Production/Deterministic presets must force network OFF.
+    - Disk history JSONL is written on Analysis and read/merged on Evolution (NLP96+).
+
+    See also: get_history(), run_source_anchored_evolution(), compute_source_anchored_diff().
+    """
+    # === NLP99 NOTE: UI ORCHESTRATION STAGES (comments only) ===
+    # Stage 1: Sidebar preset selection + effective posture (network/cache/seed) indicators
+    # Stage 2: New Analysis tab handler (Analyze button)
+    # Stage 3: Evolution tab handler (baseline picker + Run Evolution button)
+    # Stage 4: Render panels + download artifacts (JSON exports)
     st.set_page_config(
         page_title="Yureeka Market Report",
         page_icon="💹",
@@ -42670,6 +42819,28 @@ def _refactor83_normalize_evolution_source_caches_v1(payload: dict) -> dict:
     return payload
 
 def run_source_anchored_evolution(previous_data: dict, web_context: dict = None) -> dict:
+
+    """
+
+    Evolution driver (source-anchored).
+
+
+
+    Given a selected baseline analysis payload (previous_data), this function:
+
+    - Rehydrates baseline snapshot pointers (stable refs/hashes when available)
+
+    - Ensures schema-frozen canonical keys remain comparable
+
+    - Computes per-metric diffs and stability by delegating to compute_source_anchored_diff()
+
+    - Attaches harness invariants and debug beacons used by QA
+
+
+
+    This function must be deterministic under safe presets; it must not mutate decider logic.
+
+    """
     # Input coercion (avoid None.get)
     if not isinstance(previous_data, dict):
         previous_data = {}
