@@ -42,7 +42,7 @@
 #
 # Start here (maintainers / QA):
 #   1) Run the app:
-#        streamlit run NLP102.py
+#        streamlit run NLP103.py
 #   2) Standard triad workflow (release evidence):
 #        - New Analysis  → Analysis JSON
 #        - Evolution (prod) → Evolution JSON
@@ -501,7 +501,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "NLP102"
+_YUREEKA_CODE_VERSION_LOCK = "NLP103"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 # REFACTOR206: Release Candidate freeze (no pipeline behavior change).
 YUREEKA_RELEASE_CANDIDATE_V1 = False
@@ -738,6 +738,30 @@ def register_concept_family_v1(family_id: str, spec: dict, allowed_matches=None)
         cext[fam] = sorted(cur)
         globals()["CONCEPT_FAMILY_COMPATIBILITY_EXT_V1"] = cext
     return True
+
+# NLP103: strengthen known sibling-family markers discovered during sidecar tests
+# while keeping the registry declarative and easy to extend.
+try:
+    register_concept_family_v1(
+        "battery_investment",
+        {
+            "aliases": [
+                "battery demand",
+                "investment in battery demand",
+                "battery demand by 2040",
+                "battery demand investment",
+            ],
+            "positive_anchors": [
+                "battery demand",
+                "battery demand by 2040",
+                "investment in battery demand",
+                "battery materials",
+            ],
+        },
+        allowed_matches=["battery_investment"],
+    )
+except Exception:
+    pass
 
 # [MOD:LLM_SIDECAR]
 # === LLM SIDECAR (LLM01) ======================================================
@@ -39136,12 +39160,12 @@ def rebuild_metrics_from_snapshots_analysis_canonical_v1(prev_response: dict, ba
 
         # NLP102: infer target concept family per canonical metric once, then reuse it
         # in candidate filtering BEFORE freshness tie-break / final winner selection.
-        _nlp102_registry = _nlp100_get_concept_family_registry_v1()
-        _nlp102_compatibility = _nlp100_get_concept_family_compatibility_v1(_nlp102_registry)
-        _nlp102_target_info = _nlp102_metric_target_family_v1(canonical_key, spec, registry=_nlp102_registry)
-        _nlp102_target_family = str(_nlp102_target_info.get("family") or "")
-        _nlp102_reject_count = 0
-        _nlp102_reject_examples = []
+        _nlp103_registry = _nlp100_get_concept_family_registry_v1()
+        _nlp103_compatibility = _nlp100_get_concept_family_compatibility_v1(_nlp103_registry)
+        _nlp102_target_info = _nlp103_metric_target_family_v1(canonical_key, spec, registry=_nlp103_registry)
+        _nlp103_target_family = str(_nlp102_target_info.get("family") or "")
+        _nlp103_reject_count = 0
+        _nlp103_reject_examples = []
 
         # Year-like pruning is handled elsewhere; legacy FIX17 hook removed (dead).
         metric_is_year_like = False
@@ -39279,16 +39303,16 @@ def rebuild_metrics_from_snapshots_analysis_canonical_v1(prev_response: dict, ba
 
             # NLP102: concept-family gate BEFORE candidate competition.
             try:
-                _fam_keep, _fam_dbg = _nlp102_candidate_family_gate_v1(
+                _fam_keep, _fam_dbg = _nlp103_candidate_family_gate_v1(
                     _c,
-                    target_family=_nlp102_target_family,
-                    registry=_nlp102_registry,
-                    compatibility=_nlp102_compatibility,
+                    target_family=_nlp103_target_family,
+                    registry=_nlp103_registry,
+                    compatibility=_nlp103_compatibility,
                 )
                 if not _fam_keep:
-                    _nlp102_reject_count = int(_nlp102_reject_count or 0) + 1
-                    if len(_nlp102_reject_examples) < 8:
-                        _nlp102_reject_examples.append({
+                    _nlp103_reject_count = int(_nlp103_reject_count or 0) + 1
+                    if len(_nlp103_reject_examples) < 8:
+                        _nlp103_reject_examples.append({
                             "raw": str(_c.get("raw") or "")[:80],
                             "source_url": str(_c.get("source_url") or "")[:220],
                             "decision": str(_fam_dbg.get("decision") or ""),
@@ -40851,16 +40875,16 @@ def _refactor28_schema_only_rebuild_authoritative_v1(
 
             # NLP102: concept-family gate BEFORE scoring / freshness.
             try:
-                _fam_keep, _fam_dbg = _nlp102_candidate_family_gate_v1(
+                _fam_keep, _fam_dbg = _nlp103_candidate_family_gate_v1(
                     c,
-                    target_family=_nlp102_target_family,
-                    registry=_nlp102_registry,
-                    compatibility=_nlp102_compatibility,
+                    target_family=_nlp103_target_family,
+                    registry=_nlp103_registry,
+                    compatibility=_nlp103_compatibility,
                 )
                 if not _fam_keep:
-                    _nlp102_reject_count = int(_nlp102_reject_count or 0) + 1
-                    if len(_nlp102_reject_examples) < 8:
-                        _nlp102_reject_examples.append({
+                    _nlp103_reject_count = int(_nlp103_reject_count or 0) + 1
+                    if len(_nlp103_reject_examples) < 8:
+                        _nlp103_reject_examples.append({
                             "raw": str(c.get("raw") or "")[:80],
                             "source_url": str(c.get("source_url") or "")[:220],
                             "decision": str(_fam_dbg.get("decision") or ""),
@@ -41737,11 +41761,11 @@ def _refactor28_schema_only_rebuild_authoritative_v1(
         _nlp102_best_family_dbg = {}
         try:
             if isinstance(best, dict) and best:
-                _keep_best, _nlp102_best_family_dbg = _nlp102_candidate_family_gate_v1(
+                _keep_best, _nlp102_best_family_dbg = _nlp103_candidate_family_gate_v1(
                     best,
-                    target_family=_nlp102_target_family,
-                    registry=_nlp102_registry,
-                    compatibility=_nlp102_compatibility,
+                    target_family=_nlp103_target_family,
+                    registry=_nlp103_registry,
+                    compatibility=_nlp103_compatibility,
                 )
                 if not _keep_best:
                     best = {}
@@ -41785,13 +41809,13 @@ def _refactor28_schema_only_rebuild_authoritative_v1(
         try:
             metric.setdefault("debug", {})
             if isinstance(metric.get("debug"), dict):
-                metric["debug"]["nlp102_family_gate_v2"] = {
-                    "v": "nlp102_family_gate_v2",
-                    "target_family": _nlp102_target_family,
+                metric["debug"]["nlp103_family_gate_v3"] = {
+                    "v": "nlp103_family_gate_v3",
+                    "target_family": _nlp103_target_family,
                     "target_family_confidence": float(_nlp102_target_info.get("confidence") or 0.0),
                     "target_ranked_top": _nlp102_target_info.get("ranked") or [],
-                    "rejected_candidate_count": int(_nlp102_reject_count or 0),
-                    "rejected_examples": list(_nlp102_reject_examples or [])[:8],
+                    "rejected_candidate_count": int(_nlp103_reject_count or 0),
+                    "rejected_examples": list(_nlp103_reject_examples or [])[:8],
                     "winner_family_debug": _nlp102_best_family_dbg if isinstance(_nlp102_best_family_dbg, dict) else {},
                 }
         except Exception:
@@ -45395,7 +45419,7 @@ except Exception:
 
 try:
     globals()["_YUREEKA_CODE_VERSION_LOCK"] = "NLP102"
-    globals()["CODE_VERSION"] = "NLP102"
+    globals()["CODE_VERSION"] = "NLP103"
 except Exception:
     pass
 
@@ -45422,7 +45446,7 @@ except Exception:
 #   split data/config from execution code cleanly.
 
 # =========================
-# NLP102 functional tightening bridge
+# NLP103 functional tightening bridge
 # =========================
 # Why:
 # - Make concept-family gating bite before candidate scoring/freshness, not just after canonicalization.
@@ -45431,21 +45455,21 @@ except Exception:
 
 try:
     globals()["_YUREEKA_CODE_VERSION_LOCK"] = "NLP102"
-    globals()["CODE_VERSION"] = "NLP102"
+    globals()["CODE_VERSION"] = "NLP103"
 except Exception:
     pass
 
 try:
     _nlp102_patch = {
-        "patch_id": "NLP102",
-        "scope": "selector-tightening",
-        "summary": "Apply concept-family compatibility before candidate competition/freshness, add snippet-level conflicting-family vetoes, and abstain instead of emitting incompatible sibling-family winners. Maintains declarative family registry/compatibility for easy extension.",
+        "patch_id": "NLP103",
+        "scope": "selector-tightening-v2",
+        "summary": "Strengthen concept-family gating with dominant conflicting-family vetoes, richer sibling-family markers, pre-freshness hard filtering, and persisted final audit output while preserving the declarative registry/compatibility model for maintainability.",
         "risk": "medium",
     }
-    if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "NLP102" for e in PATCH_TRACKER_V1):
+    if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "NLP103" for e in PATCH_TRACKER_V1):
         PATCH_TRACKER_V1.insert(0, dict(_nlp102_patch))
     try:
-        _yureeka_patch_tracker_ensure_head_v1("NLP102", dict(_nlp102_patch))
+        _yureeka_patch_tracker_ensure_head_v1("NLP103", dict(_nlp102_patch))
     except Exception:
         pass
 except Exception:
@@ -45653,7 +45677,7 @@ def _nlp100_build_metric_family_text_v1(metric_key: str, metric_row: dict) -> st
     return " | ".join([p for p in parts if p])
 
 
-def _nlp102_build_candidate_family_text_v1(cand: dict) -> str:
+def _nlp103_build_candidate_family_text_v1(cand: dict) -> str:
     c = cand if isinstance(cand, dict) else {}
     parts = [
         str(c.get("raw") or ""),
@@ -45669,7 +45693,7 @@ def _nlp102_build_candidate_family_text_v1(cand: dict) -> str:
     return " | ".join([p for p in parts if p])
 
 
-def _nlp102_metric_target_family_v1(canonical_key: str, spec: dict, registry: dict = None) -> dict:
+def _nlp103_metric_target_family_v1(canonical_key: str, spec: dict, registry: dict = None) -> dict:
     reg = registry if isinstance(registry, dict) else _nlp100_get_concept_family_registry_v1()
     sp = spec if isinstance(spec, dict) else {}
     txt = " | ".join([
@@ -45682,7 +45706,7 @@ def _nlp102_metric_target_family_v1(canonical_key: str, spec: dict, registry: di
     return _nlp100_infer_family_v1(txt, registry=reg, min_score=2.0, min_confidence=0.12)
 
 
-def _nlp102_collect_conflicting_family_markers_v1(text: str, target_family: str, registry: dict = None, compatibility: dict = None) -> list:
+def _nlp103_collect_conflicting_family_markers_v1(text: str, target_family: str, registry: dict = None, compatibility: dict = None) -> list:
     reg = registry if isinstance(registry, dict) else _nlp100_get_concept_family_registry_v1()
     comp = compatibility if isinstance(compatibility, dict) else _nlp100_get_concept_family_compatibility_v1(reg)
     target = str(target_family or "").strip()
@@ -45705,36 +45729,80 @@ def _nlp102_collect_conflicting_family_markers_v1(text: str, target_family: str,
     return out
 
 
-def _nlp102_candidate_family_gate_v1(cand: dict, *, target_family: str = "", registry: dict = None, compatibility: dict = None) -> tuple:
+def _nlp103_candidate_family_gate_v1(cand: dict, *, target_family: str = "", registry: dict = None, compatibility: dict = None) -> tuple:
     reg = registry if isinstance(registry, dict) else _nlp100_get_concept_family_registry_v1()
     comp = compatibility if isinstance(compatibility, dict) else _nlp100_get_concept_family_compatibility_v1(reg)
     target = str(target_family or "").strip()
-    cand_text = _nlp102_build_candidate_family_text_v1(cand)
-    cand_info = _nlp100_infer_family_v1(cand_text, registry=reg, min_score=2.0, min_confidence=0.12)
+    cand_text = _nlp103_build_candidate_family_text_v1(cand)
+    cand_info = _nlp100_infer_family_v1(cand_text, registry=reg, min_score=1.0, min_confidence=0.06)
     cand_family = str(cand_info.get("family") or "")
     compatible, compat_reason = _nlp100_is_family_compatible_v1(target, cand_family, registry=reg, compatibility=comp)
     target_match = {}
     if target and isinstance(reg.get(target), dict):
         target_match = _nlp100_score_family_match_v1(cand_text, target, reg.get(target) or {})
-    conflicts = _nlp102_collect_conflicting_family_markers_v1(cand_text, target, registry=reg, compatibility=comp)
-    target_support = int(len(target_match.get("alias_hits") or [])) + int(len(target_match.get("positive_hits") or []))
+
+    ranked = _nlp100_rank_families_v1(cand_text, registry=reg)
+    incompatible_ranked = []
+    for row in ranked:
+        fam = str((row or {}).get("family") or "").strip()
+        if not fam:
+            continue
+        ok, _ = _nlp100_is_family_compatible_v1(target, fam, registry=reg, compatibility=comp)
+        if not ok and (float(row.get("score") or 0.0) > 0.0 or float(row.get("confidence") or 0.0) > 0.0):
+            incompatible_ranked.append({
+                "family": fam,
+                "score": float(row.get("score") or 0.0),
+                "confidence": float(row.get("confidence") or 0.0),
+                "alias_hits": row.get("alias_hits") or [],
+                "positive_hits": row.get("positive_hits") or [],
+                "negative_hits": row.get("negative_hits") or [],
+            })
+    strongest_conflict = incompatible_ranked[0] if incompatible_ranked else {}
+
+    conflicts = _nlp103_collect_conflicting_family_markers_v1(cand_text, target, registry=reg, compatibility=comp)
+    alias_support = int(len(target_match.get("alias_hits") or []))
+    positive_support = int(len(target_match.get("positive_hits") or []))
+    negative_hits = list(target_match.get("negative_hits") or [])
+    target_support = alias_support + positive_support
+    strong_conflict_support = int(len(strongest_conflict.get("alias_hits") or [])) + int(len(strongest_conflict.get("positive_hits") or []))
+
     keep = True
     decision = "pass"
+    veto_reason = ""
     if target and cand_family and (not compatible):
         keep = False
         decision = "reject_incompatible_family"
-    elif target and conflicts and target_support <= 0:
+        veto_reason = compat_reason
+    elif target and negative_hits and target_support <= 1:
+        keep = False
+        decision = "reject_target_negative_markers"
+        veto_reason = "target_negative_markers"
+    elif target and strongest_conflict and strong_conflict_support > 0:
+        target_score = float(target_match.get("score") or 0.0) if isinstance(target_match, dict) else 0.0
+        conflict_score = float(strongest_conflict.get("score") or 0.0)
+        if (target_support <= 1 and conflict_score >= max(2.0, target_score)) or (target_support == 0 and strong_conflict_support >= 1):
+            keep = False
+            decision = "reject_dominant_conflicting_family"
+            veto_reason = str(strongest_conflict.get("family") or "")
+    elif target and conflicts and target_support <= 1:
         keep = False
         decision = "reject_conflicting_family_markers"
+        veto_reason = "marker_conflict"
+
     dbg = {
-        "v": "nlp102_candidate_family_gate_v1",
+        "v": "nlp103_candidate_family_gate_v1",
         "target_family": target,
         "candidate_family": cand_family,
         "candidate_confidence": float(cand_info.get("confidence") or 0.0),
         "compatible": bool(compatible),
         "compat_reason": str(compat_reason or ""),
         "target_support_hits": int(target_support),
+        "target_alias_hits": target_match.get("alias_hits") or [],
+        "target_positive_hits": target_match.get("positive_hits") or [],
+        "target_negative_hits": negative_hits[:8],
         "candidate_ranked_top": cand_info.get("ranked") or [],
+        "strongest_conflicting_family": strongest_conflict or {},
+        "incompatible_ranked_top": incompatible_ranked[:4],
         "target_match": {
             "alias_hits": target_match.get("alias_hits") or [],
             "positive_hits": target_match.get("positive_hits") or [],
@@ -45744,9 +45812,14 @@ def _nlp102_candidate_family_gate_v1(cand: dict, *, target_family: str = "", reg
         },
         "conflicting_family_markers": conflicts[:6],
         "decision": decision,
+        "veto_reason": str(veto_reason or ""),
     }
     return keep, dbg
 
+
+# Backward-compatible alias for earlier patch call sites / debug references.
+def _nlp102_candidate_family_gate_v1(cand: dict, *, target_family: str = "", registry: dict = None, compatibility: dict = None) -> tuple:
+    return _nlp103_candidate_family_gate_v1(cand, target_family=target_family, registry=registry, compatibility=compatibility)
 
 def _nlp100_apply_concept_family_gate_v1(pmc: dict, *, question_text: str = "", category_hint: str = "") -> dict:
     if not isinstance(pmc, dict) or not pmc:
@@ -45760,7 +45833,6 @@ def _nlp100_apply_concept_family_gate_v1(pmc: dict, *, question_text: str = "", 
     target_info = _nlp100_infer_family_v1(" | ".join([q, str(category_hint or "")]), registry=registry, min_score=2.0, min_confidence=0.12)
     target_family = str(target_info.get("family") or "")
 
-    # No clear target family -> stay fully backward compatible.
     if not target_family:
         out_same = {}
         for k, row in pmc.items():
@@ -45768,8 +45840,8 @@ def _nlp100_apply_concept_family_gate_v1(pmc: dict, *, question_text: str = "", 
             if isinstance(rr, dict):
                 rr.setdefault("debug", {})
                 if isinstance(rr.get("debug"), dict):
-                    rr["debug"]["nlp100_family_gate_v1"] = {
-                        "v": "nlp100_family_gate_v1",
+                    rr["debug"]["nlp103_family_gate_v3"] = {
+                        "v": "nlp103_family_gate_v3",
                         "target_family": "",
                         "target_confidence": float(target_info.get("confidence") or 0.0),
                         "candidate_family": "",
@@ -45781,7 +45853,6 @@ def _nlp100_apply_concept_family_gate_v1(pmc: dict, *, question_text: str = "", 
         return out_same
 
     filtered = {}
-    removed = 0
     for key, row in pmc.items():
         rr = dict(row) if isinstance(row, dict) else row
         if not isinstance(rr, dict):
@@ -45789,24 +45860,44 @@ def _nlp100_apply_concept_family_gate_v1(pmc: dict, *, question_text: str = "", 
             continue
 
         cand_text = _nlp100_build_metric_family_text_v1(str(key or ""), rr)
-        cand_info = _nlp100_infer_family_v1(cand_text, registry=registry, min_score=2.0, min_confidence=0.12)
+        cand_info = _nlp100_infer_family_v1(cand_text, registry=registry, min_score=1.0, min_confidence=0.06)
         cand_family = str(cand_info.get("family") or "")
         compatible, compat_reason = _nlp100_is_family_compatible_v1(target_family, cand_family, registry=registry, compatibility=compatibility)
-
-        # Conservative rule:
-        # - If candidate family is unknown, keep (avoid over-pruning on gaps in registry coverage).
-        # - If candidate family is known and incompatible, drop.
+        target_match = _nlp100_score_family_match_v1(cand_text, target_family, registry.get(target_family) or {}) if isinstance(registry.get(target_family), dict) else {}
+        ranked = _nlp100_rank_families_v1(cand_text, registry=registry)
+        incompatible_ranked = []
+        for rowi in ranked:
+            fam = str((rowi or {}).get("family") or "").strip()
+            if not fam:
+                continue
+            ok, _ = _nlp100_is_family_compatible_v1(target_family, fam, registry=registry, compatibility=compatibility)
+            if not ok and (float(rowi.get("score") or 0.0) > 0.0 or float(rowi.get("confidence") or 0.0) > 0.0):
+                incompatible_ranked.append({
+                    "family": fam,
+                    "score": float(rowi.get("score") or 0.0),
+                    "confidence": float(rowi.get("confidence") or 0.0),
+                    "alias_hits": rowi.get("alias_hits") or [],
+                    "positive_hits": rowi.get("positive_hits") or [],
+                })
+        strongest_conflict = incompatible_ranked[0] if incompatible_ranked else {}
+        target_support = int(len(target_match.get("alias_hits") or [])) + int(len(target_match.get("positive_hits") or []))
+        negative_hits = list(target_match.get("negative_hits") or [])
         keep = True
         decision = "kept"
         if cand_family and not compatible:
             keep = False
             decision = "rejected_incompatible_family"
-            removed += 1
+        elif negative_hits and target_support <= 1:
+            keep = False
+            decision = "rejected_target_negative_markers"
+        elif strongest_conflict and ((target_support <= 1 and float(strongest_conflict.get("score") or 0.0) >= max(2.0, float(target_match.get("score") or 0.0))) or (target_support == 0 and (len(strongest_conflict.get("alias_hits") or []) + len(strongest_conflict.get("positive_hits") or [])) >= 1)):
+            keep = False
+            decision = "rejected_dominant_conflicting_family"
 
         rr.setdefault("debug", {})
         if isinstance(rr.get("debug"), dict):
-            rr["debug"]["nlp100_family_gate_v1"] = {
-                "v": "nlp100_family_gate_v1",
+            rr["debug"]["nlp103_family_gate_v3"] = {
+                "v": "nlp103_family_gate_v3",
                 "target_family": target_family,
                 "target_confidence": float(target_info.get("confidence") or 0.0),
                 "target_ranked_top": target_info.get("ranked") or [],
@@ -45815,6 +45906,10 @@ def _nlp100_apply_concept_family_gate_v1(pmc: dict, *, question_text: str = "", 
                 "candidate_ranked_top": cand_info.get("ranked") or [],
                 "compatible": bool(compatible),
                 "compat_reason": str(compat_reason or ""),
+                "target_alias_hits": target_match.get("alias_hits") or [],
+                "target_positive_hits": target_match.get("positive_hits") or [],
+                "target_negative_hits": negative_hits[:8],
+                "strongest_conflicting_family": strongest_conflict or {},
                 "decision": str(decision),
                 "registry_ext_count": int(len(globals().get("CONCEPT_FAMILY_REGISTRY_EXT_V1") or {})) if isinstance(globals().get("CONCEPT_FAMILY_REGISTRY_EXT_V1"), dict) else 0,
             }
@@ -45822,10 +45917,8 @@ def _nlp100_apply_concept_family_gate_v1(pmc: dict, *, question_text: str = "", 
         if keep:
             filtered[key] = rr
 
-    # Tightening behavior: if target family is known and all recognized rows were incompatible,
-    # return the filtered dict (possibly empty) so downstream can abstain rather than pick a
-    # nearest wrong family. This is intentional and auditable via per-row debug beacons.
     return filtered
+
 
 
 try:
@@ -45841,7 +45934,7 @@ def canonicalize_metrics(
     question_text: str = "",
     category_hint: str = ""
 ) -> Dict:
-    """NLP102 wrapper: preserve NLP100/NLP101 behavior, then apply concept-family compatibility gating.
+    """NLP103 wrapper: preserve NLP100/NLP101 behavior, then apply concept-family compatibility gating.
 
     Maintainability notes:
     - New concept families can be added declaratively via the top-of-file registry/compatibility overlay.
