@@ -42,7 +42,7 @@
 #
 # Start here (maintainers / QA):
 #   1) Run the app:
-#        streamlit run NLP103.py
+#        streamlit run NLP104.py
 #   2) Standard triad workflow (release evidence):
 #        - New Analysis  → Analysis JSON
 #        - Evolution (prod) → Evolution JSON
@@ -501,7 +501,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "NLP103"
+_YUREEKA_CODE_VERSION_LOCK = "NLP104"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 # REFACTOR206: Release Candidate freeze (no pipeline behavior change).
 YUREEKA_RELEASE_CANDIDATE_V1 = False
@@ -564,6 +564,7 @@ _YUREEKA_CONCEPT_FAMILY_REGISTRY_V1 = {
             "battery manufacturing", "vehicle production"
         ],
         "allowed_children": [],
+        "required_any_markers": ["public charging", "public chargers", "public charging points", "public charging connections", "public charging stations", "public charging ports"],
     },
     "private_residential_chargers": {
         "parent": "charging_infrastructure_stock",
@@ -579,6 +580,7 @@ _YUREEKA_CONCEPT_FAMILY_REGISTRY_V1 = {
             "public charging", "public chargers", "battery sector", "vehicle production"
         ],
         "allowed_children": [],
+        "required_any_markers": ["residential", "home charging", "home chargers", "private residential", "residential chargers"],
     },
     "charging_investment": {
         "parent": "charging",
@@ -597,6 +599,7 @@ _YUREEKA_CONCEPT_FAMILY_REGISTRY_V1 = {
             "charging points reach", "charging connections reach"
         ],
         "allowed_children": [],
+        "required_any_markers": ["charging infrastructure", "ev charging", "charging network", "charging networks", "investment in charging", "charging investment"],
     },
     "battery_investment": {
         "parent": "battery",
@@ -612,6 +615,7 @@ _YUREEKA_CONCEPT_FAMILY_REGISTRY_V1 = {
             "charging network", "charging infrastructure", "public charging", "chargers"
         ],
         "allowed_children": [],
+        "required_any_markers": ["battery", "battery sector", "battery demand", "battery investment", "battery manufacturing", "cell production", "gigafactory"],
     },
     "ev_sales_count": {
         "parent": "sales",
@@ -628,6 +632,7 @@ _YUREEKA_CONCEPT_FAMILY_REGISTRY_V1 = {
             "battery sector", "capex", "investment"
         ],
         "allowed_children": [],
+        "required_any_markers": ["sales", "units sold", "deliveries", "registrations", "electric vehicle sales", "ev sales"],
     },
     "ev_sales_share": {
         "parent": "sales",
@@ -643,6 +648,7 @@ _YUREEKA_CONCEPT_FAMILY_REGISTRY_V1 = {
             "capex", "investment"
         ],
         "allowed_children": [],
+        "required_any_markers": ["share of new car sales", "share of sales", "% of sales", "percent of sales", "market share", "account for"],
     },
     "vehicle_production": {
         "parent": "vehicles",
@@ -656,6 +662,7 @@ _YUREEKA_CONCEPT_FAMILY_REGISTRY_V1 = {
             "charging infrastructure", "battery sector", "market share", "investment"
         ],
         "allowed_children": [],
+        "required_any_markers": ["vehicle production", "vehicle manufacturing", "auto production", "car production"],
     },
 }
 
@@ -681,7 +688,7 @@ def _yureeka_merge_concept_family_spec_v1(base: dict, ext: dict) -> dict:
     out = dict(base or {})
     if not isinstance(ext, dict):
         return out
-    list_keys = {"aliases", "positive_anchors", "negative_anchors", "allowed_children"}
+    list_keys = {"aliases", "positive_anchors", "negative_anchors", "allowed_children", "required_any_markers"}
     for k, v in ext.items():
         if k in list_keys:
             cur = out.get(k)
@@ -756,6 +763,9 @@ try:
                 "battery demand by 2040",
                 "investment in battery demand",
                 "battery materials",
+            ],
+            "required_any_markers": [
+                "battery", "battery demand", "battery sector", "battery manufacturing", "cell production", "gigafactory"
             ],
         },
         allowed_matches=["battery_investment"],
@@ -39303,7 +39313,7 @@ def rebuild_metrics_from_snapshots_analysis_canonical_v1(prev_response: dict, ba
 
             # NLP102: concept-family gate BEFORE candidate competition.
             try:
-                _fam_keep, _fam_dbg = _nlp103_candidate_family_gate_v1(
+                _fam_keep, _fam_dbg = _nlp104_candidate_family_gate_v2(
                     _c,
                     target_family=_nlp103_target_family,
                     registry=_nlp103_registry,
@@ -40875,7 +40885,7 @@ def _refactor28_schema_only_rebuild_authoritative_v1(
 
             # NLP102: concept-family gate BEFORE scoring / freshness.
             try:
-                _fam_keep, _fam_dbg = _nlp103_candidate_family_gate_v1(
+                _fam_keep, _fam_dbg = _nlp104_candidate_family_gate_v2(
                     c,
                     target_family=_nlp103_target_family,
                     registry=_nlp103_registry,
@@ -41761,7 +41771,7 @@ def _refactor28_schema_only_rebuild_authoritative_v1(
         _nlp102_best_family_dbg = {}
         try:
             if isinstance(best, dict) and best:
-                _keep_best, _nlp102_best_family_dbg = _nlp103_candidate_family_gate_v1(
+                _keep_best, _nlp102_best_family_dbg = _nlp104_candidate_family_gate_v2(
                     best,
                     target_family=_nlp103_target_family,
                     registry=_nlp103_registry,
@@ -41809,8 +41819,8 @@ def _refactor28_schema_only_rebuild_authoritative_v1(
         try:
             metric.setdefault("debug", {})
             if isinstance(metric.get("debug"), dict):
-                metric["debug"]["nlp103_family_gate_v3"] = {
-                    "v": "nlp103_family_gate_v3",
+                metric["debug"]["nlp104_family_gate_v4"] = {
+                    "v": "nlp104_family_gate_v4",
                     "target_family": _nlp103_target_family,
                     "target_family_confidence": float(_nlp102_target_info.get("confidence") or 0.0),
                     "target_ranked_top": _nlp102_target_info.get("ranked") or [],
@@ -45418,8 +45428,8 @@ except Exception:
 # - Add machine-readable per-metric debug beacons explaining family-gate decisions.
 
 try:
-    globals()["_YUREEKA_CODE_VERSION_LOCK"] = "NLP102"
-    globals()["CODE_VERSION"] = "NLP103"
+    globals()["_YUREEKA_CODE_VERSION_LOCK"] = "NLP104"
+    globals()["CODE_VERSION"] = "NLP104"
 except Exception:
     pass
 
@@ -45446,7 +45456,7 @@ except Exception:
 #   split data/config from execution code cleanly.
 
 # =========================
-# NLP103 functional tightening bridge
+# NLP104 functional tightening bridge
 # =========================
 # Why:
 # - Make concept-family gating bite before candidate scoring/freshness, not just after canonicalization.
@@ -45454,22 +45464,22 @@ except Exception:
 # - Prefer abstention over nearest wrong sibling-family winners.
 
 try:
-    globals()["_YUREEKA_CODE_VERSION_LOCK"] = "NLP102"
-    globals()["CODE_VERSION"] = "NLP103"
+    globals()["_YUREEKA_CODE_VERSION_LOCK"] = "NLP104"
+    globals()["CODE_VERSION"] = "NLP104"
 except Exception:
     pass
 
 try:
     _nlp102_patch = {
-        "patch_id": "NLP103",
+        "patch_id": "NLP104",
         "scope": "selector-tightening-v2",
-        "summary": "Strengthen concept-family gating with dominant conflicting-family vetoes, richer sibling-family markers, pre-freshness hard filtering, and persisted final audit output while preserving the declarative registry/compatibility model for maintainability.",
+        "summary": "Make concept-family gating operational in the effective winner path by requiring family-specific target markers, vetoing dominant incompatible sibling markers before freshness, and persisting final family-gate audit beacons for each selected metric while preserving the declarative registry model for maintainability.",
         "risk": "medium",
     }
-    if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "NLP103" for e in PATCH_TRACKER_V1):
+    if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "NLP104" for e in PATCH_TRACKER_V1):
         PATCH_TRACKER_V1.insert(0, dict(_nlp102_patch))
     try:
-        _yureeka_patch_tracker_ensure_head_v1("NLP103", dict(_nlp102_patch))
+        _yureeka_patch_tracker_ensure_head_v1("NLP104", dict(_nlp102_patch))
     except Exception:
         pass
 except Exception:
@@ -45723,13 +45733,23 @@ def _nlp103_collect_conflicting_family_markers_v1(text: str, target_family: str,
         fam_s = str(fam or "").strip()
         if not fam_s or fam_s in allowed or not isinstance(spec, dict):
             continue
-        hits = _nlp100_collect_phrase_hits_v1(norm, list(spec.get("aliases") or []) + list(spec.get("positive_anchors") or []))
+        hits = _nlp100_collect_phrase_hits_v1(norm, list(spec.get("aliases") or []) + list(spec.get("positive_anchors") or []) + list(spec.get("required_any_markers") or []))
         if hits:
             out.append({"family": fam_s, "hits": hits[:8]})
     return out
 
 
-def _nlp103_candidate_family_gate_v1(cand: dict, *, target_family: str = "", registry: dict = None, compatibility: dict = None) -> tuple:
+def _nlp104_collect_required_marker_hits_v1(text: str, family_id: str, registry: dict = None) -> list:
+    reg = registry if isinstance(registry, dict) else _nlp100_get_concept_family_registry_v1()
+    fam = str(family_id or "").strip()
+    spec = reg.get(fam) if isinstance(reg.get(fam), dict) else {}
+    norm = _nlp100_normalize_text_v1(text)
+    if not norm or not isinstance(spec, dict):
+        return []
+    return _nlp100_collect_phrase_hits_v1(norm, list(spec.get("required_any_markers") or []))
+
+
+def _nlp104_candidate_family_gate_v2(cand: dict, *, target_family: str = "", registry: dict = None, compatibility: dict = None) -> tuple:
     reg = registry if isinstance(registry, dict) else _nlp100_get_concept_family_registry_v1()
     comp = compatibility if isinstance(compatibility, dict) else _nlp100_get_concept_family_compatibility_v1(reg)
     target = str(target_family or "").strip()
@@ -45756,6 +45776,7 @@ def _nlp103_candidate_family_gate_v1(cand: dict, *, target_family: str = "", reg
                 "alias_hits": row.get("alias_hits") or [],
                 "positive_hits": row.get("positive_hits") or [],
                 "negative_hits": row.get("negative_hits") or [],
+                "required_hits": _nlp104_collect_required_marker_hits_v1(cand_text, fam, registry=reg),
             })
     strongest_conflict = incompatible_ranked[0] if incompatible_ranked else {}
 
@@ -45765,6 +45786,9 @@ def _nlp103_candidate_family_gate_v1(cand: dict, *, target_family: str = "", reg
     negative_hits = list(target_match.get("negative_hits") or [])
     target_support = alias_support + positive_support
     strong_conflict_support = int(len(strongest_conflict.get("alias_hits") or [])) + int(len(strongest_conflict.get("positive_hits") or []))
+    target_required_hits = _nlp104_collect_required_marker_hits_v1(cand_text, target, registry=reg)
+    target_required_ok = bool(target_required_hits) if target else True
+    strongest_conflict_required_hits = strongest_conflict.get("required_hits") or []
 
     keep = True
     decision = "pass"
@@ -45773,6 +45797,14 @@ def _nlp103_candidate_family_gate_v1(cand: dict, *, target_family: str = "", reg
         keep = False
         decision = "reject_incompatible_family"
         veto_reason = compat_reason
+    elif target and target and (not target_required_ok) and strongest_conflict_required_hits:
+        keep = False
+        decision = "reject_missing_target_required_markers"
+        veto_reason = str(strongest_conflict.get("family") or "required_markers")
+    elif target and target and (not target_required_ok) and conflicts:
+        keep = False
+        decision = "reject_missing_target_required_markers"
+        veto_reason = "marker_conflict"
     elif target and negative_hits and target_support <= 1:
         keep = False
         decision = "reject_target_negative_markers"
@@ -45780,7 +45812,11 @@ def _nlp103_candidate_family_gate_v1(cand: dict, *, target_family: str = "", reg
     elif target and strongest_conflict and strong_conflict_support > 0:
         target_score = float(target_match.get("score") or 0.0) if isinstance(target_match, dict) else 0.0
         conflict_score = float(strongest_conflict.get("score") or 0.0)
-        if (target_support <= 1 and conflict_score >= max(2.0, target_score)) or (target_support == 0 and strong_conflict_support >= 1):
+        if strongest_conflict_required_hits and (not target_required_ok):
+            keep = False
+            decision = "reject_dominant_conflicting_family_required_markers"
+            veto_reason = str(strongest_conflict.get("family") or "")
+        elif (target_support <= 1 and conflict_score >= max(2.0, target_score)) or (target_support == 0 and strong_conflict_support >= 1):
             keep = False
             decision = "reject_dominant_conflicting_family"
             veto_reason = str(strongest_conflict.get("family") or "")
@@ -45790,7 +45826,7 @@ def _nlp103_candidate_family_gate_v1(cand: dict, *, target_family: str = "", reg
         veto_reason = "marker_conflict"
 
     dbg = {
-        "v": "nlp103_candidate_family_gate_v1",
+        "v": "nlp104_candidate_family_gate_v2",
         "target_family": target,
         "candidate_family": cand_family,
         "candidate_confidence": float(cand_info.get("confidence") or 0.0),
@@ -45800,8 +45836,11 @@ def _nlp103_candidate_family_gate_v1(cand: dict, *, target_family: str = "", reg
         "target_alias_hits": target_match.get("alias_hits") or [],
         "target_positive_hits": target_match.get("positive_hits") or [],
         "target_negative_hits": negative_hits[:8],
+        "target_required_hits": target_required_hits[:8],
+        "target_required_ok": bool(target_required_ok),
         "candidate_ranked_top": cand_info.get("ranked") or [],
         "strongest_conflicting_family": strongest_conflict or {},
+        "strongest_conflicting_required_hits": strongest_conflict_required_hits[:8],
         "incompatible_ranked_top": incompatible_ranked[:4],
         "target_match": {
             "alias_hits": target_match.get("alias_hits") or [],
@@ -45818,8 +45857,12 @@ def _nlp103_candidate_family_gate_v1(cand: dict, *, target_family: str = "", reg
 
 
 # Backward-compatible alias for earlier patch call sites / debug references.
+def _nlp103_candidate_family_gate_v1(cand: dict, *, target_family: str = "", registry: dict = None, compatibility: dict = None) -> tuple:
+    return _nlp104_candidate_family_gate_v2(cand, target_family=target_family, registry=registry, compatibility=compatibility)
+
+
 def _nlp102_candidate_family_gate_v1(cand: dict, *, target_family: str = "", registry: dict = None, compatibility: dict = None) -> tuple:
-    return _nlp103_candidate_family_gate_v1(cand, target_family=target_family, registry=registry, compatibility=compatibility)
+    return _nlp104_candidate_family_gate_v2(cand, target_family=target_family, registry=registry, compatibility=compatibility)
 
 def _nlp100_apply_concept_family_gate_v1(pmc: dict, *, question_text: str = "", category_hint: str = "") -> dict:
     if not isinstance(pmc, dict) or not pmc:
@@ -45840,8 +45883,8 @@ def _nlp100_apply_concept_family_gate_v1(pmc: dict, *, question_text: str = "", 
             if isinstance(rr, dict):
                 rr.setdefault("debug", {})
                 if isinstance(rr.get("debug"), dict):
-                    rr["debug"]["nlp103_family_gate_v3"] = {
-                        "v": "nlp103_family_gate_v3",
+                    rr["debug"]["nlp104_family_gate_v4"] = {
+                        "v": "nlp104_family_gate_v4",
                         "target_family": "",
                         "target_confidence": float(target_info.get("confidence") or 0.0),
                         "candidate_family": "",
@@ -45896,8 +45939,8 @@ def _nlp100_apply_concept_family_gate_v1(pmc: dict, *, question_text: str = "", 
 
         rr.setdefault("debug", {})
         if isinstance(rr.get("debug"), dict):
-            rr["debug"]["nlp103_family_gate_v3"] = {
-                "v": "nlp103_family_gate_v3",
+            rr["debug"]["nlp104_family_gate_v4"] = {
+                "v": "nlp104_family_gate_v4",
                 "target_family": target_family,
                 "target_confidence": float(target_info.get("confidence") or 0.0),
                 "target_ranked_top": target_info.get("ranked") or [],
