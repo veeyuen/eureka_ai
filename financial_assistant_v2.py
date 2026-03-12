@@ -16,6 +16,7 @@
 #
 # Suggested future split (approx):
 #   yureeka/config_flags.py            [MOD:CONFIG_FLAGS]
+#   yureeka/config/concept_families.py [MOD:MAINTAINABLE_REGISTRIES]
 #   yureeka/meta/versioning.py         [MOD:VERSION_STAMP]
 #   yureeka/meta/patch_tracker.py      [MOD:PATCH_TRACKER]
 #   yureeka/llm/sidecar.py             [MOD:LLM_SIDECAR]
@@ -27,12 +28,12 @@
 #   yureeka/ui/app.py                  [MOD:UI_APP]
 #
 # Search anchors:
-#   [MOD:CONFIG_FLAGS] [MOD:VERSION_STAMP] [MOD:PATCH_TRACKER]
+#   [MOD:CONFIG_FLAGS] [MOD:VERSION_STAMP] [MOD:MAINTAINABLE_REGISTRIES] [MOD:PATCH_TRACKER]
 #   [MOD:LLM_SIDECAR] [MOD:LLM01_EVIDENCE] [MOD:LLM00_QSTRUCT]
 #   [MOD:PIPELINE_CORE] [MOD:DIFF_CORE] [MOD:UI_APP]
 # =============================================================================
 # ====================
-# DEVELOPER ORIENTATION (NLP99)
+# DEVELOPER ORIENTATION (NLP101)
 # ====================
 # This codebase is intentionally a Streamlit-safe **single-file** build. It is organized using:
 #   - a "MODULE INDEX (v1)" header near the top
@@ -41,7 +42,7 @@
 #
 # Start here (maintainers / QA):
 #   1) Run the app:
-#        streamlit run NLP99.py
+#        streamlit run NLP101.py
 #   2) Standard triad workflow (release evidence):
 #        - New Analysis  → Analysis JSON
 #        - Evolution (prod) → Evolution JSON
@@ -500,7 +501,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "NLP99"
+_YUREEKA_CODE_VERSION_LOCK = "NLP101"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 # REFACTOR206: Release Candidate freeze (no pipeline behavior change).
 YUREEKA_RELEASE_CANDIDATE_V1 = False
@@ -514,6 +515,229 @@ YUREEKA_REGRESSION_QUESTIONS_V1 = [
     "what is global EV charging investment in 2040?",
     "what is the CAGR of global EV chargers from 2026 to 2040?",
 ]
+
+
+# [MOD:MAINTAINABLE_REGISTRIES]
+# === MAINTAINABLE REGISTRIES / OPERATOR-TUNED CONFIG =========================
+# NLP101: keep declarative, frequently-edited registries near the top for easy
+# maintenance today and future modularization tomorrow. The rule is:
+#   - data/registries live here
+#   - generic selector logic lives lower in the file
+#
+# Future split target:
+#   yureeka/config/concept_families.py
+#
+# Central declarative concept-family registry. Add new families here (or via
+# register_concept_family_v1) rather than creating selector-specific branches.
+_YUREEKA_CONCEPT_FAMILY_REGISTRY_V1 = {
+    "charging_infrastructure_stock": {
+        "parent": "charging",
+        "aliases": [
+            "charging infrastructure", "charging infrastructure stock", "ev charging infrastructure",
+            "chargers", "ev chargers", "charging points", "charging connections",
+            "charging stations", "charging ports", "public charging network"
+        ],
+        "positive_anchors": [
+            "charging", "charger", "chargers", "charging point", "charging points",
+            "charging connection", "charging connections", "charging station", "charging stations",
+            "charging port", "charging ports", "infrastructure"
+        ],
+        "negative_anchors": [
+            "battery sector", "battery manufacturing", "cell production", "gigafactory",
+            "vehicle production", "new car sales share", "market share", "annual investment",
+            "cumulative investment", "capex", "funding", "spending"
+        ],
+        "allowed_children": ["public_chargers", "private_residential_chargers"],
+    },
+    "public_chargers": {
+        "parent": "charging_infrastructure_stock",
+        "aliases": [
+            "public chargers", "public charging points", "public charging connections",
+            "public charging stations", "public charging ports"
+        ],
+        "positive_anchors": [
+            "public charging", "public chargers", "public charging points",
+            "public charging connections", "public charging stations", "public charging ports"
+        ],
+        "negative_anchors": [
+            "residential", "home charging", "private residential", "battery sector",
+            "battery manufacturing", "vehicle production"
+        ],
+        "allowed_children": [],
+    },
+    "private_residential_chargers": {
+        "parent": "charging_infrastructure_stock",
+        "aliases": [
+            "residential chargers", "residential charging", "home chargers",
+            "home charging", "private residential chargers", "ac chargers"
+        ],
+        "positive_anchors": [
+            "residential", "home charging", "home chargers", "private residential",
+            "residential chargers", "ac chargers"
+        ],
+        "negative_anchors": [
+            "public charging", "public chargers", "battery sector", "vehicle production"
+        ],
+        "allowed_children": [],
+    },
+    "charging_investment": {
+        "parent": "charging",
+        "aliases": [
+            "charging investment", "ev charging investment", "charging infrastructure investment",
+            "charging network investment", "charging network capex", "charging capex"
+        ],
+        "positive_anchors": [
+            "charging infrastructure", "ev charging", "charging network", "charging networks",
+            "charging investment", "capex", "capital deployed", "funding", "spending",
+            "investment in charging"
+        ],
+        "negative_anchors": [
+            "battery sector", "battery manufacturing", "cell production", "gigafactory",
+            "vehicle production", "unit sales", "market share", "chargers reach",
+            "charging points reach", "charging connections reach"
+        ],
+        "allowed_children": [],
+    },
+    "battery_investment": {
+        "parent": "battery",
+        "aliases": [
+            "battery investment", "battery sector investment", "battery manufacturing investment",
+            "battery capex", "gigafactory investment", "cell production investment"
+        ],
+        "positive_anchors": [
+            "battery sector", "battery manufacturing", "battery investment", "battery capex",
+            "gigafactory", "cell production", "cell manufacturing"
+        ],
+        "negative_anchors": [
+            "charging network", "charging infrastructure", "public charging", "chargers"
+        ],
+        "allowed_children": [],
+    },
+    "ev_sales_count": {
+        "parent": "sales",
+        "aliases": [
+            "ev sales", "electric vehicle sales", "units sold", "ev deliveries",
+            "vehicle registrations"
+        ],
+        "positive_anchors": [
+            "ev sales", "electric vehicle sales", "units sold", "deliveries",
+            "registrations", "sales reached", "sales hit"
+        ],
+        "negative_anchors": [
+            "%", "percent", "share", "market share", "charging infrastructure",
+            "battery sector", "capex", "investment"
+        ],
+        "allowed_children": [],
+    },
+    "ev_sales_share": {
+        "parent": "sales",
+        "aliases": [
+            "ev sales share", "share of new car sales", "share of sales", "ev adoption share"
+        ],
+        "positive_anchors": [
+            "share of new car sales", "share of sales", "ev adoption share", "% of sales",
+            "percent of sales", "account for"
+        ],
+        "negative_anchors": [
+            "units sold", "deliveries", "charging infrastructure", "battery sector",
+            "capex", "investment"
+        ],
+        "allowed_children": [],
+    },
+    "vehicle_production": {
+        "parent": "vehicles",
+        "aliases": [
+            "vehicle production", "auto production", "vehicle manufacturing", "car production"
+        ],
+        "positive_anchors": [
+            "vehicle production", "vehicle manufacturing", "auto production", "car production"
+        ],
+        "negative_anchors": [
+            "charging infrastructure", "battery sector", "market share", "investment"
+        ],
+        "allowed_children": [],
+    },
+}
+
+# Explicit allowed matches live alongside the registry for easy maintenance.
+_YUREEKA_CONCEPT_FAMILY_COMPATIBILITY_V1 = {
+    "charging_infrastructure_stock": {"charging_infrastructure_stock", "public_chargers", "private_residential_chargers"},
+    "public_chargers": {"public_chargers"},
+    "private_residential_chargers": {"private_residential_chargers"},
+    "charging_investment": {"charging_investment"},
+    "battery_investment": {"battery_investment"},
+    "ev_sales_count": {"ev_sales_count"},
+    "ev_sales_share": {"ev_sales_share"},
+    "vehicle_production": {"vehicle_production"},
+}
+
+# Runtime overlays keep the top-of-file registry stable while allowing incremental
+# extension during experiments or future module extraction.
+CONCEPT_FAMILY_REGISTRY_EXT_V1 = {}
+CONCEPT_FAMILY_COMPATIBILITY_EXT_V1 = {}
+
+
+def _yureeka_merge_concept_family_spec_v1(base: dict, ext: dict) -> dict:
+    out = dict(base or {})
+    if not isinstance(ext, dict):
+        return out
+    list_keys = {"aliases", "positive_anchors", "negative_anchors", "allowed_children"}
+    for k, v in ext.items():
+        if k in list_keys:
+            cur = out.get(k)
+            items = []
+            for src in [cur, v]:
+                if isinstance(src, (list, tuple)):
+                    for item in src:
+                        s = str(item or "").strip()
+                        if s and s not in items:
+                            items.append(s)
+                elif src:
+                    s = str(src).strip()
+                    if s and s not in items:
+                        items.append(s)
+            out[k] = items
+        else:
+            out[k] = v
+    return out
+
+
+def register_concept_family_v1(family_id: str, spec: dict, allowed_matches=None) -> bool:
+    """Runtime extension hook for new concept families.
+
+    NLP101 maintainability rule:
+    - keep the base registry declarative at the top of the file
+    - allow additive runtime overlays without editing selector logic
+    """
+    fam = str(family_id or "").strip()
+    if not fam or not isinstance(spec, dict):
+        return False
+
+    ext = globals().get("CONCEPT_FAMILY_REGISTRY_EXT_V1")
+    if not isinstance(ext, dict):
+        ext = {}
+    base = ext.get(fam) if isinstance(ext.get(fam), dict) else {}
+    ext[fam] = _yureeka_merge_concept_family_spec_v1(base, spec)
+    globals()["CONCEPT_FAMILY_REGISTRY_EXT_V1"] = ext
+
+    if allowed_matches is not None:
+        cext = globals().get("CONCEPT_FAMILY_COMPATIBILITY_EXT_V1")
+        if not isinstance(cext, dict):
+            cext = {}
+        cur = set(cext.get(fam) or []) if isinstance(cext.get(fam), (list, tuple, set)) else set()
+        if isinstance(allowed_matches, (list, tuple, set)):
+            for item in allowed_matches:
+                s = str(item or "").strip()
+                if s:
+                    cur.add(s)
+        else:
+            s = str(allowed_matches or "").strip()
+            if s:
+                cur.add(s)
+        cur.add(fam)
+        cext[fam] = sorted(cur)
+        globals()["CONCEPT_FAMILY_COMPATIBILITY_EXT_V1"] = cext
+    return True
 
 # [MOD:LLM_SIDECAR]
 # === LLM SIDECAR (LLM01) ======================================================
@@ -45073,7 +45297,7 @@ except Exception:
     pass
 
 # =========================
-# NLP100 maintainable concept-family gate overlay
+# NLP101 maintainability + concept-family gate bridge
 # =========================
 # Why:
 # - Provide a declarative concept-family registry + compatibility matrix so new families can be
@@ -45083,171 +45307,32 @@ except Exception:
 # - Add machine-readable per-metric debug beacons explaining family-gate decisions.
 
 try:
-    globals()["_YUREEKA_CODE_VERSION_LOCK"] = "NLP100"
-    globals()["CODE_VERSION"] = "NLP100"
+    globals()["_YUREEKA_CODE_VERSION_LOCK"] = "NLP101"
+    globals()["CODE_VERSION"] = "NLP101"
 except Exception:
     pass
 
 try:
-    _nlp100_patch = {
-        "patch_id": "NLP100",
-        "scope": "selector-tightening",
-        "summary": "Add maintainable concept-family registry + compatibility gate overlay (declarative registry, extension hooks, post-canonical filtering, and per-metric family-gate debug beacons). Tightens sibling-family leakage while staying conservative on unknown families.",
-        "risk": "medium",
+    _nlp101_patch = {
+        "patch_id": "NLP101",
+        "scope": "maintainability-modularization",
+        "summary": "Move operator-tuned concept-family registries to a top-of-file maintainable section, add a maintainable-registries module anchor, keep selector logic generic, and preserve NLP100 family-gate behavior via top-level registry accessors.",
+        "risk": "low",
     }
-    if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "NLP100" for e in PATCH_TRACKER_V1):
-        PATCH_TRACKER_V1.insert(0, dict(_nlp100_patch))
+    if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "NLP101" for e in PATCH_TRACKER_V1):
+        PATCH_TRACKER_V1.insert(0, dict(_nlp101_patch))
     try:
-        _yureeka_patch_tracker_ensure_head_v1("NLP100", dict(_nlp100_patch))
+        _yureeka_patch_tracker_ensure_head_v1("NLP101", dict(_nlp101_patch))
     except Exception:
         pass
 except Exception:
     pass
 
-# Central declarative registry. Keep this compact and additive; extend via
-# CONCEPT_FAMILY_REGISTRY_EXT_V1 / CONCEPT_FAMILY_COMPATIBILITY_EXT_V1 or
-# register_concept_family_v1().
-_NLP100_CONCEPT_FAMILY_REGISTRY_V1 = {
-    "charging_infrastructure_stock": {
-        "parent": "charging",
-        "aliases": [
-            "charging infrastructure", "charging infrastructure stock", "ev charging infrastructure",
-            "chargers", "ev chargers", "charging points", "charging connections",
-            "charging stations", "charging ports", "public charging network"
-        ],
-        "positive_anchors": [
-            "charging", "charger", "chargers", "charging point", "charging points",
-            "charging connection", "charging connections", "charging station", "charging stations",
-            "charging port", "charging ports", "infrastructure"
-        ],
-        "negative_anchors": [
-            "battery sector", "battery manufacturing", "cell production", "gigafactory",
-            "vehicle production", "new car sales share", "market share", "annual investment",
-            "cumulative investment", "capex", "funding", "spending"
-        ],
-        "allowed_children": ["public_chargers", "private_residential_chargers"],
-    },
-    "public_chargers": {
-        "parent": "charging_infrastructure_stock",
-        "aliases": [
-            "public chargers", "public charging points", "public charging connections",
-            "public charging stations", "public charging ports"
-        ],
-        "positive_anchors": [
-            "public charging", "public chargers", "public charging points",
-            "public charging connections", "public charging stations", "public charging ports"
-        ],
-        "negative_anchors": [
-            "residential", "home charging", "private residential", "battery sector",
-            "battery manufacturing", "vehicle production"
-        ],
-        "allowed_children": [],
-    },
-    "private_residential_chargers": {
-        "parent": "charging_infrastructure_stock",
-        "aliases": [
-            "residential chargers", "residential charging", "home chargers",
-            "home charging", "private residential chargers", "ac chargers"
-        ],
-        "positive_anchors": [
-            "residential", "home charging", "home chargers", "private residential",
-            "residential chargers", "ac chargers"
-        ],
-        "negative_anchors": [
-            "public charging", "public chargers", "battery sector", "vehicle production"
-        ],
-        "allowed_children": [],
-    },
-    "charging_investment": {
-        "parent": "charging",
-        "aliases": [
-            "charging investment", "ev charging investment", "charging infrastructure investment",
-            "charging network investment", "charging network capex", "charging capex"
-        ],
-        "positive_anchors": [
-            "charging infrastructure", "ev charging", "charging network", "charging networks",
-            "charging investment", "capex", "capital deployed", "funding", "spending",
-            "investment in charging"
-        ],
-        "negative_anchors": [
-            "battery sector", "battery manufacturing", "cell production", "gigafactory",
-            "vehicle production", "unit sales", "market share", "chargers reach",
-            "charging points reach", "charging connections reach"
-        ],
-        "allowed_children": [],
-    },
-    "battery_investment": {
-        "parent": "battery",
-        "aliases": [
-            "battery investment", "battery sector investment", "battery manufacturing investment",
-            "battery capex", "gigafactory investment", "cell production investment"
-        ],
-        "positive_anchors": [
-            "battery sector", "battery manufacturing", "battery investment", "battery capex",
-            "gigafactory", "cell production", "cell manufacturing"
-        ],
-        "negative_anchors": [
-            "charging network", "charging infrastructure", "public charging", "chargers"
-        ],
-        "allowed_children": [],
-    },
-    "ev_sales_count": {
-        "parent": "sales",
-        "aliases": [
-            "ev sales", "electric vehicle sales", "units sold", "ev deliveries",
-            "vehicle registrations"
-        ],
-        "positive_anchors": [
-            "ev sales", "electric vehicle sales", "units sold", "deliveries",
-            "registrations", "sales reached", "sales hit"
-        ],
-        "negative_anchors": [
-            "%", "percent", "share", "market share", "charging infrastructure",
-            "battery sector", "capex", "investment"
-        ],
-        "allowed_children": [],
-    },
-    "ev_sales_share": {
-        "parent": "sales",
-        "aliases": [
-            "ev sales share", "share of new car sales", "share of sales", "ev adoption share"
-        ],
-        "positive_anchors": [
-            "share of new car sales", "share of sales", "ev adoption share", "% of sales",
-            "percent of sales", "account for"
-        ],
-        "negative_anchors": [
-            "units sold", "deliveries", "charging infrastructure", "battery sector",
-            "capex", "investment"
-        ],
-        "allowed_children": [],
-    },
-    "vehicle_production": {
-        "parent": "vehicles",
-        "aliases": [
-            "vehicle production", "auto production", "vehicle manufacturing", "car production"
-        ],
-        "positive_anchors": [
-            "vehicle production", "vehicle manufacturing", "auto production", "car production"
-        ],
-        "negative_anchors": [
-            "charging infrastructure", "battery sector", "market share", "investment"
-        ],
-        "allowed_children": [],
-    },
-}
-
-# Explicit allowed matches can be extended without changing selector code.
-_NLP100_CONCEPT_FAMILY_COMPATIBILITY_V1 = {
-    "charging_infrastructure_stock": {"charging_infrastructure_stock", "public_chargers", "private_residential_chargers"},
-    "public_chargers": {"public_chargers"},
-    "private_residential_chargers": {"private_residential_chargers"},
-    "charging_investment": {"charging_investment"},
-    "battery_investment": {"battery_investment"},
-    "ev_sales_count": {"ev_sales_count"},
-    "ev_sales_share": {"ev_sales_share"},
-    "vehicle_production": {"vehicle_production"},
-}
+# NLP101 maintainability bridge:
+# - The declarative concept-family registry + compatibility matrix now live near the
+#   top of the file under [MOD:MAINTAINABLE_REGISTRIES].
+# - The generic helper/selector logic remains down here so future module extraction can
+#   split data/config from execution code cleanly.
 
 
 def _nlp100__deepcopy_v1(obj):
@@ -45260,33 +45345,8 @@ def _nlp100__deepcopy_v1(obj):
             return obj
 
 
-def _nlp100__merge_family_spec_v1(base: dict, ext: dict) -> dict:
-    out = dict(base or {})
-    if not isinstance(ext, dict):
-        return out
-    list_keys = {"aliases", "positive_anchors", "negative_anchors", "allowed_children"}
-    for k, v in ext.items():
-        if k in list_keys:
-            cur = out.get(k)
-            items = []
-            for src in [cur, v]:
-                if isinstance(src, (list, tuple)):
-                    for item in src:
-                        s = str(item or "").strip()
-                        if s and s not in items:
-                            items.append(s)
-                elif src:
-                    s = str(src).strip()
-                    if s and s not in items:
-                        items.append(s)
-            out[k] = items
-        else:
-            out[k] = v
-    return out
-
-
 def _nlp100_get_concept_family_registry_v1() -> dict:
-    reg = _nlp100__deepcopy_v1(_NLP100_CONCEPT_FAMILY_REGISTRY_V1) or {}
+    reg = _nlp100__deepcopy_v1(_YUREEKA_CONCEPT_FAMILY_REGISTRY_V1) or {}
     ext = globals().get("CONCEPT_FAMILY_REGISTRY_EXT_V1")
     if isinstance(ext, dict):
         for fam, spec in ext.items():
@@ -45294,13 +45354,13 @@ def _nlp100_get_concept_family_registry_v1() -> dict:
             if not fam_s:
                 continue
             base = reg.get(fam_s) if isinstance(reg.get(fam_s), dict) else {}
-            reg[fam_s] = _nlp100__merge_family_spec_v1(base, spec if isinstance(spec, dict) else {})
+            reg[fam_s] = _yureeka_merge_concept_family_spec_v1(base, spec if isinstance(spec, dict) else {})
     return reg
 
 
 def _nlp100_get_concept_family_compatibility_v1(registry: dict = None) -> dict:
     reg = registry if isinstance(registry, dict) else _nlp100_get_concept_family_registry_v1()
-    comp = {str(k): set(v or []) for k, v in (_NLP100_CONCEPT_FAMILY_COMPATIBILITY_V1 or {}).items()}
+    comp = {str(k): set(v or []) for k, v in (_YUREEKA_CONCEPT_FAMILY_COMPATIBILITY_V1 or {}).items()}
     # Parent -> children from registry are auto-added.
     for fam, spec in reg.items():
         comp.setdefault(str(fam), set()).add(str(fam))
@@ -45325,42 +45385,6 @@ def _nlp100_get_concept_family_compatibility_v1(registry: dict = None) -> dict:
                 if xs:
                     comp[fam_s].add(xs)
     return comp
-
-
-def register_concept_family_v1(family_id: str, spec: dict, allowed_matches=None) -> bool:
-    """Runtime extension hook for new concept families.
-
-    Maintainers can add a new family by calling this once, without editing the selector logic.
-    The registry overlay is stored in globals() so existing execution paths remain additive-only.
-    """
-    fam = str(family_id or "").strip()
-    if not fam or not isinstance(spec, dict):
-        return False
-    ext = globals().get("CONCEPT_FAMILY_REGISTRY_EXT_V1")
-    if not isinstance(ext, dict):
-        ext = {}
-    base = ext.get(fam) if isinstance(ext.get(fam), dict) else {}
-    ext[fam] = _nlp100__merge_family_spec_v1(base, spec)
-    globals()["CONCEPT_FAMILY_REGISTRY_EXT_V1"] = ext
-
-    if allowed_matches is not None:
-        cext = globals().get("CONCEPT_FAMILY_COMPATIBILITY_EXT_V1")
-        if not isinstance(cext, dict):
-            cext = {}
-        cur = set(cext.get(fam) or []) if isinstance(cext.get(fam), (list, tuple, set)) else set()
-        if isinstance(allowed_matches, (list, tuple, set)):
-            for item in allowed_matches:
-                s = str(item or "").strip()
-                if s:
-                    cur.add(s)
-        else:
-            s = str(allowed_matches or "").strip()
-            if s:
-                cur.add(s)
-        cur.add(fam)
-        cext[fam] = sorted(cur)
-        globals()["CONCEPT_FAMILY_COMPATIBILITY_EXT_V1"] = cext
-    return True
 
 
 def _nlp100_normalize_text_v1(text: str) -> str:
@@ -45605,10 +45629,10 @@ def canonicalize_metrics(
     question_text: str = "",
     category_hint: str = ""
 ) -> Dict:
-    """NLP100 wrapper: preserve NLP99 behavior, then apply concept-family compatibility gating.
+    """NLP101 wrapper: preserve NLP100 behavior, then apply concept-family compatibility gating.
 
     Maintainability notes:
-    - New concept families can be added declaratively via the registry/compatibility overlay.
+    - New concept families can be added declaratively via the top-of-file registry/compatibility overlay.
     - Selector logic below stays generic and does not require family-specific branches.
     """
     if not callable(_nlp100_prev_canonicalize_metrics):
