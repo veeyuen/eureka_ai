@@ -45071,3 +45071,557 @@ try:
             pass
 except Exception:
     pass
+
+# =========================
+# NLP100 maintainable concept-family gate overlay
+# =========================
+# Why:
+# - Provide a declarative concept-family registry + compatibility matrix so new families can be
+#   added in one place without editing selector code paths repeatedly.
+# - Tighten canonical selection by dropping high-confidence sibling-family mismatches after
+#   canonicalization, while remaining conservative when target/candidate families are unknown.
+# - Add machine-readable per-metric debug beacons explaining family-gate decisions.
+
+try:
+    globals()["_YUREEKA_CODE_VERSION_LOCK"] = "NLP100"
+    globals()["CODE_VERSION"] = "NLP100"
+except Exception:
+    pass
+
+try:
+    _nlp100_patch = {
+        "patch_id": "NLP100",
+        "scope": "selector-tightening",
+        "summary": "Add maintainable concept-family registry + compatibility gate overlay (declarative registry, extension hooks, post-canonical filtering, and per-metric family-gate debug beacons). Tightens sibling-family leakage while staying conservative on unknown families.",
+        "risk": "medium",
+    }
+    if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "NLP100" for e in PATCH_TRACKER_V1):
+        PATCH_TRACKER_V1.insert(0, dict(_nlp100_patch))
+    try:
+        _yureeka_patch_tracker_ensure_head_v1("NLP100", dict(_nlp100_patch))
+    except Exception:
+        pass
+except Exception:
+    pass
+
+# Central declarative registry. Keep this compact and additive; extend via
+# CONCEPT_FAMILY_REGISTRY_EXT_V1 / CONCEPT_FAMILY_COMPATIBILITY_EXT_V1 or
+# register_concept_family_v1().
+_NLP100_CONCEPT_FAMILY_REGISTRY_V1 = {
+    "charging_infrastructure_stock": {
+        "parent": "charging",
+        "aliases": [
+            "charging infrastructure", "charging infrastructure stock", "ev charging infrastructure",
+            "chargers", "ev chargers", "charging points", "charging connections",
+            "charging stations", "charging ports", "public charging network"
+        ],
+        "positive_anchors": [
+            "charging", "charger", "chargers", "charging point", "charging points",
+            "charging connection", "charging connections", "charging station", "charging stations",
+            "charging port", "charging ports", "infrastructure"
+        ],
+        "negative_anchors": [
+            "battery sector", "battery manufacturing", "cell production", "gigafactory",
+            "vehicle production", "new car sales share", "market share", "annual investment",
+            "cumulative investment", "capex", "funding", "spending"
+        ],
+        "allowed_children": ["public_chargers", "private_residential_chargers"],
+    },
+    "public_chargers": {
+        "parent": "charging_infrastructure_stock",
+        "aliases": [
+            "public chargers", "public charging points", "public charging connections",
+            "public charging stations", "public charging ports"
+        ],
+        "positive_anchors": [
+            "public charging", "public chargers", "public charging points",
+            "public charging connections", "public charging stations", "public charging ports"
+        ],
+        "negative_anchors": [
+            "residential", "home charging", "private residential", "battery sector",
+            "battery manufacturing", "vehicle production"
+        ],
+        "allowed_children": [],
+    },
+    "private_residential_chargers": {
+        "parent": "charging_infrastructure_stock",
+        "aliases": [
+            "residential chargers", "residential charging", "home chargers",
+            "home charging", "private residential chargers", "ac chargers"
+        ],
+        "positive_anchors": [
+            "residential", "home charging", "home chargers", "private residential",
+            "residential chargers", "ac chargers"
+        ],
+        "negative_anchors": [
+            "public charging", "public chargers", "battery sector", "vehicle production"
+        ],
+        "allowed_children": [],
+    },
+    "charging_investment": {
+        "parent": "charging",
+        "aliases": [
+            "charging investment", "ev charging investment", "charging infrastructure investment",
+            "charging network investment", "charging network capex", "charging capex"
+        ],
+        "positive_anchors": [
+            "charging infrastructure", "ev charging", "charging network", "charging networks",
+            "charging investment", "capex", "capital deployed", "funding", "spending",
+            "investment in charging"
+        ],
+        "negative_anchors": [
+            "battery sector", "battery manufacturing", "cell production", "gigafactory",
+            "vehicle production", "unit sales", "market share", "chargers reach",
+            "charging points reach", "charging connections reach"
+        ],
+        "allowed_children": [],
+    },
+    "battery_investment": {
+        "parent": "battery",
+        "aliases": [
+            "battery investment", "battery sector investment", "battery manufacturing investment",
+            "battery capex", "gigafactory investment", "cell production investment"
+        ],
+        "positive_anchors": [
+            "battery sector", "battery manufacturing", "battery investment", "battery capex",
+            "gigafactory", "cell production", "cell manufacturing"
+        ],
+        "negative_anchors": [
+            "charging network", "charging infrastructure", "public charging", "chargers"
+        ],
+        "allowed_children": [],
+    },
+    "ev_sales_count": {
+        "parent": "sales",
+        "aliases": [
+            "ev sales", "electric vehicle sales", "units sold", "ev deliveries",
+            "vehicle registrations"
+        ],
+        "positive_anchors": [
+            "ev sales", "electric vehicle sales", "units sold", "deliveries",
+            "registrations", "sales reached", "sales hit"
+        ],
+        "negative_anchors": [
+            "%", "percent", "share", "market share", "charging infrastructure",
+            "battery sector", "capex", "investment"
+        ],
+        "allowed_children": [],
+    },
+    "ev_sales_share": {
+        "parent": "sales",
+        "aliases": [
+            "ev sales share", "share of new car sales", "share of sales", "ev adoption share"
+        ],
+        "positive_anchors": [
+            "share of new car sales", "share of sales", "ev adoption share", "% of sales",
+            "percent of sales", "account for"
+        ],
+        "negative_anchors": [
+            "units sold", "deliveries", "charging infrastructure", "battery sector",
+            "capex", "investment"
+        ],
+        "allowed_children": [],
+    },
+    "vehicle_production": {
+        "parent": "vehicles",
+        "aliases": [
+            "vehicle production", "auto production", "vehicle manufacturing", "car production"
+        ],
+        "positive_anchors": [
+            "vehicle production", "vehicle manufacturing", "auto production", "car production"
+        ],
+        "negative_anchors": [
+            "charging infrastructure", "battery sector", "market share", "investment"
+        ],
+        "allowed_children": [],
+    },
+}
+
+# Explicit allowed matches can be extended without changing selector code.
+_NLP100_CONCEPT_FAMILY_COMPATIBILITY_V1 = {
+    "charging_infrastructure_stock": {"charging_infrastructure_stock", "public_chargers", "private_residential_chargers"},
+    "public_chargers": {"public_chargers"},
+    "private_residential_chargers": {"private_residential_chargers"},
+    "charging_investment": {"charging_investment"},
+    "battery_investment": {"battery_investment"},
+    "ev_sales_count": {"ev_sales_count"},
+    "ev_sales_share": {"ev_sales_share"},
+    "vehicle_production": {"vehicle_production"},
+}
+
+
+def _nlp100__deepcopy_v1(obj):
+    try:
+        return _hp_copy.deepcopy(obj)
+    except Exception:
+        try:
+            return json.loads(json.dumps(obj))
+        except Exception:
+            return obj
+
+
+def _nlp100__merge_family_spec_v1(base: dict, ext: dict) -> dict:
+    out = dict(base or {})
+    if not isinstance(ext, dict):
+        return out
+    list_keys = {"aliases", "positive_anchors", "negative_anchors", "allowed_children"}
+    for k, v in ext.items():
+        if k in list_keys:
+            cur = out.get(k)
+            items = []
+            for src in [cur, v]:
+                if isinstance(src, (list, tuple)):
+                    for item in src:
+                        s = str(item or "").strip()
+                        if s and s not in items:
+                            items.append(s)
+                elif src:
+                    s = str(src).strip()
+                    if s and s not in items:
+                        items.append(s)
+            out[k] = items
+        else:
+            out[k] = v
+    return out
+
+
+def _nlp100_get_concept_family_registry_v1() -> dict:
+    reg = _nlp100__deepcopy_v1(_NLP100_CONCEPT_FAMILY_REGISTRY_V1) or {}
+    ext = globals().get("CONCEPT_FAMILY_REGISTRY_EXT_V1")
+    if isinstance(ext, dict):
+        for fam, spec in ext.items():
+            fam_s = str(fam or "").strip()
+            if not fam_s:
+                continue
+            base = reg.get(fam_s) if isinstance(reg.get(fam_s), dict) else {}
+            reg[fam_s] = _nlp100__merge_family_spec_v1(base, spec if isinstance(spec, dict) else {})
+    return reg
+
+
+def _nlp100_get_concept_family_compatibility_v1(registry: dict = None) -> dict:
+    reg = registry if isinstance(registry, dict) else _nlp100_get_concept_family_registry_v1()
+    comp = {str(k): set(v or []) for k, v in (_NLP100_CONCEPT_FAMILY_COMPATIBILITY_V1 or {}).items()}
+    # Parent -> children from registry are auto-added.
+    for fam, spec in reg.items():
+        comp.setdefault(str(fam), set()).add(str(fam))
+        for child in (spec.get("allowed_children") or []):
+            child_s = str(child or "").strip()
+            if child_s:
+                comp.setdefault(str(fam), set()).add(child_s)
+    ext = globals().get("CONCEPT_FAMILY_COMPATIBILITY_EXT_V1")
+    if isinstance(ext, dict):
+        for fam, allowed in ext.items():
+            fam_s = str(fam or "").strip()
+            if not fam_s:
+                continue
+            comp.setdefault(fam_s, set()).add(fam_s)
+            if isinstance(allowed, (list, tuple, set)):
+                for x in allowed:
+                    xs = str(x or "").strip()
+                    if xs:
+                        comp[fam_s].add(xs)
+            elif allowed:
+                xs = str(allowed).strip()
+                if xs:
+                    comp[fam_s].add(xs)
+    return comp
+
+
+def register_concept_family_v1(family_id: str, spec: dict, allowed_matches=None) -> bool:
+    """Runtime extension hook for new concept families.
+
+    Maintainers can add a new family by calling this once, without editing the selector logic.
+    The registry overlay is stored in globals() so existing execution paths remain additive-only.
+    """
+    fam = str(family_id or "").strip()
+    if not fam or not isinstance(spec, dict):
+        return False
+    ext = globals().get("CONCEPT_FAMILY_REGISTRY_EXT_V1")
+    if not isinstance(ext, dict):
+        ext = {}
+    base = ext.get(fam) if isinstance(ext.get(fam), dict) else {}
+    ext[fam] = _nlp100__merge_family_spec_v1(base, spec)
+    globals()["CONCEPT_FAMILY_REGISTRY_EXT_V1"] = ext
+
+    if allowed_matches is not None:
+        cext = globals().get("CONCEPT_FAMILY_COMPATIBILITY_EXT_V1")
+        if not isinstance(cext, dict):
+            cext = {}
+        cur = set(cext.get(fam) or []) if isinstance(cext.get(fam), (list, tuple, set)) else set()
+        if isinstance(allowed_matches, (list, tuple, set)):
+            for item in allowed_matches:
+                s = str(item or "").strip()
+                if s:
+                    cur.add(s)
+        else:
+            s = str(allowed_matches or "").strip()
+            if s:
+                cur.add(s)
+        cur.add(fam)
+        cext[fam] = sorted(cur)
+        globals()["CONCEPT_FAMILY_COMPATIBILITY_EXT_V1"] = cext
+    return True
+
+
+def _nlp100_normalize_text_v1(text: str) -> str:
+    try:
+        s = str(text or "").lower()
+    except Exception:
+        s = ""
+    s = s.replace("/", " ").replace("-", " ").replace("_", " ")
+    s = re.sub(r"[^a-z0-9%\$€£¥\s]", " ", s)
+    s = re.sub(r"\s+", " ", s).strip()
+    return f" {s} " if s else ""
+
+
+def _nlp100_collect_phrase_hits_v1(text_norm: str, phrases) -> list:
+    hits = []
+    if not text_norm or not isinstance(phrases, (list, tuple)):
+        return hits
+    for p in phrases:
+        pp = _nlp100_normalize_text_v1(str(p or "")).strip()
+        if pp and f" {pp} " in text_norm and pp not in hits:
+            hits.append(pp)
+    return hits
+
+
+def _nlp100_score_family_match_v1(text: str, family_id: str, spec: dict) -> dict:
+    norm = _nlp100_normalize_text_v1(text)
+    alias_hits = _nlp100_collect_phrase_hits_v1(norm, spec.get("aliases") or [])
+    pos_hits = _nlp100_collect_phrase_hits_v1(norm, spec.get("positive_anchors") or [])
+    neg_hits = _nlp100_collect_phrase_hits_v1(norm, spec.get("negative_anchors") or [])
+
+    score = (3 * len(alias_hits)) + (2 * len(pos_hits)) - (3 * len(neg_hits))
+    # Small bias when explicit parent token also appears.
+    parent = str(spec.get("parent") or "").strip()
+    if parent:
+        parent_norm = _nlp100_normalize_text_v1(parent).strip()
+        if parent_norm and f" {parent_norm} " in norm:
+            score += 1
+
+    denom = max(4, (3 * max(1, len(spec.get("aliases") or []))) + (2 * max(1, len(spec.get("positive_anchors") or []))))
+    confidence = max(0.0, min(1.0, float(score) / float(denom)))
+    return {
+        "family": str(family_id or ""),
+        "score": float(score),
+        "confidence": float(confidence),
+        "alias_hits": alias_hits,
+        "positive_hits": pos_hits,
+        "negative_hits": neg_hits,
+    }
+
+
+def _nlp100_rank_families_v1(text: str, registry: dict = None) -> list:
+    reg = registry if isinstance(registry, dict) else _nlp100_get_concept_family_registry_v1()
+    rows = []
+    for fam, spec in reg.items():
+        if not isinstance(spec, dict):
+            continue
+        rows.append(_nlp100_score_family_match_v1(text, fam, spec))
+    rows.sort(key=lambda x: (float(x.get("score") or 0.0), float(x.get("confidence") or 0.0), len(x.get("alias_hits") or []), len(x.get("positive_hits") or [])), reverse=True)
+    return rows
+
+
+def _nlp100_infer_family_v1(text: str, registry: dict = None, *, min_score: float = 2.0, min_confidence: float = 0.12) -> dict:
+    ranked = _nlp100_rank_families_v1(text, registry=registry)
+    best = ranked[0] if ranked else {}
+    fam = str(best.get("family") or "")
+    score = float(best.get("score") or 0.0)
+    conf = float(best.get("confidence") or 0.0)
+    if (not fam) or score < float(min_score) or conf < float(min_confidence):
+        return {
+            "family": "",
+            "score": score,
+            "confidence": conf,
+            "ranked": ranked[:6],
+            "alias_hits": best.get("alias_hits") or [],
+            "positive_hits": best.get("positive_hits") or [],
+            "negative_hits": best.get("negative_hits") or [],
+        }
+    return {
+        "family": fam,
+        "score": score,
+        "confidence": conf,
+        "ranked": ranked[:6],
+        "alias_hits": best.get("alias_hits") or [],
+        "positive_hits": best.get("positive_hits") or [],
+        "negative_hits": best.get("negative_hits") or [],
+    }
+
+
+def _nlp100_descendants_v1(target_family: str, registry: dict) -> set:
+    target = str(target_family or "").strip()
+    out = set()
+    if not target or not isinstance(registry, dict):
+        return out
+    for fam, spec in registry.items():
+        fam_s = str(fam or "").strip()
+        parent = str((spec or {}).get("parent") or "").strip()
+        if parent == target:
+            out.add(fam_s)
+            out.update(_nlp100_descendants_v1(fam_s, registry))
+    return out
+
+
+def _nlp100_is_family_compatible_v1(target_family: str, candidate_family: str, registry: dict = None, compatibility: dict = None) -> tuple:
+    target = str(target_family or "").strip()
+    cand = str(candidate_family or "").strip()
+    reg = registry if isinstance(registry, dict) else _nlp100_get_concept_family_registry_v1()
+    comp = compatibility if isinstance(compatibility, dict) else _nlp100_get_concept_family_compatibility_v1(reg)
+
+    if not target:
+        return True, "target_family_unknown"
+    if not cand:
+        return True, "candidate_family_unknown"
+
+    allowed = set(comp.get(target) or [])
+    allowed.add(target)
+    allowed.update(_nlp100_descendants_v1(target, reg))
+
+    if cand in allowed:
+        return True, "family_compatible"
+    return False, "concept_family_mismatch"
+
+
+def _nlp100_build_metric_family_text_v1(metric_key: str, metric_row: dict) -> str:
+    row = metric_row if isinstance(metric_row, dict) else {}
+    parts = [
+        str(metric_key or ""),
+        str(row.get("canonical_id") or ""),
+        str(row.get("canonical_key") or ""),
+        str(row.get("name") or ""),
+        str(row.get("original_name") or ""),
+        str(row.get("source") or ""),
+        str(row.get("source_url") or ""),
+        str(row.get("context_snippet") or ""),
+        str(row.get("proxy_target") or ""),
+        str(row.get("measure_assoc") or ""),
+    ]
+    try:
+        ev = row.get("evidence")
+        if isinstance(ev, list):
+            for item in ev[:3]:
+                if isinstance(item, dict):
+                    parts.extend([
+                        str(item.get("context_snippet") or ""),
+                        str(item.get("source") or ""),
+                        str(item.get("source_url") or ""),
+                    ])
+    except Exception:
+        pass
+    return " | ".join([p for p in parts if p])
+
+
+def _nlp100_apply_concept_family_gate_v1(pmc: dict, *, question_text: str = "", category_hint: str = "") -> dict:
+    if not isinstance(pmc, dict) or not pmc:
+        return pmc
+    q = str(question_text or "").strip()
+    if not q:
+        return pmc
+
+    registry = _nlp100_get_concept_family_registry_v1()
+    compatibility = _nlp100_get_concept_family_compatibility_v1(registry)
+    target_info = _nlp100_infer_family_v1(" | ".join([q, str(category_hint or "")]), registry=registry, min_score=2.0, min_confidence=0.12)
+    target_family = str(target_info.get("family") or "")
+
+    # No clear target family -> stay fully backward compatible.
+    if not target_family:
+        out_same = {}
+        for k, row in pmc.items():
+            rr = dict(row) if isinstance(row, dict) else row
+            if isinstance(rr, dict):
+                rr.setdefault("debug", {})
+                if isinstance(rr.get("debug"), dict):
+                    rr["debug"]["nlp100_family_gate_v1"] = {
+                        "v": "nlp100_family_gate_v1",
+                        "target_family": "",
+                        "target_confidence": float(target_info.get("confidence") or 0.0),
+                        "candidate_family": "",
+                        "candidate_confidence": 0.0,
+                        "compatible": True,
+                        "decision": "pass_through_target_unknown",
+                    }
+            out_same[k] = rr
+        return out_same
+
+    filtered = {}
+    removed = 0
+    for key, row in pmc.items():
+        rr = dict(row) if isinstance(row, dict) else row
+        if not isinstance(rr, dict):
+            filtered[key] = rr
+            continue
+
+        cand_text = _nlp100_build_metric_family_text_v1(str(key or ""), rr)
+        cand_info = _nlp100_infer_family_v1(cand_text, registry=registry, min_score=2.0, min_confidence=0.12)
+        cand_family = str(cand_info.get("family") or "")
+        compatible, compat_reason = _nlp100_is_family_compatible_v1(target_family, cand_family, registry=registry, compatibility=compatibility)
+
+        # Conservative rule:
+        # - If candidate family is unknown, keep (avoid over-pruning on gaps in registry coverage).
+        # - If candidate family is known and incompatible, drop.
+        keep = True
+        decision = "kept"
+        if cand_family and not compatible:
+            keep = False
+            decision = "rejected_incompatible_family"
+            removed += 1
+
+        rr.setdefault("debug", {})
+        if isinstance(rr.get("debug"), dict):
+            rr["debug"]["nlp100_family_gate_v1"] = {
+                "v": "nlp100_family_gate_v1",
+                "target_family": target_family,
+                "target_confidence": float(target_info.get("confidence") or 0.0),
+                "target_ranked_top": target_info.get("ranked") or [],
+                "candidate_family": cand_family,
+                "candidate_confidence": float(cand_info.get("confidence") or 0.0),
+                "candidate_ranked_top": cand_info.get("ranked") or [],
+                "compatible": bool(compatible),
+                "compat_reason": str(compat_reason or ""),
+                "decision": str(decision),
+                "registry_ext_count": int(len(globals().get("CONCEPT_FAMILY_REGISTRY_EXT_V1") or {})) if isinstance(globals().get("CONCEPT_FAMILY_REGISTRY_EXT_V1"), dict) else 0,
+            }
+
+        if keep:
+            filtered[key] = rr
+
+    # Tightening behavior: if target family is known and all recognized rows were incompatible,
+    # return the filtered dict (possibly empty) so downstream can abstain rather than pick a
+    # nearest wrong family. This is intentional and auditable via per-row debug beacons.
+    return filtered
+
+
+try:
+    _nlp100_prev_canonicalize_metrics = canonicalize_metrics
+except Exception:
+    _nlp100_prev_canonicalize_metrics = None
+
+
+def canonicalize_metrics(
+    metrics: Dict,
+    metric_schema: Dict = None,
+    merge_duplicates_to_range: bool = True,
+    question_text: str = "",
+    category_hint: str = ""
+) -> Dict:
+    """NLP100 wrapper: preserve NLP99 behavior, then apply concept-family compatibility gating.
+
+    Maintainability notes:
+    - New concept families can be added declaratively via the registry/compatibility overlay.
+    - Selector logic below stays generic and does not require family-specific branches.
+    """
+    if not callable(_nlp100_prev_canonicalize_metrics):
+        return {}
+    out = _nlp100_prev_canonicalize_metrics(
+        metrics,
+        metric_schema=metric_schema,
+        merge_duplicates_to_range=merge_duplicates_to_range,
+        question_text=question_text,
+        category_hint=category_hint,
+    )
+    try:
+        out = _nlp100_apply_concept_family_gate_v1(out, question_text=question_text, category_hint=category_hint)
+    except Exception:
+        pass
+    return out
