@@ -46737,3 +46737,280 @@ def canonicalize_metrics(
     except Exception:
         pass
     return out
+
+
+# === NLP107: hard canonical range promotion + single-source-of-truth sync ===
+try:
+    globals()["_YUREEKA_CODE_VERSION_LOCK"] = "NLP107"
+    globals()["CODE_VERSION"] = "NLP107"
+except Exception:
+    pass
+
+try:
+    _nlp107_patch = {
+        "patch_id": "NLP107",
+        "scope": "range-canonical-truth",
+        "summary": "Force compatible range evidence into first-class canonical representation (value=None + value_shape/value_range), allow web-context range override for target-family rows before fallback points persist, and sync summary/cards from the same canonical truth.",
+        "risk": "medium",
+    }
+    if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "NLP107" for e in PATCH_TRACKER_V1):
+        PATCH_TRACKER_V1.insert(0, dict(_nlp107_patch))
+    try:
+        _yureeka_patch_tracker_ensure_head_v1("NLP107", dict(_nlp107_patch))
+    except Exception:
+        pass
+except Exception:
+    pass
+
+
+def _nlp107_pick_target_metric_keys_v1(pmc: dict, *, question_contract: dict = None) -> list:
+    qc = question_contract if isinstance(question_contract, dict) else {}
+    keys = []
+    try:
+        keys = _nlp106_choose_target_metric_keys_v1(pmc, question_contract=qc)
+    except Exception:
+        keys = []
+    if keys:
+        return keys
+    # conservative fallback: prefer canonical keys whose names align with the target family tokens
+    fam = str(qc.get("target_family") or "").strip().lower()
+    hint_tokens = []
+    if fam:
+        hint_tokens.extend([t for t in re.split(r"[_\W]+", fam) if t])
+    try:
+        if isinstance(qc.get("measure_kind"), str):
+            hint_tokens.extend([t for t in re.split(r"[_\W]+", str(qc.get("measure_kind") or "").lower()) if t])
+    except Exception:
+        pass
+    scored = []
+    for k, row in (pmc or {}).items():
+        if not isinstance(row, dict):
+            continue
+        key_s = str(k or "")
+        score = 0
+        lower = key_s.lower()
+        for tok in hint_tokens:
+            if tok and tok in lower:
+                score += 1
+        try:
+            yr = qc.get("time_anchor")
+            if yr and str(int(yr)) in lower:
+                score += 1
+        except Exception:
+            pass
+        if score > 0:
+            scored.append((score, key_s))
+    scored.sort(key=lambda t: (-t[0], t[1]))
+    return [k for _, k in scored]
+
+
+def _nlp107_range_display_v1(vmin, vmax, unit_out="") -> str:
+    try:
+        return f"{float(vmin):g}–{float(vmax):g} {str(unit_out or '').strip()}".strip()
+    except Exception:
+        try:
+            return f"{vmin}–{vmax} {str(unit_out or '').strip()}".strip()
+        except Exception:
+            return str(unit_out or "").strip()
+
+
+def _nlp107_apply_range_to_row_v1(metric_key: str, metric_row: dict, shape: dict, *, question_contract: dict = None, best_range: dict = None, promotion_source: str = "metric_text") -> dict:
+    rr = dict(metric_row) if isinstance(metric_row, dict) else {}
+    shp = shape if isinstance(shape, dict) else {}
+    br = best_range if isinstance(best_range, dict) else {}
+    try:
+        vmin = shp.get("min")
+        vmax = shp.get("max")
+        if vmin is None or vmax is None:
+            return rr
+        if float(vmin) == float(vmax):
+            return rr
+    except Exception:
+        return rr
+    unit_out = str(rr.get("unit") or shp.get("unit") or "").strip()
+    matched_text = str(shp.get("matched_text") or br.get("text") or "").strip()
+    source_url = str(br.get("source_url") or ((rr.get("provenance") or {}).get("source_url") if isinstance(rr.get("provenance"), dict) else "") or "")
+    source_kind = str(promotion_source or br.get("source_kind") or "metric_text")
+    prev_value = rr.get("value")
+    rr["value_shape"] = "range"
+    rr["value"] = None
+    rr["value_point_fallback"] = prev_value
+    rr["value_selection_policy_v1"] = f"range_preserved_policy_{str(globals().get('YUREEKA_RANGE_POINT_POLICY_V1') or 'none')}"
+    rr["value_range"] = {
+        "min": float(shp.get("min")),
+        "max": float(shp.get("max")),
+        "n": 2,
+        "method": str(shp.get("method") or "nlp107_range_promotion_v1"),
+        "matched_text": matched_text,
+        "source_url": source_url,
+        "source_kind": source_kind,
+    }
+    rr["range"] = {
+        "min": float(shp.get("min")),
+        "max": float(shp.get("max")),
+        "n": 2,
+        "method": str(shp.get("method") or "nlp107_range_promotion_v1"),
+    }
+    rr["value_range_display"] = _nlp107_range_display_v1(shp.get("min"), shp.get("max"), unit_out)
+    rr["display_value"] = rr.get("value_range_display")
+    rr["selected_value_shape_v1"] = {
+        "metric_key": str(metric_key or ""),
+        "value_shape": "range",
+        "display_value": rr.get("value_range_display") or "",
+    }
+    # Keep the winning evidence aligned to the canonical range truth.
+    if matched_text:
+        rr["evidence_best_snippet"] = matched_text
+    top_snips = rr.get("evidence_snippets_top") if isinstance(rr.get("evidence_snippets_top"), list) else []
+    if matched_text:
+        found = False
+        new_top = []
+        new_top.append({"snippet": matched_text, "source_url": source_url, "source_kind": source_kind})
+        for item in top_snips:
+            if isinstance(item, dict):
+                sn = str(item.get("snippet") or item.get("text") or item.get("context_snippet") or "").strip()
+                if sn == matched_text:
+                    found = True
+                new_top.append(item)
+        rr["evidence_snippets_top"] = new_top[:5]
+    prov = rr.get("provenance") if isinstance(rr.get("provenance"), dict) else {}
+    bc = prov.get("best_candidate") if isinstance(prov.get("best_candidate"), dict) else {}
+    if matched_text:
+        bc["context_snippet"] = matched_text
+    if source_url:
+        bc["source_url"] = source_url
+        prov["source_url"] = source_url
+    bc["value_shape"] = "range"
+    bc["value_range"] = {"min": float(shp.get("min")), "max": float(shp.get("max"))}
+    prov["best_candidate"] = bc
+    prov["nlp107_range_truth_v1"] = {
+        "applied": True,
+        "promotion_source": source_kind,
+        "matched_text": matched_text,
+        "source_url": source_url,
+        "value_range": {"min": float(shp.get("min")), "max": float(shp.get("max"))},
+        "previous_point_value": prev_value,
+    }
+    rr["provenance"] = prov
+    rr.setdefault("debug", {})
+    if isinstance(rr.get("debug"), dict):
+        rr["debug"]["nlp107_value_shape_v3"] = {
+            "v": "nlp107_value_shape_v3",
+            "applied": True,
+            "metric_key": str(metric_key or ""),
+            "question_target_family": str((question_contract or {}).get("target_family") or ""),
+            "promotion_source": source_kind,
+            "matched_text": matched_text,
+            "source_url": source_url,
+            "previous_point_value": prev_value,
+            "value_shape": "range",
+            "value_range": dict(rr.get("value_range") or {}),
+        }
+    return rr
+
+
+def _nlp107_apply_value_shape_contract_to_pmc_v1(pmc: dict, *, question_contract: dict = None, web_context: dict = None) -> dict:
+    if not isinstance(pmc, dict) or not pmc:
+        return pmc
+    qc = question_contract if isinstance(question_contract, dict) else {}
+    out = {k: (dict(v) if isinstance(v, dict) else v) for k, v in pmc.items()}
+    target_keys = _nlp107_pick_target_metric_keys_v1(out, question_contract=qc)
+    # Prefer the strongest compatible range visible anywhere in the web context, then metric text.
+    range_candidates = _nlp106_extract_range_candidates_from_web_context_v1(web_context if isinstance(web_context, dict) else {}, question_contract=qc)
+    best_range = range_candidates[0] if range_candidates else {}
+    applied_any = False
+    # First pass: promote range on any target row whose own text already carries the range.
+    for key in target_keys:
+        rr = out.get(key)
+        if not isinstance(rr, dict):
+            continue
+        txt = _nlp106_build_value_shape_text_v1(key, rr)
+        shape = _nlp105_parse_range_from_text_v1(txt, metric_row=rr)
+        if isinstance(shape, dict) and shape.get("shape") == "range":
+            out[key] = _nlp107_apply_range_to_row_v1(key, rr, shape, question_contract=qc, best_range=best_range, promotion_source="metric_text")
+            applied_any = True
+    # Second pass: if no row carried a range, force the strongest compatible range candidate into the top target key.
+    if (not applied_any) and isinstance(best_range, dict) and isinstance(best_range.get("shape"), dict) and target_keys:
+        target_key = target_keys[0]
+        rr = out.get(target_key)
+        if isinstance(rr, dict):
+            out[target_key] = _nlp107_apply_range_to_row_v1(target_key, rr, dict(best_range.get("shape") or {}), question_contract=qc, best_range=best_range, promotion_source=str(best_range.get("source_kind") or "web_context"))
+            applied_any = True
+    return out
+
+
+def _nlp107_sync_primary_metrics_with_canonical_v1(primary_data: dict, *, question_contract: dict = None) -> dict:
+    pd = dict(primary_data) if isinstance(primary_data, dict) else primary_data
+    if not isinstance(pd, dict):
+        return primary_data
+    pmc = pd.get("primary_metrics_canonical") if isinstance(pd.get("primary_metrics_canonical"), dict) else {}
+    if not pmc:
+        return pd
+    target_keys = _nlp107_pick_target_metric_keys_v1(pmc, question_contract=question_contract)
+    if not target_keys:
+        return pd
+    row = pmc.get(target_keys[0]) if isinstance(pmc.get(target_keys[0]), dict) else {}
+    if not (isinstance(row, dict) and str(row.get("value_shape") or "") == "range" and isinstance(row.get("value_range"), dict)):
+        return pd
+    disp = str(row.get("value_range_display") or row.get("display_value") or "").strip()
+    if not disp:
+        return pd
+    pmetrics = pd.get("primary_metrics") if isinstance(pd.get("primary_metrics"), dict) else {}
+    metric1 = dict(pmetrics.get("metric_1") or {})
+    metric1["name"] = str(metric1.get("name") or row.get("name") or target_keys[0])
+    metric1["value"] = disp
+    metric1["display_value"] = disp
+    metric1["unit"] = str(row.get("unit") or metric1.get("unit") or "")
+    metric1["value_shape"] = "range"
+    metric1["value_range"] = dict(row.get("value_range") or {})
+    metric1["value_point_fallback"] = row.get("value_point_fallback")
+    pmetrics["metric_1"] = metric1
+    pd["primary_metrics"] = pmetrics
+    pd["selected_value_shape_v1"] = {"metric_key": target_keys[0], "value_shape": "range", "display_value": disp}
+    pd.setdefault("debug", {})
+    if isinstance(pd.get("debug"), dict):
+        pd["debug"]["nlp106_primary_metrics_sync_v1"] = {
+            "v": "nlp107_primary_metrics_sync_v2",
+            "target_metric_key": target_keys[0],
+            "metric_1_value": disp,
+            "value_shape": "range",
+            "synced_from_canonical": True,
+        }
+    return pd
+
+
+def _nlp107_sync_summary_with_value_shapes_v1(primary_data: dict, *, question_contract: dict = None) -> dict:
+    pd = dict(primary_data) if isinstance(primary_data, dict) else primary_data
+    if not isinstance(pd, dict):
+        return primary_data
+    pmc = pd.get("primary_metrics_canonical") if isinstance(pd.get("primary_metrics_canonical"), dict) else {}
+    target_keys = _nlp107_pick_target_metric_keys_v1(pmc, question_contract=question_contract)
+    if not target_keys:
+        return pd
+    row = pmc.get(target_keys[0]) if isinstance(pmc.get(target_keys[0]), dict) else {}
+    if not (isinstance(row, dict) and str(row.get("value_shape") or "") == "range" and isinstance(row.get("value_range"), dict)):
+        return pd
+    disp = str(row.get("value_range_display") or row.get("display_value") or "").strip()
+    if not disp:
+        return pd
+    # Keep summary text aligned to canonical truth; do not invent midpoint or point values.
+    for key in ("executive_summary", "summary", "answer"):
+        if isinstance(pd.get(key), str) and pd.get(key).strip():
+            base = re.sub(r"\s+Selected estimate is a range[^.]*\.?$", "", str(pd.get(key) or "").strip())
+            base = re.sub(r"\bbetween\s+[0-9][^.]*?2040\b", disp, base, flags=re.I)
+            pd[key] = (base + f" Selected estimate is a range ({disp}), not a single point estimate.").strip()
+    pd["selected_value_shape_v1"] = {"metric_key": target_keys[0], "value_shape": "range", "display_value": disp}
+    pd.setdefault("debug", {})
+    if isinstance(pd.get("debug"), dict):
+        pd["debug"]["nlp107_summary_sync_v1"] = {
+            "v": "nlp107_summary_sync_v1",
+            "metric_key": target_keys[0],
+            "display_value": disp,
+            "value_shape": "range",
+        }
+    return pd
+
+# Backward-compatible aliases so existing call sites pick up NLP107 behavior.
+_nlp105_apply_value_shape_contract_to_pmc_v1 = _nlp107_apply_value_shape_contract_to_pmc_v1
+_nlp106_sync_primary_metrics_with_canonical_v1 = _nlp107_sync_primary_metrics_with_canonical_v1
+_nlp105_sync_summary_with_value_shapes_v1 = _nlp107_sync_summary_with_value_shapes_v1
