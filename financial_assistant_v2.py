@@ -42,7 +42,7 @@
 #
 # Start here (maintainers / QA):
 #   1) Run the app:
-#        streamlit run NLP104.py
+#        streamlit run NLP105.py
 #   2) Standard triad workflow (release evidence):
 #        - New Analysis  → Analysis JSON
 #        - Evolution (prod) → Evolution JSON
@@ -501,7 +501,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "NLP104"
+_YUREEKA_CODE_VERSION_LOCK = "NLP105"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 # REFACTOR206: Release Candidate freeze (no pipeline behavior change).
 YUREEKA_RELEASE_CANDIDATE_V1 = False
@@ -682,6 +682,51 @@ _YUREEKA_CONCEPT_FAMILY_COMPATIBILITY_V1 = {
 # extension during experiments or future module extraction.
 CONCEPT_FAMILY_REGISTRY_EXT_V1 = {}
 CONCEPT_FAMILY_COMPATIBILITY_EXT_V1 = {}
+
+# NLP105: declarative question-contract + value-shape registries. Keep maintained
+# phrase maps near the top of the file so new query/value patterns can be added
+# without touching selector logic.
+_YUREEKA_QUESTION_CONTRACT_PATTERNS_V1 = {
+    "measure_kind": {
+        "cumulative_total": [
+            "cumulative", "cumulative investment", "cumulative total", "total investment by",
+            "by 2040", "through 2040", "to 2040", "over the period"
+        ],
+        "annual_flow": [
+            "annual", "annually", "annual investment", "annual spending", "per year",
+            "yearly", "in 2040"
+        ],
+        "share_percent": [
+            "share", "percent", "%", "account for", "market share"
+        ],
+        "growth_rate": [
+            "cagr", "growth rate"
+        ],
+        "stock_count": [
+            "number of", "how many", "chargers", "charging points", "charging connections",
+            "units sold", "sales"
+        ],
+    },
+    "modality": {
+        "forecast": ["projected", "forecast", "expected", "may", "could", "will"],
+        "actual": ["reached", "was", "were", "actual", "reported"],
+    },
+    "time_relation": {
+        "by_horizon": [" by ", "through ", "to ", "by 2040", "through 2040", "to 2040"],
+        "in_year": [" in ", "in 2040", "in 2030", "in 2025"],
+    },
+}
+
+_YUREEKA_VALUE_SHAPE_PATTERNS_V1 = {
+    "range": [
+        r"between\s+([$€£]?[\d.,]+)\s*([kmbt]|million|billion|trillion|thousand|%)?\s+and\s+([$€£]?[\d.,]+)\s*([kmbt]|million|billion|trillion|thousand|%)?",
+        r"from\s+([$€£]?[\d.,]+)\s*([kmbt]|million|billion|trillion|thousand|%)?\s+to\s+([$€£]?[\d.,]+)\s*([kmbt]|million|billion|trillion|thousand|%)?",
+        r"range\s*[:=]?\s*([$€£]?[\d.,]+)\s*[–-]\s*([$€£]?[\d.,]+)\s*([kmbt]|million|billion|trillion|thousand|%)?",
+    ],
+    "scenario_split": [
+        r"under\s+[^.]{0,80}?[,]?\s*([$€£]?[\d.,]+)\s*([kmbt]|million|billion|trillion|thousand|%)?",
+    ],
+}
 
 
 def _yureeka_merge_concept_family_spec_v1(base: dict, ext: dict) -> dict:
@@ -19199,6 +19244,376 @@ def build_identity_tuple_v1(*, metric_token: str, time_scope: str = '', geo_scop
         'aggregation': str(aggregation or '').strip().lower(),
     }
 
+def _nlp105_collect_phrase_hits_v1(text_norm: str, phrases) -> list:
+    hits = []
+    if not text_norm or not isinstance(phrases, (list, tuple)):
+        return hits
+    for p in phrases:
+        pp = _nlp100_normalize_text_v1(str(p or "")).strip()
+        if pp and pp in text_norm and pp not in hits:
+            hits.append(pp)
+    return hits
+
+
+def _nlp105_parse_question_contract_v1(question_text: str, *, category_hint: str = "", registry: dict = None) -> dict:
+    reg = registry if isinstance(registry, dict) else _nlp100_get_concept_family_registry_v1()
+    q = str(question_text or "").strip()
+    norm = _nlp100_normalize_text_v1(q)
+    family_info = _nlp103_metric_target_family_v1(q, {"name": q, "keywords": [category_hint]}, registry=reg)
+    target_family = str(family_info.get("family") or "")
+
+    mk_hits = {}
+    measure_kind = ""
+    for mk, phrases in (_YUREEKA_QUESTION_CONTRACT_PATTERNS_V1.get("measure_kind") or {}).items():
+        hits = _nlp105_collect_phrase_hits_v1(norm, phrases)
+        if hits:
+            mk_hits[mk] = hits
+    if "cumulative_total" in mk_hits:
+        measure_kind = "cumulative_total"
+    elif "annual_flow" in mk_hits:
+        measure_kind = "annual_flow"
+    elif "share_percent" in mk_hits:
+        measure_kind = "share_percent"
+    elif "growth_rate" in mk_hits:
+        measure_kind = "growth_rate"
+    elif target_family in ("charging_infrastructure_stock", "public_chargers", "private_residential_chargers", "ev_sales_count"):
+        measure_kind = "stock_count" if target_family != "ev_sales_count" else "flow_count"
+
+    time_anchor = None
+    try:
+        years = [int(y) for y in re.findall(r"\b(19\d{2}|20\d{2}|21\d{2})\b", q)]
+        if years:
+            time_anchor = years[-1]
+    except Exception:
+        time_anchor = None
+
+    time_relation = ""
+    if re.search(r"\b(by|through|to)\s+(19\d{2}|20\d{2}|21\d{2})\b", norm):
+        time_relation = "by_horizon"
+    elif re.search(r"\bin\s+(19\d{2}|20\d{2}|21\d{2})\b", norm):
+        time_relation = "in_year"
+
+    modality = ""
+    for mode, phrases in (_YUREEKA_QUESTION_CONTRACT_PATTERNS_V1.get("modality") or {}).items():
+        hits = _nlp105_collect_phrase_hits_v1(norm, phrases)
+        if hits:
+            modality = mode
+            break
+
+    unit_family = ""
+    if target_family in ("charging_investment", "battery_investment") or re.search(r"\b(investment|capex|spending|funding|capital)\b", norm):
+        unit_family = "currency"
+    elif measure_kind == "share_percent" or "%" in q or re.search(r"\b(percent|share)\b", norm):
+        unit_family = "percent"
+    elif target_family in ("charging_infrastructure_stock", "public_chargers", "private_residential_chargers", "ev_sales_count"):
+        unit_family = "count"
+
+    if not measure_kind and target_family == "charging_investment" and unit_family == "currency" and time_relation == "by_horizon":
+        measure_kind = "cumulative_total"
+    elif not measure_kind and target_family == "charging_investment" and unit_family == "currency" and time_relation == "in_year":
+        measure_kind = "annual_flow"
+
+    return {
+        "v": "nlp105_question_contract_v1",
+        "question": q,
+        "target_family": target_family,
+        "target_family_confidence": float(family_info.get("confidence") or 0.0),
+        "target_family_ranked": family_info.get("ranked") or [],
+        "measure_kind": measure_kind,
+        "measure_kind_hits": mk_hits,
+        "unit_family": unit_family,
+        "time_anchor": time_anchor,
+        "time_relation": time_relation,
+        "modality": modality,
+    }
+
+
+def _nlp105_infer_unit_family_v1(text: str, metric_row: dict = None) -> str:
+    row = metric_row if isinstance(metric_row, dict) else {}
+    unit = str(row.get("unit") or row.get("unit_tag") or "").strip().upper()
+    norm = _nlp100_normalize_text_v1(text)
+    if unit in ("%", "PERCENT") or "%" in text or re.search(r"\b(percent|share|market share)\b", norm):
+        return "percent"
+    if unit.startswith("$") or unit.startswith("USD") or unit.startswith("SGD") or re.search(r"\b(capex|investment|funding|spending|capital)\b", norm):
+        return "currency"
+    if unit in ("K", "M", "B", "T", "THOUSAND", "MILLION", "BILLION", "TRILLION", "UNITS"):
+        return "count"
+    return ""
+
+
+def _nlp105_infer_measure_kind_v1(text: str, metric_row: dict = None) -> dict:
+    norm = _nlp100_normalize_text_v1(text)
+    hits = {}
+    for mk, phrases in (_YUREEKA_QUESTION_CONTRACT_PATTERNS_V1.get("measure_kind") or {}).items():
+        hh = _nlp105_collect_phrase_hits_v1(norm, phrases)
+        if hh:
+            hits[mk] = hh
+    kind = ""
+    if "cumulative_total" in hits and re.search(r"\b(cumulative|over this period|over the period|through 2040|by 2040|to 2040)\b", norm):
+        kind = "cumulative_total"
+    elif "annual_flow" in hits and re.search(r"\b(annual|annually|per year|yearly)\b", norm):
+        kind = "annual_flow"
+    elif "share_percent" in hits:
+        kind = "share_percent"
+    elif "growth_rate" in hits:
+        kind = "growth_rate"
+    else:
+        uf = _nlp105_infer_unit_family_v1(text, metric_row=metric_row)
+        if uf == "count" and re.search(r"\b(reach|reaches|total|totals|number of|chargers|charging points|charging connections|ports|units sold|sales)\b", norm):
+            kind = "stock_count"
+        elif uf == "currency" and re.search(r"\b(cumulative|annual|annually|capex|investment|funding|spending|capital)\b", norm):
+            kind = "annual_flow" if re.search(r"\b(annual|annually|per year|yearly)\b", norm) else ("cumulative_total" if re.search(r"\b(cumulative|over this period|over the period|through 2040|by 2040|to 2040)\b", norm) else "")
+    return {"measure_kind": kind, "hits": hits}
+
+
+# value-shape helpers -------------------------------------------------------
+def _nlp105_unit_token_to_scale_v1(tok: str) -> tuple:
+    t = str(tok or "").strip().lower()
+    if t in ("%", "percent"):
+        return ("%", 1.0)
+    if t in ("k", "thousand"):
+        return ("K", 1e3)
+    if t in ("m", "million", "mn"):
+        return ("M", 1e6)
+    if t in ("b", "billion", "bn"):
+        return ("B", 1e9)
+    if t in ("t", "trillion", "tn"):
+        return ("T", 1e12)
+    return ("", None)
+
+
+def _nlp105_metric_unit_scale_v1(unit: str) -> tuple:
+    u = str(unit or "").strip().upper()
+    if u.startswith("USD"):
+        u = u[3:]
+    if u.startswith("SGD"):
+        u = u[3:]
+    if u.startswith("$") or u.startswith("S$"):
+        u = u.replace("S$", "").replace("$", "")
+    return _nlp105_unit_token_to_scale_v1(u)
+
+
+def _nlp105_parse_num_v1(s: str):
+    try:
+        return float(str(s or "").replace(",", "").replace("$", "").replace("€", "").replace("£", "").strip())
+    except Exception:
+        return None
+
+
+def _nlp105_convert_value_to_metric_unit_v1(val: float, src_tok: str, metric_unit: str):
+    if val is None:
+        return None
+    src_unit, src_scale = _nlp105_unit_token_to_scale_v1(src_tok)
+    dst_unit, dst_scale = _nlp105_metric_unit_scale_v1(metric_unit)
+    if src_scale and dst_scale:
+        return float(val) * float(src_scale) / float(dst_scale)
+    return float(val)
+
+
+def _nlp105_parse_range_from_text_v1(text: str, metric_row: dict = None) -> dict:
+    row = metric_row if isinstance(metric_row, dict) else {}
+    metric_unit = str(row.get("unit") or row.get("unit_tag") or "").strip()
+    txt = str(text or "")
+    if not txt.strip():
+        return {}
+    pats = (_YUREEKA_VALUE_SHAPE_PATTERNS_V1.get("range") or [])
+    for idx, pat in enumerate(pats):
+        m = re.search(pat, txt, flags=re.I)
+        if not m:
+            continue
+        groups = list(m.groups())
+        if len(groups) >= 4:
+            a_raw, a_unit, b_raw, b_unit = groups[0], groups[1], groups[2], groups[3]
+        elif len(groups) == 3:
+            a_raw, b_raw, b_unit = groups[0], groups[1], groups[2]
+            a_unit = b_unit
+        else:
+            continue
+        if not a_unit and b_unit:
+            a_unit = b_unit
+        if not b_unit and a_unit:
+            b_unit = a_unit
+        av = _nlp105_parse_num_v1(a_raw)
+        bv = _nlp105_parse_num_v1(b_raw)
+        if av is None or bv is None:
+            continue
+        if metric_unit:
+            av2 = _nlp105_convert_value_to_metric_unit_v1(av, a_unit, metric_unit)
+            bv2 = _nlp105_convert_value_to_metric_unit_v1(bv, b_unit, metric_unit)
+            unit_out = metric_unit
+        else:
+            av2 = float(av)
+            bv2 = float(bv)
+            unit_out = _nlp105_unit_token_to_scale_v1(a_unit or b_unit)[0] or ""
+        vmin = min(av2, bv2)
+        vmax = max(av2, bv2)
+        return {
+            "shape": "range",
+            "min": vmin,
+            "max": vmax,
+            "unit": unit_out,
+            "matched_text": m.group(0),
+            "pattern_index": idx,
+            "method": "nlp105_value_shape_range_v1",
+        }
+    return {}
+
+
+def _nlp105_measure_kind_compatible_v1(target_kind: str, candidate_kind: str) -> bool:
+    t = str(target_kind or "").strip()
+    c = str(candidate_kind or "").strip()
+    if not t or not c:
+        return True
+    if t == c:
+        return True
+    # Conservative: only exact matches are compatible for typed question contracts.
+    return False
+
+
+def _nlp105_apply_question_contract_gate_v1(pmc: dict, *, question_contract: dict = None) -> dict:
+    if not isinstance(pmc, dict) or not pmc:
+        return pmc
+    qc = question_contract if isinstance(question_contract, dict) else {}
+    target_family = str(qc.get("target_family") or "").strip()
+    target_kind = str(qc.get("measure_kind") or "").strip()
+    target_unit_family = str(qc.get("unit_family") or "").strip()
+    target_time_anchor = qc.get("time_anchor")
+    out = {}
+    for key, row in pmc.items():
+        rr = dict(row) if isinstance(row, dict) else row
+        if not isinstance(rr, dict):
+            out[key] = rr
+            continue
+        txt = _nlp100_build_metric_family_text_v1(str(key or ""), rr)
+        mk = _nlp105_infer_measure_kind_v1(txt, metric_row=rr)
+        cand_kind = str(mk.get("measure_kind") or "").strip()
+        cand_unit_family = _nlp105_infer_unit_family_v1(txt, metric_row=rr)
+        decision = "pass"
+        keep = True
+        if target_kind and cand_kind and (not _nlp105_measure_kind_compatible_v1(target_kind, cand_kind)):
+            keep = False
+            decision = f"reject_measure_kind:{cand_kind}"
+        elif target_unit_family and cand_unit_family and target_unit_family != cand_unit_family:
+            keep = False
+            decision = f"reject_unit_family:{cand_unit_family}"
+        elif target_time_anchor and re.search(r"\b(19\d{2}|20\d{2}|21\d{2})\b", txt):
+            years = [int(y) for y in re.findall(r"\b(19\d{2}|20\d{2}|21\d{2})\b", txt)]
+            if years and int(target_time_anchor) not in years and target_kind not in ("cumulative_total",):
+                keep = False
+                decision = "reject_time_anchor"
+        rr.setdefault("debug", {})
+        if isinstance(rr.get("debug"), dict):
+            rr["debug"]["nlp105_question_contract_v1"] = {
+                "v": "nlp105_question_contract_v1",
+                "target_family": target_family,
+                "target_measure_kind": target_kind,
+                "target_unit_family": target_unit_family,
+                "target_time_anchor": target_time_anchor,
+                "candidate_measure_kind": cand_kind,
+                "candidate_unit_family": cand_unit_family,
+                "measure_kind_hits": mk.get("hits") or {},
+                "decision": decision,
+            }
+        if keep:
+            out[key] = rr
+    return out
+
+
+def _nlp105_apply_value_shape_contract_to_pmc_v1(pmc: dict, *, question_contract: dict = None) -> dict:
+    if not isinstance(pmc, dict) or not pmc:
+        return pmc
+    qc = question_contract if isinstance(question_contract, dict) else {}
+    out = {}
+    for key, row in pmc.items():
+        rr = dict(row) if isinstance(row, dict) else row
+        if not isinstance(rr, dict):
+            out[key] = rr
+            continue
+        txt = _nlp100_build_metric_family_text_v1(str(key or ""), rr)
+        shape = _nlp105_parse_range_from_text_v1(txt, metric_row=rr)
+        if shape.get("shape") == "range":
+            vmin = shape.get("min")
+            vmax = shape.get("max")
+            if vmin is not None and vmax is not None and vmin != vmax:
+                prev_val = rr.get("value")
+                rr["value_shape"] = "range"
+                rr["value_shape_contract_v1"] = {
+                    "v": "nlp105_value_shape_contract_v1",
+                    "shape": "range",
+                    "matched_text": shape.get("matched_text") or "",
+                    "method": shape.get("method") or "",
+                }
+                rr["value_range"] = {
+                    "min": float(vmin),
+                    "max": float(vmax),
+                    "n": 2,
+                    "method": shape.get("method") or "nlp105_value_shape_range_v1",
+                    "matched_text": shape.get("matched_text") or "",
+                }
+                rr["range"] = {
+                    "min": float(vmin),
+                    "max": float(vmax),
+                    "n": 2,
+                    "method": shape.get("method") or "nlp105_value_shape_range_v1",
+                }
+                unit_out = str(rr.get("unit") or shape.get("unit") or "").strip()
+                rr["value_range_display"] = f"{float(vmin):g}–{float(vmax):g} {unit_out}".strip()
+                try:
+                    pv = float(prev_val) if prev_val is not None and prev_val != "" else None
+                except Exception:
+                    pv = None
+                if pv is None or abs(pv - float(vmin)) < 1e-9 or abs(pv - float(vmax)) < 1e-9:
+                    rr["value_point_fallback"] = prev_val
+                    rr["value"] = None
+                    rr["value_selection_policy_v1"] = "range_preserved_no_forced_point"
+        rr.setdefault("debug", {})
+        if isinstance(rr.get("debug"), dict):
+            rr["debug"]["nlp105_value_shape_v1"] = {
+                "v": "nlp105_value_shape_v1",
+                "question_target_family": str(qc.get("target_family") or ""),
+                "question_measure_kind": str(qc.get("measure_kind") or ""),
+                "value_shape": str(rr.get("value_shape") or "point"),
+                "value_range": rr.get("value_range") if isinstance(rr.get("value_range"), dict) else {},
+                "value_selection_policy_v1": str(rr.get("value_selection_policy_v1") or ""),
+            }
+        out[key] = rr
+    return out
+
+
+def _nlp105_sync_summary_with_value_shapes_v1(primary_data: dict, *, question_contract: dict = None) -> dict:
+    pd = dict(primary_data) if isinstance(primary_data, dict) else primary_data
+    if not isinstance(pd, dict):
+        return primary_data
+    qc = question_contract if isinstance(question_contract, dict) else {}
+    pmc = pd.get("primary_metrics_canonical")
+    if not isinstance(pmc, dict):
+        return pd
+    target_family = str(qc.get("target_family") or "").strip()
+    reg = _nlp100_get_concept_family_registry_v1()
+    comp = _nlp100_get_concept_family_compatibility_v1(reg)
+    for key, row in pmc.items():
+        if not isinstance(row, dict):
+            continue
+        vr = row.get("value_range")
+        if not (isinstance(vr, dict) and vr.get("min") is not None and vr.get("max") is not None and vr.get("min") != vr.get("max")):
+            continue
+        txt = _nlp100_build_metric_family_text_v1(str(key or ""), row)
+        fam = _nlp100_infer_family_v1(txt, registry=reg, min_score=1.0, min_confidence=0.06)
+        fam_id = str(fam.get("family") or "")
+        ok, _ = _nlp100_is_family_compatible_v1(target_family, fam_id, registry=reg, compatibility=comp) if target_family else (True, "")
+        if not ok:
+            continue
+        disp = str(row.get("value_range_display") or "").strip()
+        if not disp:
+            disp = f"{vr.get('min')}–{vr.get('max')} {row.get('unit') or ''}".strip()
+        summary = str(pd.get("executive_summary") or "").strip()
+        note = f" Selected estimate is a range of {disp}, not a single point estimate."
+        if disp and note.strip().lower() not in summary.lower():
+            pd["executive_summary"] = (summary + note).strip() if summary else note.strip()
+        break
+    return pd
+
+
 def canonicalize_metrics(
     metrics: Dict,
     metric_schema: Dict = None,
@@ -35408,6 +35823,14 @@ def main():
 
             # Optional: canonicalize + attribution + schema freeze (only if your codebase defines these)
             try:
+                _nlp105_question_contract = {}
+                try:
+                    _nlp105_question_contract = _nlp105_parse_question_contract_v1(query, category_hint=str(primary_data.get("question_category", "")))
+                    primary_data.setdefault("debug", {})
+                    if isinstance(primary_data.get("debug"), dict):
+                        primary_data["debug"]["nlp105_question_contract_v1"] = _nlp105_question_contract
+                except Exception:
+                    _nlp105_question_contract = {}
                 # 1) canonicalize (unchanged)
                 if primary_data.get("primary_metrics"):
                     _pmc_raw = canonicalize_metrics(
@@ -35514,6 +35937,16 @@ def main():
                 except Exception:
                     pass
 
+                try:
+                    if primary_data.get("primary_metrics_canonical"):
+                        primary_data["primary_metrics_canonical"] = _nlp105_apply_value_shape_contract_to_pmc_v1(
+                            primary_data.get("primary_metrics_canonical") or {},
+                            question_contract=_nlp105_question_contract,
+                        )
+                        primary_data = _nlp105_sync_summary_with_value_shapes_v1(primary_data, question_contract=_nlp105_question_contract)
+                except Exception:
+                    pass
+
             except Exception:
                 pass
 
@@ -35552,6 +35985,12 @@ def main():
             try:
                 output.setdefault("debug", {})
                 if isinstance(output.get("debug"), dict):
+                    try:
+                        _qc_dbg = (primary_data.get("debug") or {}).get("nlp105_question_contract_v1") if isinstance(primary_data.get("debug"), dict) else {}
+                        if isinstance(_qc_dbg, dict) and _qc_dbg:
+                            output["debug"]["nlp105_question_contract_v1"] = _qc_dbg
+                    except Exception:
+                        pass
                     output["debug"].setdefault("runtime_identity_v1", _yureeka_runtime_identity_v1())
                     output["debug"].setdefault("nlp83_end_state_checklist_v1", _nlp83_end_state_checklist_v1())
                     output["debug"].setdefault("nlp89_llm_profile_resolved_v1", _yureeka_llm_profile_resolved_v1())
@@ -45485,6 +45924,28 @@ try:
 except Exception:
     pass
 
+try:
+    globals()["_YUREEKA_CODE_VERSION_LOCK"] = "NLP105"
+    globals()["CODE_VERSION"] = "NLP105"
+except Exception:
+    pass
+
+try:
+    _nlp105_patch = {
+        "patch_id": "NLP105",
+        "scope": "question-contract-value-shape",
+        "summary": "Add a typed question contract (family/measure-kind/unit/time relation) and a value-shape contract (range parsing/preservation) so future prompts like cumulative-vs-annual and range-based estimates are processed deterministically and auditable without silent point collapse.",
+        "risk": "medium",
+    }
+    if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "NLP105" for e in PATCH_TRACKER_V1):
+        PATCH_TRACKER_V1.insert(0, dict(_nlp105_patch))
+    try:
+        _yureeka_patch_tracker_ensure_head_v1("NLP105", dict(_nlp105_patch))
+    except Exception:
+        pass
+except Exception:
+    pass
+
 
 def _nlp100__deepcopy_v1(obj):
     try:
@@ -45994,6 +46455,11 @@ def canonicalize_metrics(
     )
     try:
         out = _nlp100_apply_concept_family_gate_v1(out, question_text=question_text, category_hint=category_hint)
+    except Exception:
+        pass
+    try:
+        _qcontract = _nlp105_parse_question_contract_v1(question_text, category_hint=category_hint)
+        out = _nlp105_apply_question_contract_gate_v1(out, question_contract=_qcontract)
     except Exception:
         pass
     return out
