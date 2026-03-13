@@ -501,7 +501,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "NLP105"
+_YUREEKA_CODE_VERSION_LOCK = "NLP106"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 # REFACTOR206: Release Candidate freeze (no pipeline behavior change).
 YUREEKA_RELEASE_CANDIDATE_V1 = False
@@ -727,6 +727,10 @@ _YUREEKA_VALUE_SHAPE_PATTERNS_V1 = {
         r"under\s+[^.]{0,80}?[,]?\s*([$€£]?[\d.,]+)\s*([kmbt]|million|billion|trillion|thousand|%)?",
     ],
 }
+
+# NLP106: operator-tuned value-shape policy. Keep declarative and easy to move into
+# a future config/value_shapes.py module.
+YUREEKA_RANGE_POINT_POLICY_V1 = "none"  # allowed: none|min|max|midpoint
 
 
 def _yureeka_merge_concept_family_spec_v1(base: dict, ext: dict) -> dict:
@@ -19614,6 +19618,246 @@ def _nlp105_sync_summary_with_value_shapes_v1(primary_data: dict, *, question_co
     return pd
 
 
+
+
+def _nlp106_build_value_shape_text_v1(metric_key: str, metric_row: dict) -> str:
+    rr = metric_row if isinstance(metric_row, dict) else {}
+    chunks = []
+    try:
+        prov = rr.get("provenance") if isinstance(rr.get("provenance"), dict) else {}
+        bc = prov.get("best_candidate") if isinstance(prov.get("best_candidate"), dict) else {}
+        for val in [
+            bc.get("context_snippet"),
+            rr.get("evidence_best_snippet"),
+            rr.get("context_snippet"),
+            rr.get("matched_text"),
+            (rr.get("value_range") or {}).get("matched_text") if isinstance(rr.get("value_range"), dict) else None,
+        ]:
+            s = str(val or "").strip()
+            if s and s not in chunks:
+                chunks.append(s)
+        top_snips = rr.get("evidence_snippets_top") if isinstance(rr.get("evidence_snippets_top"), list) else []
+        for item in top_snips[:5]:
+            if isinstance(item, dict):
+                for key in ("snippet", "text", "context_snippet"):
+                    s = str(item.get(key) or "").strip()
+                    if s and s not in chunks:
+                        chunks.append(s)
+        famtxt = _nlp100_build_metric_family_text_v1(str(metric_key or ""), rr)
+        if famtxt and famtxt not in chunks:
+            chunks.append(famtxt)
+    except Exception:
+        pass
+    return "\n".join([c for c in chunks if c]).strip()
+
+
+def _nlp106_extract_range_candidates_from_web_context_v1(web_context: dict, *, question_contract: dict = None) -> list:
+    qc = question_contract if isinstance(question_contract, dict) else {}
+    target_family = str(qc.get("target_family") or "").strip()
+    target_time_anchor = qc.get("time_anchor")
+    candidates = []
+    reg = _nlp100_get_concept_family_registry_v1()
+    comp = _nlp100_get_concept_family_compatibility_v1(reg)
+    def _push(text, source_url="", source_kind=""):
+        s = str(text or "").strip()
+        if not s:
+            return
+        shape = _nlp105_parse_range_from_text_v1(s, metric_row={})
+        if not (isinstance(shape, dict) and shape.get("shape") == "range"):
+            return
+        fam = _nlp100_infer_family_v1(s, registry=reg, min_score=1.0, min_confidence=0.06)
+        cand_family = str(fam.get("family") or "")
+        compatible, _ = _nlp100_is_family_compatible_v1(target_family, cand_family, registry=reg, compatibility=comp) if target_family else (True, "")
+        years = []
+        try:
+            years = [int(y) for y in re.findall(r"\b(19\d{2}|20\d{2}|21\d{2})\b", s)]
+        except Exception:
+            years = []
+        year_ok = True if not target_time_anchor else (int(target_time_anchor) in years)
+        score = 0
+        if compatible:
+            score += 4
+        if cand_family and target_family and cand_family == target_family:
+            score += 2
+        if year_ok:
+            score += 2
+        score += int(len(fam.get("alias_hits") or [])) + int(len(fam.get("positive_hits") or []))
+        if compatible and year_ok:
+            candidates.append({
+                "score": score,
+                "text": s,
+                "source_url": str(source_url or ""),
+                "source_kind": str(source_kind or ""),
+                "shape": shape,
+                "candidate_family": cand_family,
+                "candidate_family_confidence": float(fam.get("confidence") or 0.0),
+                "candidate_family_ranked": fam.get("ranked") or [],
+                "years": years,
+            })
+    if not isinstance(web_context, dict):
+        return []
+    try:
+        for item in (web_context.get("search_results") or []):
+            if isinstance(item, dict):
+                _push(item.get("snippet"), source_url=item.get("url") or item.get("source_url") or "", source_kind="search_results.snippet")
+        summary = web_context.get("summary")
+        if isinstance(summary, str):
+            _push(summary, source_kind="web_context.summary")
+        scraped = web_context.get("scraped_content") if isinstance(web_context.get("scraped_content"), dict) else {}
+        for url, content in scraped.items():
+            _push(content, source_url=url, source_kind="scraped_content")
+    except Exception:
+        pass
+    candidates.sort(key=lambda x: (-int(x.get("score") or 0), -float((x.get("shape") or {}).get("max") or 0.0), str(x.get("source_url") or "")))
+    return candidates
+
+
+def _nlp106_choose_target_metric_keys_v1(pmc: dict, *, question_contract: dict = None) -> list:
+    qc = question_contract if isinstance(question_contract, dict) else {}
+    target_family = str(qc.get("target_family") or "").strip()
+    reg = _nlp100_get_concept_family_registry_v1()
+    comp = _nlp100_get_concept_family_compatibility_v1(reg)
+    picks = []
+    if not isinstance(pmc, dict):
+        return picks
+    for key, row in pmc.items():
+        if not isinstance(row, dict):
+            continue
+        txt = _nlp100_build_metric_family_text_v1(str(key or ""), row)
+        fam = _nlp100_infer_family_v1(txt, registry=reg, min_score=1.0, min_confidence=0.06)
+        cand_family = str(fam.get("family") or "")
+        ok, _ = _nlp100_is_family_compatible_v1(target_family, cand_family, registry=reg, compatibility=comp) if target_family else (True, "")
+        if ok:
+            picks.append((str(key), cand_family, float(fam.get("confidence") or 0.0)))
+    picks.sort(key=lambda t: (-t[2], t[0]))
+    return [k for k, _, _ in picks]
+
+
+def _nlp106_apply_value_shape_contract_to_pmc_v1(pmc: dict, *, question_contract: dict = None, web_context: dict = None) -> dict:
+    if not isinstance(pmc, dict) or not pmc:
+        return pmc
+    qc = question_contract if isinstance(question_contract, dict) else {}
+    out = {k: (dict(v) if isinstance(v, dict) else v) for k, v in pmc.items()}
+    range_candidates = _nlp106_extract_range_candidates_from_web_context_v1(web_context if isinstance(web_context, dict) else {}, question_contract=qc)
+    best_range = range_candidates[0] if range_candidates else {}
+    target_keys = _nlp106_choose_target_metric_keys_v1(out, question_contract=qc)
+    for key in target_keys:
+        rr = out.get(key)
+        if not isinstance(rr, dict):
+            continue
+        txt = _nlp106_build_value_shape_text_v1(key, rr)
+        shape = _nlp105_parse_range_from_text_v1(txt, metric_row=rr)
+        promotion_source = "metric_text"
+        if not (isinstance(shape, dict) and shape.get("shape") == "range") and isinstance(best_range, dict) and best_range.get("shape"):
+            shape = dict(best_range.get("shape") or {})
+            promotion_source = str(best_range.get("source_kind") or "web_context")
+        if shape.get("shape") == "range":
+            vmin = shape.get("min")
+            vmax = shape.get("max")
+            if vmin is not None and vmax is not None and float(vmin) != float(vmax):
+                unit_out = str(rr.get("unit") or shape.get("unit") or "").strip()
+                rr["value_shape"] = "range"
+                rr["value_range"] = {
+                    "min": float(vmin),
+                    "max": float(vmax),
+                    "n": 2,
+                    "method": shape.get("method") or "nlp106_value_shape_range_v1",
+                    "matched_text": str(shape.get("matched_text") or ""),
+                    "source_url": str((best_range or {}).get("source_url") or ""),
+                    "source_kind": str(promotion_source or ""),
+                }
+                rr["range"] = {"min": float(vmin), "max": float(vmax), "n": 2, "method": rr["value_range"]["method"]}
+                rr["value_range_display"] = f"{float(vmin):g}–{float(vmax):g} {unit_out}".strip()
+                rr["value_point_fallback"] = rr.get("value")
+                rr["value"] = None
+                rr["display_value"] = rr["value_range_display"]
+                rr["value_selection_policy_v1"] = f"range_preserved_policy_{str(globals().get('YUREEKA_RANGE_POINT_POLICY_V1') or 'none')}"
+                rr.setdefault("debug", {})
+                if isinstance(rr.get("debug"), dict):
+                    rr["debug"]["nlp106_value_shape_v2"] = {
+                        "v": "nlp106_value_shape_v2",
+                        "question_target_family": str(qc.get("target_family") or ""),
+                        "question_measure_kind": str(qc.get("measure_kind") or ""),
+                        "applied": True,
+                        "source": promotion_source,
+                        "best_range_candidate": best_range if isinstance(best_range, dict) else {},
+                        "value_shape": "range",
+                        "value_range": rr.get("value_range") or {},
+                    }
+                prov = rr.get("provenance") if isinstance(rr.get("provenance"), dict) else {}
+                prov["nlp106_value_shape_promotion_v1"] = {
+                    "applied": True,
+                    "source": promotion_source,
+                    "source_url": str((best_range or {}).get("source_url") or ""),
+                    "matched_text": str(shape.get("matched_text") or ""),
+                }
+                rr["provenance"] = prov
+                out[key] = rr
+                break
+    return out
+
+
+def _nlp106_sync_primary_metrics_with_canonical_v1(primary_data: dict, *, question_contract: dict = None) -> dict:
+    pd = dict(primary_data) if isinstance(primary_data, dict) else primary_data
+    if not isinstance(pd, dict):
+        return primary_data
+    pmc = pd.get("primary_metrics_canonical") if isinstance(pd.get("primary_metrics_canonical"), dict) else {}
+    pmetrics = pd.get("primary_metrics") if isinstance(pd.get("primary_metrics"), dict) else {}
+    if not pmc:
+        return pd
+    target_keys = _nlp106_choose_target_metric_keys_v1(pmc, question_contract=question_contract)
+    if not target_keys:
+        return pd
+    row = pmc.get(target_keys[0]) if isinstance(pmc.get(target_keys[0]), dict) else {}
+    if not (isinstance(row, dict) and str(row.get("value_shape") or "") == "range" and isinstance(row.get("value_range"), dict)):
+        return pd
+    disp = str(row.get("value_range_display") or row.get("display_value") or "").strip()
+    if not disp:
+        return pd
+    if not pmetrics:
+        pmetrics = {}
+    metric1 = dict(pmetrics.get("metric_1") or {})
+    metric1["name"] = str(metric1.get("name") or row.get("name") or "Selected metric")
+    metric1["value"] = disp
+    metric1["unit"] = str(row.get("unit") or metric1.get("unit") or "")
+    metric1["value_shape"] = "range"
+    metric1["value_range"] = dict(row.get("value_range") or {})
+    metric1["display_value"] = disp
+    pmetrics["metric_1"] = metric1
+    pd["primary_metrics"] = pmetrics
+    pd.setdefault("debug", {})
+    if isinstance(pd.get("debug"), dict):
+        pd["debug"]["nlp106_primary_metrics_sync_v1"] = {
+            "v": "nlp106_primary_metrics_sync_v1",
+            "target_metric_key": target_keys[0],
+            "metric_1_value": disp,
+            "value_shape": "range",
+        }
+    return pd
+
+
+def _nlp106_sync_summary_with_value_shapes_v1(primary_data: dict, *, question_contract: dict = None) -> dict:
+    pd = _nlp105_sync_summary_with_value_shapes_v1(primary_data, question_contract=question_contract)
+    pd = dict(pd) if isinstance(pd, dict) else pd
+    if not isinstance(pd, dict):
+        return primary_data
+    pmc = pd.get("primary_metrics_canonical") if isinstance(pd.get("primary_metrics_canonical"), dict) else {}
+    target_keys = _nlp106_choose_target_metric_keys_v1(pmc, question_contract=question_contract)
+    if not target_keys:
+        return pd
+    row = pmc.get(target_keys[0]) if isinstance(pmc.get(target_keys[0]), dict) else {}
+    if not (isinstance(row, dict) and str(row.get("value_shape") or "") == "range"):
+        return pd
+    disp = str(row.get("value_range_display") or row.get("display_value") or "").strip()
+    if disp:
+        pd["selected_value_shape_v1"] = {"metric_key": target_keys[0], "value_shape": "range", "display_value": disp}
+    return pd
+
+# Backward-compatible aliases so existing call sites pick up NLP106 behavior.
+_nlp105_apply_value_shape_contract_to_pmc_v1 = _nlp106_apply_value_shape_contract_to_pmc_v1
+_nlp105_sync_summary_with_value_shapes_v1 = _nlp106_sync_summary_with_value_shapes_v1
+
+
 def canonicalize_metrics(
     metrics: Dict,
     metric_schema: Dict = None,
@@ -35942,7 +36186,9 @@ def main():
                         primary_data["primary_metrics_canonical"] = _nlp105_apply_value_shape_contract_to_pmc_v1(
                             primary_data.get("primary_metrics_canonical") or {},
                             question_contract=_nlp105_question_contract,
+                            web_context=web_context,
                         )
+                        primary_data = _nlp106_sync_primary_metrics_with_canonical_v1(primary_data, question_contract=_nlp105_question_contract)
                         primary_data = _nlp105_sync_summary_with_value_shapes_v1(primary_data, question_contract=_nlp105_question_contract)
                 except Exception:
                     pass
@@ -35989,6 +36235,12 @@ def main():
                         _qc_dbg = (primary_data.get("debug") or {}).get("nlp105_question_contract_v1") if isinstance(primary_data.get("debug"), dict) else {}
                         if isinstance(_qc_dbg, dict) and _qc_dbg:
                             output["debug"]["nlp105_question_contract_v1"] = _qc_dbg
+                        _vs_dbg = (primary_data.get("debug") or {}).get("nlp106_primary_metrics_sync_v1") if isinstance(primary_data.get("debug"), dict) else {}
+                        if isinstance(_vs_dbg, dict) and _vs_dbg:
+                            output["debug"]["nlp106_primary_metrics_sync_v1"] = _vs_dbg
+                        _svs = primary_data.get("selected_value_shape_v1") if isinstance(primary_data.get("selected_value_shape_v1"), dict) else {}
+                        if isinstance(_svs, dict) and _svs:
+                            output["debug"]["nlp106_selected_value_shape_v1"] = _svs
                     except Exception:
                         pass
                     output["debug"].setdefault("runtime_identity_v1", _yureeka_runtime_identity_v1())
@@ -45941,6 +46193,28 @@ try:
         PATCH_TRACKER_V1.insert(0, dict(_nlp105_patch))
     try:
         _yureeka_patch_tracker_ensure_head_v1("NLP105", dict(_nlp105_patch))
+    except Exception:
+        pass
+except Exception:
+    pass
+
+try:
+    globals()["_YUREEKA_CODE_VERSION_LOCK"] = "NLP106"
+    globals()["CODE_VERSION"] = "NLP106"
+except Exception:
+    pass
+
+try:
+    _nlp106_patch = {
+        "patch_id": "NLP106",
+        "scope": "canonical-value-shape-sync",
+        "summary": "Promote value-shape to first-class canonical data, preserve ranges without implicit point collapse, sync primary metrics/summary from canonical truth, and allow compatible range evidence from web_context to override nearby wrong point fallbacks.",
+        "risk": "medium",
+    }
+    if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "NLP106" for e in PATCH_TRACKER_V1):
+        PATCH_TRACKER_V1.insert(0, dict(_nlp106_patch))
+    try:
+        _yureeka_patch_tracker_ensure_head_v1("NLP106", dict(_nlp106_patch))
     except Exception:
         pass
 except Exception:
