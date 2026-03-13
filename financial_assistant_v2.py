@@ -501,7 +501,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "NLP106"
+_YUREEKA_CODE_VERSION_LOCK = "NLP107"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 # REFACTOR206: Release Candidate freeze (no pipeline behavior change).
 YUREEKA_RELEASE_CANDIDATE_V1 = False
