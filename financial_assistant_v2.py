@@ -501,7 +501,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "NLP109"
+_YUREEKA_CODE_VERSION_LOCK = "NLP110"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 # REFACTOR206: Release Candidate freeze (no pipeline behavior change).
 YUREEKA_RELEASE_CANDIDATE_V1 = False
@@ -47358,3 +47358,154 @@ def _nlp109_postprocess_primary_data_v1(primary_data: dict, *, question_contract
 
 
 _nlp105_apply_value_shape_contract_to_pmc_v1 = _nlp109_apply_value_shape_contract_to_pmc_v1
+
+
+
+# === NLP110: final canonical range truth enforcement at export boundary ===
+try:
+    globals()["_YUREEKA_CODE_VERSION_LOCK"] = "NLP110"
+    globals()["CODE_VERSION"] = "NLP110"
+except Exception:
+    pass
+
+try:
+    _nlp110_patch = {
+        "patch_id": "NLP110",
+        "scope": "final-canonical-range-truth",
+        "summary": "Enforce compatible range evidence onto the final exported canonical row and re-sync cards/summary from that final range truth so later point overwrites cannot persist.",
+        "risk": "medium",
+    }
+    if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "NLP110" for e in PATCH_TRACKER_V1):
+        PATCH_TRACKER_V1.insert(0, dict(_nlp110_patch))
+    try:
+        _yureeka_patch_tracker_ensure_head_v1("NLP110", dict(_nlp110_patch))
+    except Exception:
+        pass
+except Exception:
+    pass
+
+
+def _nlp110_apply_final_range_truth_to_row_v1(metric_key: str, metric_row: dict, *, question_contract: dict = None, web_context: dict = None) -> dict:
+    rr = dict(metric_row) if isinstance(metric_row, dict) else {}
+    qc = question_contract if isinstance(question_contract, dict) else {}
+    best = _nlp108_best_range_for_row_v1(metric_key, rr, question_contract=qc, web_context=web_context if isinstance(web_context, dict) else {})
+    shape = dict((best or {}).get("shape") or {}) if isinstance(best, dict) else {}
+    if not (isinstance(shape, dict) and shape.get("shape") == "range"):
+        return rr
+    try:
+        new_rr = _nlp107_apply_range_to_row_v1(
+            metric_key,
+            rr,
+            shape,
+            question_contract=qc,
+            best_range=best if isinstance(best, dict) else {},
+            promotion_source="nlp110_final_export_truth_v1",
+        )
+    except Exception:
+        return rr
+    if not isinstance(new_rr, dict):
+        return rr
+    new_rr["value_last_writer_v1"] = "nlp110_final_export_truth_v1"
+    prov = new_rr.get("provenance") if isinstance(new_rr.get("provenance"), dict) else {}
+    prov["method"] = "nlp110_final_export_truth_v1"
+    prov["nlp110_final_range_truth_v1"] = {
+        "applied": True,
+        "metric_key": str(metric_key or ""),
+        "source_url": str((best or {}).get("source_url") or ""),
+        "source_kind": str((best or {}).get("source_kind") or ""),
+        "matched_text": str(shape.get("matched_text") or (best or {}).get("text") or ""),
+        "value_range": dict(new_rr.get("value_range") or {}),
+        "previous_point_value": rr.get("value"),
+    }
+    new_rr["provenance"] = prov
+    try:
+        new_rr.setdefault("debug", {})
+        if isinstance(new_rr.get("debug"), dict):
+            new_rr["debug"]["nlp110_final_range_truth_v1"] = {
+                "v": "nlp110_final_range_truth_v1",
+                "applied": True,
+                "metric_key": str(metric_key or ""),
+                "question_target_family": str(qc.get("target_family") or ""),
+                "value_shape": str(new_rr.get("value_shape") or ""),
+                "value_range": dict(new_rr.get("value_range") or {}),
+                "value_last_writer_v1": str(new_rr.get("value_last_writer_v1") or ""),
+                "source_url": str((best or {}).get("source_url") or ""),
+                "matched_text": str(shape.get("matched_text") or (best or {}).get("text") or ""),
+            }
+    except Exception:
+        pass
+    return new_rr
+
+
+def _nlp110_postprocess_primary_data_v1(primary_data: dict, *, question_contract: dict = None, web_context: dict = None) -> dict:
+    pd = _nlp109_postprocess_primary_data_v1(primary_data, question_contract=question_contract, web_context=web_context)
+    if not isinstance(pd, dict):
+        return primary_data
+    qc = question_contract if isinstance(question_contract, dict) else {}
+    pmc = pd.get("primary_metrics_canonical") if isinstance(pd.get("primary_metrics_canonical"), dict) else {}
+    if not pmc:
+        return pd
+    out = {k: (dict(v) if isinstance(v, dict) else v) for k, v in pmc.items()}
+    target_keys = _nlp107_pick_target_metric_keys_v1(out, question_contract=qc)
+    if not target_keys:
+        target_keys = list(out.keys())[:1]
+    enforced = {}
+    changed = False
+    for key in target_keys:
+        rr = out.get(key)
+        if not isinstance(rr, dict):
+            continue
+        best = _nlp108_best_range_for_row_v1(key, rr, question_contract=qc, web_context=web_context if isinstance(web_context, dict) else {})
+        shape = dict((best or {}).get("shape") or {}) if isinstance(best, dict) else {}
+        has_range = bool(isinstance(shape, dict) and shape.get("shape") == "range")
+        final_is_range = bool(str(rr.get("value_shape") or "") == "range" and isinstance(rr.get("value_range"), dict) and rr.get("value") is None)
+        enforce = has_range and not final_is_range
+        if enforce:
+            new_rr = _nlp110_apply_final_range_truth_to_row_v1(key, rr, question_contract=qc, web_context=web_context)
+            if isinstance(new_rr, dict):
+                out[key] = new_rr
+                rr = new_rr
+                changed = True
+        enforced[str(key)] = {
+            "range_candidate_exists": has_range,
+            "enforced": bool(enforce),
+            "final_is_range": bool(str((rr or {}).get("value_shape") or "") == "range" and isinstance((rr or {}).get("value_range"), dict) and (rr or {}).get("value") is None),
+            "value_last_writer_v1": str((rr or {}).get("value_last_writer_v1") or ""),
+            "source_url": str((((rr or {}).get("provenance") or {}).get("source_url") if isinstance((rr or {}).get("provenance"), dict) else "") or ""),
+            "matched_text": str((((rr or {}).get("provenance") or {}).get("nlp110_final_range_truth_v1", {}) if isinstance((rr or {}).get("provenance"), dict) else {}).get("matched_text") or ((shape or {}).get("matched_text") if isinstance(shape, dict) else "") or ""),
+        }
+    if changed:
+        pd["primary_metrics_canonical"] = out
+        try:
+            pd = _nlp108_sync_primary_metrics_with_canonical_v1(pd, question_contract=qc)
+        except Exception:
+            pass
+        try:
+            pd = _nlp108_sync_summary_with_value_shapes_v1(pd, question_contract=qc)
+        except Exception:
+            pass
+        try:
+            audited_pmc, audits = _nlp109_audit_pmc_value_shapes_v1(pd.get("primary_metrics_canonical") if isinstance(pd.get("primary_metrics_canonical"), dict) else {}, question_contract=qc, web_context=web_context)
+            pd["primary_metrics_canonical"] = audited_pmc
+        except Exception:
+            audits = {}
+        pd.setdefault("debug", {})
+        if isinstance(pd.get("debug"), dict):
+            pd["debug"]["nlp110_final_range_truth_v1"] = {
+                "v": "nlp110_final_range_truth_v1",
+                "changed": True,
+                "targets": enforced,
+                "post_audits": audits if isinstance(audits, dict) else {},
+            }
+    else:
+        pd.setdefault("debug", {})
+        if isinstance(pd.get("debug"), dict):
+            pd["debug"]["nlp110_final_range_truth_v1"] = {
+                "v": "nlp110_final_range_truth_v1",
+                "changed": False,
+                "targets": enforced,
+            }
+    return pd
+
+
+_nlp109_postprocess_primary_data_v1 = _nlp110_postprocess_primary_data_v1
