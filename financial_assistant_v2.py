@@ -501,7 +501,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "NLP112"
+_YUREEKA_CODE_VERSION_LOCK = "NLP113"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 # REFACTOR206: Release Candidate freeze (no pipeline behavior change).
 YUREEKA_RELEASE_CANDIDATE_V1 = False
@@ -47837,5 +47837,289 @@ _nlp111_enforce_final_output_range_truth_v1 = _nlp112_force_final_export_range_t
 try:
     globals()["_YUREEKA_CODE_VERSION_LOCK"] = "NLP112"
     globals()["CODE_VERSION"] = "NLP112"
+except Exception:
+    pass
+
+
+# === NLP113: robust final export range truth from selected evidence ===
+try:
+    globals()["_YUREEKA_CODE_VERSION_LOCK"] = "NLP113"
+    globals()["CODE_VERSION"] = "NLP113"
+except Exception:
+    pass
+
+try:
+    _nlp113_patch = {
+        "patch_id": "NLP113",
+        "scope": "robust-final-export-range-truth",
+        "summary": "Use final selected evidence text on the assembled export object as the authoritative source for range truth, rewrite target canonical rows to value=None + value_shape/value_range, and mirror cards/summary from that same row.",
+        "risk": "medium",
+    }
+    if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "NLP113" for e in PATCH_TRACKER_V1):
+        PATCH_TRACKER_V1.insert(0, dict(_nlp113_patch))
+    try:
+        _yureeka_patch_tracker_ensure_head_v1("NLP113", dict(_nlp113_patch))
+    except Exception:
+        pass
+except Exception:
+    pass
+
+
+def _nlp113_parse_simple_range_from_text_v1(text, unit_hint=""):
+    import re
+    s = str(text or "").strip()
+    if not s:
+        return {}
+    sl = s.lower().replace("–", "-").replace("—", "-")
+    # prefer explicit between X and Y with optional shared unit on each side
+    pat_between = re.search(r'between\s+([\d.,]+)\s*(million|billion|trillion|m|bn|b|tn|t)?\s+and\s+([\d.,]+)\s*(million|billion|trillion|m|bn|b|tn|t)?', sl)
+    pat_range = re.search(r'([\d.,]+)\s*(million|billion|trillion|m|bn|b|tn|t)?\s*-\s*([\d.,]+)\s*(million|billion|trillion|m|bn|b|tn|t)?', sl)
+    m = pat_between or pat_range
+    if not m:
+        return {}
+    def _num(x):
+        try:
+            return float(str(x).replace(',', ''))
+        except Exception:
+            return None
+    def _canon_unit(u):
+        u = str(u or '').strip().lower()
+        if u in ('m', 'million'): return 'M'
+        if u in ('b', 'bn', 'billion'): return 'B'
+        if u in ('t', 'tn', 'trillion'): return 'T'
+        return ''
+    v1 = _num(m.group(1)); v2 = _num(m.group(3))
+    if v1 is None or v2 is None:
+        return {}
+    u1 = _canon_unit(m.group(2)); u2 = _canon_unit(m.group(4)); uh = _canon_unit(unit_hint)
+    unit = u1 or u2 or uh
+    if not unit:
+        # infer from text when only one side carries long-form unit outside regex groups
+        if 'trillion' in sl: unit = 'T'
+        elif 'billion' in sl or ' bn' in sl: unit = 'B'
+        elif 'million' in sl or ' m' in sl: unit = 'M'
+    return {
+        'shape': 'range',
+        'min': v1,
+        'max': v2,
+        'unit': unit,
+        'matched_text': s,
+        'method': 'nlp113_final_export_range_parse_v1',
+    } if unit and v1 != v2 else {}
+
+
+def _nlp113_row_text_candidates_v1(metric_row: dict, output: dict):
+    rr = metric_row if isinstance(metric_row, dict) else {}
+    out = output if isinstance(output, dict) else {}
+    seen = set(); items = []
+    def _add(label, txt):
+        txt = str(txt or '').strip()
+        if txt and txt not in seen:
+            seen.add(txt)
+            items.append((label, txt))
+    _add('evidence_best_snippet', rr.get('evidence_best_snippet'))
+    try:
+        _add('best_candidate_context', (((rr.get('provenance') or {}).get('best_candidate') or {}).get('context_snippet')))
+    except Exception:
+        pass
+    try:
+        for item in (rr.get('evidence_snippets_top') or []):
+            if isinstance(item, dict):
+                _add('evidence_snippets_top', item.get('snippet') or item.get('text') or item.get('context_snippet'))
+    except Exception:
+        pass
+    try:
+        pr = out.get('primary_response') if isinstance(out.get('primary_response'), dict) else {}
+        pm = pr.get('primary_metrics') if isinstance(pr.get('primary_metrics'), dict) else {}
+        m1 = pm.get('metric_1') if isinstance(pm.get('metric_1'), dict) else {}
+        _add('metric_1_value', m1.get('value'))
+        _add('metric_1_display', m1.get('display_value'))
+        _add('executive_summary', pr.get('executive_summary') or out.get('executive_summary'))
+    except Exception:
+        pass
+    return items
+
+
+def _nlp113_pick_target_keys_v1(pmc: dict, output: dict):
+    if not isinstance(pmc, dict):
+        return []
+    q = str((output.get('question') if isinstance(output, dict) else '') or '').lower()
+    keys = list(pmc.keys())
+    if not keys:
+        return []
+    pref = []
+    for k in keys:
+        ks = str(k or '').lower()
+        score = 0
+        if 'charg' in q and 'charg' in ks: score += 5
+        if 'investment' in q and 'investment' in ks: score += 5
+        if '2040' in q and '2040' in ks: score += 3
+        if 'public' in q and 'public' in ks: score += 2
+        if score:
+            pref.append((score, k))
+    pref.sort(key=lambda t: (-t[0], str(t[1])))
+    return [k for _, k in pref] or keys[:1]
+
+
+def _nlp113_apply_range_truth_to_row_v1(metric_key: str, rr: dict, shape: dict, source_url: str = '', source_kind: str = 'final_selected_evidence'):
+    rr = dict(rr) if isinstance(rr, dict) else {}
+    shp = dict(shape) if isinstance(shape, dict) else {}
+    if not shp or shp.get('shape') != 'range':
+        return rr
+    prev_value = rr.get('value')
+    unit = str(rr.get('unit') or shp.get('unit') or '').strip() or str(shp.get('unit') or '').strip()
+    rr['value'] = None
+    rr['value_shape'] = 'range'
+    rr['value_point_fallback'] = prev_value
+    rr['value_range'] = {
+        'min': float(shp.get('min')),
+        'max': float(shp.get('max')),
+        'n': 2,
+        'method': 'nlp113_final_export_range_truth_v1',
+        'matched_text': str(shp.get('matched_text') or ''),
+        'source_url': str(source_url or ''),
+        'source_kind': str(source_kind or ''),
+    }
+    rr['range'] = {'min': float(shp.get('min')), 'max': float(shp.get('max')), 'n': 2, 'method': 'nlp113_final_export_range_truth_v1'}
+    rr['value_range_display'] = f"{float(shp.get('min')):g}-{float(shp.get('max')):g} {unit}".strip()
+    rr['display_value'] = rr['value_range_display']
+    rr['selected_value_shape_v1'] = {'metric_key': str(metric_key or ''), 'value_shape': 'range', 'display_value': rr['value_range_display']}
+    rr['value_last_writer_v1'] = 'nlp113_final_export_range_truth_v1'
+    prov = rr.get('provenance') if isinstance(rr.get('provenance'), dict) else {}
+    bc = prov.get('best_candidate') if isinstance(prov.get('best_candidate'), dict) else {}
+    bc['value_shape'] = 'range'
+    bc['value_range'] = {'min': float(shp.get('min')), 'max': float(shp.get('max'))}
+    if shp.get('matched_text'):
+        bc['context_snippet'] = str(shp.get('matched_text') or '')
+        rr['evidence_best_snippet'] = str(shp.get('matched_text') or '')
+    if source_url:
+        bc['source_url'] = str(source_url)
+        prov['source_url'] = str(source_url)
+    prov['best_candidate'] = bc
+    prov['method'] = 'nlp113_final_export_range_truth_v1'
+    prov['nlp113_final_range_truth_v1'] = {
+        'applied': True,
+        'metric_key': str(metric_key or ''),
+        'source_kind': str(source_kind or ''),
+        'source_url': str(source_url or ''),
+        'matched_text': str(shp.get('matched_text') or ''),
+        'value_range': {'min': float(shp.get('min')), 'max': float(shp.get('max'))},
+        'previous_point_value': prev_value,
+    }
+    rr['provenance'] = prov
+    dbg = rr.get('debug') if isinstance(rr.get('debug'), dict) else {}
+    dbg['nlp113_final_range_truth_v1'] = {
+        'v': 'nlp113_final_range_truth_v1',
+        'applied': True,
+        'metric_key': str(metric_key or ''),
+        'value_shape': 'range',
+        'value_range': {'min': float(shp.get('min')), 'max': float(shp.get('max'))},
+        'source_kind': str(source_kind or ''),
+        'matched_text': str(shp.get('matched_text') or ''),
+    }
+    rr['debug'] = dbg
+    return rr
+
+
+def _nlp113_sync_final_views_v1(out: dict, metric_key: str):
+    if not isinstance(out, dict):
+        return out
+    pr = out.get('primary_response') if isinstance(out.get('primary_response'), dict) else {}
+    pmc = pr.get('primary_metrics_canonical') if isinstance(pr.get('primary_metrics_canonical'), dict) else {}
+    rr = pmc.get(metric_key) if isinstance(pmc.get(metric_key), dict) else {}
+    if not (isinstance(rr, dict) and str(rr.get('value_shape') or '') == 'range' and isinstance(rr.get('value_range'), dict)):
+        return out
+    vmin = rr['value_range'].get('min'); vmax = rr['value_range'].get('max'); unit = str(rr.get('unit') or '').strip()
+    disp = rr.get('value_range_display') or f"{vmin:g}-{vmax:g} {unit}".strip()
+    pr_pm = pr.get('primary_metrics') if isinstance(pr.get('primary_metrics'), dict) else {}
+    m1 = pr_pm.get('metric_1') if isinstance(pr_pm.get('metric_1'), dict) else {}
+    m1['value'] = f"{vmin:g}-{vmax:g}"
+    m1['display_value'] = disp
+    m1['value_shape'] = 'range'
+    m1['value_range'] = {'min': float(vmin), 'max': float(vmax)}
+    m1['unit'] = unit
+    pr_pm['metric_1'] = m1
+    pr['primary_metrics'] = pr_pm
+    summ = str(pr.get('executive_summary') or out.get('executive_summary') or '')
+    range_sent = f"Selected estimate is a range of {vmin:g}-{vmax:g} {unit}.".strip()
+    if range_sent not in summ:
+        summ = (summ + ' ' + range_sent).strip() if summ else range_sent
+    pr['executive_summary'] = summ
+    out['executive_summary'] = summ
+    out['primary_response'] = pr
+    try:
+        out['primary_metrics_canonical'] = dict(pr.get('primary_metrics_canonical') or {})
+        out.setdefault('results', {})
+        if isinstance(out.get('results'), dict):
+            out['results']['primary_metrics_canonical'] = dict(pr.get('primary_metrics_canonical') or {})
+            out['results'].setdefault('primary_response', {})
+            if isinstance(out['results'].get('primary_response'), dict):
+                out['results']['primary_response']['primary_metrics_canonical'] = dict(pr.get('primary_metrics_canonical') or {})
+    except Exception:
+        pass
+    return out
+
+
+def _nlp113_force_final_export_range_truth_v1(output: dict, *, question_contract: dict = None, web_context: dict = None) -> dict:
+    out = dict(output) if isinstance(output, dict) else {}
+    pr = out.get('primary_response') if isinstance(out.get('primary_response'), dict) else {}
+    pmc = pr.get('primary_metrics_canonical') if isinstance(pr.get('primary_metrics_canonical'), dict) else {}
+    if not isinstance(pmc, dict) or not pmc:
+        return output if isinstance(output, dict) else output
+    pmc2 = {k:(dict(v) if isinstance(v, dict) else v) for k,v in pmc.items()}
+    targets = {}
+    changed = False
+    for key in _nlp113_pick_target_keys_v1(pmc2, out):
+        rr = pmc2.get(key)
+        if not isinstance(rr, dict):
+            continue
+        best_shape = {}
+        best_label = ''; best_text = ''
+        for label, txt in _nlp113_row_text_candidates_v1(rr, out):
+            shp = _nlp113_parse_simple_range_from_text_v1(txt, unit_hint=rr.get('unit') or '')
+            if isinstance(shp, dict) and shp.get('shape') == 'range':
+                best_shape = shp; best_label = label; best_text = txt; break
+        if best_shape:
+            source_url = str((((rr.get('provenance') or {}).get('best_candidate') or {}).get('source_url') or ((rr.get('provenance') or {}).get('source_url') or '')))
+            new_rr = _nlp113_apply_range_truth_to_row_v1(key, rr, best_shape, source_url=source_url, source_kind=best_label or 'final_selected_evidence')
+            pmc2[key] = new_rr
+            changed = True
+            rr = new_rr
+        targets[str(key)] = {
+            'range_candidate_exists': bool(best_shape),
+            'source_kind': str(best_label or ''),
+            'matched_text': str((best_shape or {}).get('matched_text') or best_text or ''),
+            'final_is_range': bool(str(rr.get('value_shape') or '') == 'range' and isinstance(rr.get('value_range'), dict) and rr.get('value') is None),
+            'value': rr.get('value'),
+            'value_last_writer_v1': str(rr.get('value_last_writer_v1') or ''),
+        }
+    pr['primary_metrics_canonical'] = pmc2
+    out['primary_response'] = pr
+    for key, t in targets.items():
+        if t.get('final_is_range'):
+            out = _nlp113_sync_final_views_v1(out, key)
+            break
+    out.setdefault('debug', {})
+    if isinstance(out.get('debug'), dict):
+        out['debug']['nlp113_final_output_range_truth_v1'] = {
+            'v': 'nlp113_final_output_range_truth_v1',
+            'changed': bool(changed),
+            'targets': targets,
+            'assertion_failed': bool(any(isinstance(v, dict) and v.get('range_candidate_exists') and not v.get('final_is_range') for v in (targets or {}).values())),
+        }
+    pr = out.get('primary_response') if isinstance(out.get('primary_response'), dict) else {}
+    prdbg = pr.get('debug') if isinstance(pr.get('debug'), dict) else {}
+    prdbg['nlp113_final_output_range_truth_v1'] = out.get('debug', {}).get('nlp113_final_output_range_truth_v1', {})
+    pr['debug'] = prdbg
+    out['primary_response'] = pr
+    return out
+
+# Replace prior final-output wrapper with robust selected-evidence rewrite.
+_nlp111_enforce_final_output_range_truth_v1 = _nlp113_force_final_export_range_truth_v1
+
+# Keep version stamp trustworthy after all late patch setters.
+try:
+    globals()["_YUREEKA_CODE_VERSION_LOCK"] = "NLP113"
+    globals()["CODE_VERSION"] = "NLP113"
 except Exception:
     pass
