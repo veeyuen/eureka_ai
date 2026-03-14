@@ -42,7 +42,7 @@
 #
 # Start here (maintainers / QA):
 #   1) Run the app:
-#        streamlit run NLP105.py
+#        streamlit run NLP109.py
 #   2) Standard triad workflow (release evidence):
 #        - New Analysis  → Analysis JSON
 #        - Evolution (prod) → Evolution JSON
@@ -501,7 +501,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "NLP108"
+_YUREEKA_CODE_VERSION_LOCK = "NLP109"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 # REFACTOR206: Release Candidate freeze (no pipeline behavior change).
 YUREEKA_RELEASE_CANDIDATE_V1 = False
@@ -36190,6 +36190,7 @@ def main():
                         )
                         primary_data = _nlp106_sync_primary_metrics_with_canonical_v1(primary_data, question_contract=_nlp105_question_contract)
                         primary_data = _nlp105_sync_summary_with_value_shapes_v1(primary_data, question_contract=_nlp105_question_contract)
+                        primary_data = _nlp109_postprocess_primary_data_v1(primary_data, question_contract=_nlp105_question_contract, web_context=web_context)
                 except Exception:
                     pass
 
@@ -36241,6 +36242,9 @@ def main():
                         _svs = primary_data.get("selected_value_shape_v1") if isinstance(primary_data.get("selected_value_shape_v1"), dict) else {}
                         if isinstance(_svs, dict) and _svs:
                             output["debug"]["nlp106_selected_value_shape_v1"] = _svs
+                        _n109 = (primary_data.get("debug") or {}).get("nlp109_range_assertion_v1") if isinstance(primary_data.get("debug"), dict) else {}
+                        if isinstance(_n109, dict) and _n109:
+                            output["debug"]["nlp109_range_assertion_v1"] = _n109
                     except Exception:
                         pass
                     output["debug"].setdefault("runtime_identity_v1", _yureeka_runtime_identity_v1())
@@ -47196,3 +47200,161 @@ def _nlp108_sync_summary_with_value_shapes_v1(primary_data: dict, *, question_co
 _nlp105_apply_value_shape_contract_to_pmc_v1 = _nlp108_apply_value_shape_contract_to_pmc_v1
 _nlp106_sync_primary_metrics_with_canonical_v1 = _nlp108_sync_primary_metrics_with_canonical_v1
 _nlp105_sync_summary_with_value_shapes_v1 = _nlp108_sync_summary_with_value_shapes_v1
+
+
+# === NLP109: range diagnostic instrumentation + final-row audit ===
+try:
+    globals()["_YUREEKA_CODE_VERSION_LOCK"] = "NLP109"
+    globals()["CODE_VERSION"] = "NLP109"
+except Exception:
+    pass
+
+try:
+    _nlp109_patch = {
+        "patch_id": "NLP109",
+        "scope": "range-diagnostics",
+        "summary": "Add final-row range diagnostics so we can see whether compatible range promotion fired, survived, or was overwritten later. Also stamp the effective writer/audit trail on canonical rows and top-level output debug.",
+        "risk": "low",
+    }
+    if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "NLP109" for e in PATCH_TRACKER_V1):
+        PATCH_TRACKER_V1.insert(0, dict(_nlp109_patch))
+    try:
+        _yureeka_patch_tracker_ensure_head_v1("NLP109", dict(_nlp109_patch))
+    except Exception:
+        pass
+except Exception:
+    pass
+
+
+try:
+    _nlp109_prev_apply_range_to_row_v1 = _nlp107_apply_range_to_row_v1
+except Exception:
+    _nlp109_prev_apply_range_to_row_v1 = None
+
+
+def _nlp109_apply_range_to_row_v1(metric_key: str, metric_row: dict, shape: dict, *, question_contract: dict = None, best_range: dict = None, promotion_source: str = "metric_text") -> dict:
+    base = globals().get("_nlp109_prev_apply_range_to_row_v1")
+    rr = base(metric_key, metric_row, shape, question_contract=question_contract, best_range=best_range, promotion_source=promotion_source) if callable(base) else (dict(metric_row) if isinstance(metric_row, dict) else {})
+    if isinstance(rr, dict):
+        rr["value_last_writer_v1"] = "nlp109_apply_range_to_row_v1"
+        rr.setdefault("debug", {})
+        if isinstance(rr.get("debug"), dict):
+            rr["debug"]["nlp109_range_write_v1"] = {
+                "v": "nlp109_range_write_v1",
+                "metric_key": str(metric_key or ""),
+                "promotion_source": str(promotion_source or ""),
+                "applied": bool(str(rr.get("value_shape") or "") == "range" and isinstance(rr.get("value_range"), dict)),
+                "matched_text": str((shape or {}).get("matched_text") or ((best_range or {}).get("text") if isinstance(best_range, dict) else "") or ""),
+                "source_url": str(((best_range or {}).get("source_url") if isinstance(best_range, dict) else "") or ""),
+            }
+    return rr
+
+
+_nlp107_apply_range_to_row_v1 = _nlp109_apply_range_to_row_v1
+
+
+def _nlp109_detect_range_candidate_for_row_v1(metric_key: str, metric_row: dict, *, question_contract: dict = None, web_context: dict = None) -> dict:
+    rr = metric_row if isinstance(metric_row, dict) else {}
+    txt = _nlp106_build_value_shape_text_v1(metric_key, rr)
+    metric_shape = _nlp105_parse_range_from_text_v1(txt, metric_row=rr)
+    metric_shape_ok = isinstance(metric_shape, dict) and metric_shape.get("shape") == "range"
+    best = _nlp108_best_range_for_row_v1(metric_key, rr, question_contract=question_contract if isinstance(question_contract, dict) else {}, web_context=web_context if isinstance(web_context, dict) else {})
+    best_shape = dict(best.get("shape") or {}) if isinstance(best, dict) else {}
+    best_shape_ok = isinstance(best_shape, dict) and best_shape.get("shape") == "range"
+    shp = metric_shape if metric_shape_ok else best_shape
+    prov = rr.get("provenance") if isinstance(rr.get("provenance"), dict) else {}
+    ev = str(rr.get("evidence_best_snippet") or "")
+    matched_text = str((shp or {}).get("matched_text") or (best.get("text") if isinstance(best, dict) else "") or ev or txt or "").strip()
+    source_url = str((best.get("source_url") if isinstance(best, dict) else "") or prov.get("source_url") or "")
+    return {
+        "metric_shape_has_range": bool(metric_shape_ok),
+        "best_range_has_range": bool(best_shape_ok),
+        "range_candidate_exists": bool(metric_shape_ok or best_shape_ok),
+        "matched_text": matched_text,
+        "source_url": source_url,
+        "best_range": best if isinstance(best, dict) else {},
+        "shape": shp if isinstance(shp, dict) else {},
+        "evidence_best_snippet": ev,
+        "source_kind": str((best.get("source_kind") if isinstance(best, dict) else "") or ""),
+    }
+
+
+def _nlp109_audit_pmc_value_shapes_v1(pmc: dict, *, question_contract: dict = None, web_context: dict = None):
+    if not isinstance(pmc, dict):
+        return pmc, {}
+    out = {k: (dict(v) if isinstance(v, dict) else v) for k, v in pmc.items()}
+    audits = {}
+    target_keys = _nlp107_pick_target_metric_keys_v1(out, question_contract=question_contract if isinstance(question_contract, dict) else {})
+    if not target_keys:
+        target_keys = [k for k, v in out.items() if isinstance(v, dict)]
+    for key in target_keys[:5]:
+        rr = out.get(key)
+        if not isinstance(rr, dict):
+            continue
+        cand = _nlp109_detect_range_candidate_for_row_v1(key, rr, question_contract=question_contract, web_context=web_context)
+        final_is_range = bool(str(rr.get("value_shape") or "") == "range" and isinstance(rr.get("value_range"), dict))
+        audit = {
+            "v": "nlp109_value_shape_audit_v1",
+            "metric_key": str(key or ""),
+            "question_target_family": str(((question_contract or {}).get("target_family") if isinstance(question_contract, dict) else "") or ""),
+            "range_candidate_exists": bool(cand.get("range_candidate_exists")),
+            "metric_shape_has_range": bool(cand.get("metric_shape_has_range")),
+            "best_range_has_range": bool(cand.get("best_range_has_range")),
+            "final_is_range": final_is_range,
+            "range_promotion_lost": bool(cand.get("range_candidate_exists") and not final_is_range),
+            "value_last_writer_v1": str(rr.get("value_last_writer_v1") or ("nlp109_apply_range_to_row_v1" if final_is_range else "unknown_or_preexisting")),
+            "current_value": rr.get("value"),
+            "value_shape": str(rr.get("value_shape") or "point"),
+            "value_range": dict(rr.get("value_range") or {}) if isinstance(rr.get("value_range"), dict) else {},
+            "value_point_fallback": rr.get("value_point_fallback"),
+            "matched_text": str(cand.get("matched_text") or ""),
+            "source_url": str(cand.get("source_url") or ""),
+            "source_kind": str(cand.get("source_kind") or ""),
+        }
+        rr.setdefault("debug", {})
+        if isinstance(rr.get("debug"), dict):
+            rr["debug"]["nlp109_value_shape_audit_v1"] = audit
+        flags = rr.get("diagnostic_flags_v1") if isinstance(rr.get("diagnostic_flags_v1"), list) else []
+        if audit["range_promotion_lost"] and "range_candidate_lost_v1" not in flags:
+            flags.append("range_candidate_lost_v1")
+        if flags:
+            rr["diagnostic_flags_v1"] = flags
+        out[key] = rr
+        audits[str(key)] = audit
+    return out, audits
+
+
+def _nlp109_apply_value_shape_contract_to_pmc_v1(pmc: dict, *, question_contract: dict = None, web_context: dict = None) -> dict:
+    out = _nlp108_apply_value_shape_contract_to_pmc_v1(pmc, question_contract=question_contract, web_context=web_context)
+    out, _audits = _nlp109_audit_pmc_value_shapes_v1(out, question_contract=question_contract, web_context=web_context)
+    return out
+
+
+def _nlp109_postprocess_primary_data_v1(primary_data: dict, *, question_contract: dict = None, web_context: dict = None) -> dict:
+    pd = dict(primary_data) if isinstance(primary_data, dict) else primary_data
+    if not isinstance(pd, dict):
+        return primary_data
+    pmc = pd.get("primary_metrics_canonical") if isinstance(pd.get("primary_metrics_canonical"), dict) else {}
+    if not pmc:
+        return pd
+    audited_pmc, audits = _nlp109_audit_pmc_value_shapes_v1(pmc, question_contract=question_contract, web_context=web_context)
+    pd["primary_metrics_canonical"] = audited_pmc
+    target_key = next(iter(audits.keys()), "")
+    top_audit = audits.get(target_key) if target_key else {}
+    pd.setdefault("debug", {})
+    if isinstance(pd.get("debug"), dict):
+        pd["debug"]["nlp109_range_assertion_v1"] = {
+            "v": "nlp109_range_assertion_v1",
+            "target_metric_key": str(target_key or ""),
+            "range_candidate_exists": bool((top_audit or {}).get("range_candidate_exists")),
+            "final_is_range": bool((top_audit or {}).get("final_is_range")),
+            "range_promotion_lost": bool((top_audit or {}).get("range_promotion_lost")),
+            "value_last_writer_v1": str((top_audit or {}).get("value_last_writer_v1") or ""),
+            "matched_text": str((top_audit or {}).get("matched_text") or ""),
+            "source_url": str((top_audit or {}).get("source_url") or ""),
+            "all_target_audits": audits,
+        }
+    return pd
+
+
+_nlp105_apply_value_shape_contract_to_pmc_v1 = _nlp109_apply_value_shape_contract_to_pmc_v1
