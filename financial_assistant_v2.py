@@ -501,7 +501,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "NLP110"
+_YUREEKA_CODE_VERSION_LOCK = "NLP111"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 # REFACTOR206: Release Candidate freeze (no pipeline behavior change).
 YUREEKA_RELEASE_CANDIDATE_V1 = False
@@ -36350,6 +36350,15 @@ def main():
             except Exception:
                 pass
 
+            try:
+                output = _nlp111_enforce_final_output_range_truth_v1(
+                    output,
+                    question_contract=_nlp105_question_contract,
+                    web_context=web_context,
+                )
+            except Exception:
+                pass
+
             with st.spinner("💾 Saving to history..."):
                 if add_to_history(output):
                     st.success("✅ Analysis saved to Google Sheets")
@@ -36371,6 +36380,15 @@ def main():
             # LLM01H hotfix: ensure evidence snippet fields land in the final exported wrapper.
             try:
                 _llm01_hotfix_apply_evidence_snippets_final_v1(output, stage="analysis_final", question=str(output.get("question") or query or ""))
+            except Exception:
+                pass
+
+            try:
+                output = _nlp111_enforce_final_output_range_truth_v1(
+                    output,
+                    question_contract=_nlp105_question_contract,
+                    web_context=web_context,
+                )
             except Exception:
                 pass
 
@@ -47509,3 +47527,113 @@ def _nlp110_postprocess_primary_data_v1(primary_data: dict, *, question_contract
 
 
 _nlp109_postprocess_primary_data_v1 = _nlp110_postprocess_primary_data_v1
+
+
+# === NLP111: final output boundary range truth + mirror sync ===
+try:
+    globals()["_YUREEKA_CODE_VERSION_LOCK"] = "NLP111"
+    globals()["CODE_VERSION"] = "NLP111"
+except Exception:
+    pass
+
+try:
+    _nlp111_patch = {
+        "patch_id": "NLP111",
+        "scope": "final-output-range-truth",
+        "summary": "Enforce compatible range evidence on the final exported output wrapper, mirror the corrected canonical row across output/results copies, and assert loudly when a compatible range still exits as a point.",
+        "risk": "medium",
+    }
+    if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "NLP111" for e in PATCH_TRACKER_V1):
+        PATCH_TRACKER_V1.insert(0, dict(_nlp111_patch))
+    try:
+        _yureeka_patch_tracker_ensure_head_v1("NLP111", dict(_nlp111_patch))
+    except Exception:
+        pass
+except Exception:
+    pass
+
+
+def _nlp111_enforce_final_output_range_truth_v1(output: dict, *, question_contract: dict = None, web_context: dict = None) -> dict:
+    out = dict(output) if isinstance(output, dict) else {}
+    qc = question_contract if isinstance(question_contract, dict) else {}
+    pr = out.get("primary_response") if isinstance(out.get("primary_response"), dict) else {}
+    pmc = pr.get("primary_metrics_canonical") if isinstance(pr.get("primary_metrics_canonical"), dict) else {}
+    if not isinstance(pmc, dict) or not pmc:
+        return out if isinstance(output, dict) else output
+    pmc2 = {k: (dict(v) if isinstance(v, dict) else v) for k, v in pmc.items()}
+    target_keys = _nlp107_pick_target_metric_keys_v1(pmc2, question_contract=qc)
+    if not target_keys:
+        target_keys = list(pmc2.keys())[:1]
+    targets = {}
+    changed = False
+    for key in target_keys:
+        rr = pmc2.get(key)
+        if not isinstance(rr, dict):
+            continue
+        best = _nlp108_best_range_for_row_v1(key, rr, question_contract=qc, web_context=web_context if isinstance(web_context, dict) else {})
+        shape = dict((best or {}).get("shape") or {}) if isinstance(best, dict) else {}
+        has_range = bool(isinstance(shape, dict) and shape.get("shape") == "range")
+        if has_range:
+            new_rr = _nlp110_apply_final_range_truth_to_row_v1(key, rr, question_contract=qc, web_context=web_context)
+            if isinstance(new_rr, dict):
+                final_is_range = bool(str(new_rr.get("value_shape") or "") == "range" and isinstance(new_rr.get("value_range"), dict) and new_rr.get("value") is None)
+                if final_is_range or dict(new_rr) != dict(rr):
+                    pmc2[key] = dict(new_rr)
+                    rr = pmc2[key]
+                    changed = True
+            else:
+                final_is_range = False
+        else:
+            final_is_range = bool(str(rr.get("value_shape") or "") == "range" and isinstance(rr.get("value_range"), dict) and rr.get("value") is None)
+        targets[str(key)] = {
+            "range_candidate_exists": bool(has_range),
+            "final_is_range": bool(final_is_range),
+            "value": rr.get("value") if isinstance(rr, dict) else None,
+            "value_shape": str((rr or {}).get("value_shape") or "point") if isinstance(rr, dict) else "point",
+            "value_last_writer_v1": str((rr or {}).get("value_last_writer_v1") or "") if isinstance(rr, dict) else "",
+            "source_url": str((((rr or {}).get("provenance") or {}).get("source_url") if isinstance((rr or {}).get("provenance"), dict) else "") or ""),
+            "matched_text": str((((rr or {}).get("provenance") or {}).get("nlp110_final_range_truth_v1", {}) if isinstance((rr or {}).get("provenance"), dict) else {}).get("matched_text") or ((shape or {}).get("matched_text") if isinstance(shape, dict) else "") or ""),
+        }
+    pr["primary_metrics_canonical"] = pmc2
+    try:
+        pr = _nlp108_sync_primary_metrics_with_canonical_v1(pr, question_contract=qc)
+    except Exception:
+        pass
+    try:
+        pr = _nlp108_sync_summary_with_value_shapes_v1(pr, question_contract=qc)
+    except Exception:
+        pass
+    try:
+        audited_pmc, audits = _nlp109_audit_pmc_value_shapes_v1(pr.get("primary_metrics_canonical") if isinstance(pr.get("primary_metrics_canonical"), dict) else {}, question_contract=qc, web_context=web_context)
+        pr["primary_metrics_canonical"] = audited_pmc
+    except Exception:
+        audits = {}
+    pr.setdefault("debug", {})
+    if isinstance(pr.get("debug"), dict):
+        pr["debug"]["nlp111_final_output_range_truth_v1"] = {
+            "v": "nlp111_final_output_range_truth_v1",
+            "changed": bool(changed),
+            "targets": targets,
+            "post_audits": audits if isinstance(audits, dict) else {},
+        }
+    out["primary_response"] = pr
+    try:
+        if isinstance(pr.get("primary_metrics_canonical"), dict):
+            out["primary_metrics_canonical"] = dict(pr.get("primary_metrics_canonical") or {})
+            out.setdefault("results", {})
+            if isinstance(out.get("results"), dict):
+                out["results"]["primary_metrics_canonical"] = dict(pr.get("primary_metrics_canonical") or {})
+                out["results"].setdefault("primary_response", {})
+                if isinstance(out["results"].get("primary_response"), dict):
+                    out["results"]["primary_response"]["primary_metrics_canonical"] = dict(pr.get("primary_metrics_canonical") or {})
+    except Exception:
+        pass
+    out.setdefault("debug", {})
+    if isinstance(out.get("debug"), dict):
+        out["debug"]["nlp111_final_output_range_truth_v1"] = {
+            "v": "nlp111_final_output_range_truth_v1",
+            "changed": bool(changed),
+            "targets": targets,
+            "assertion_failed": bool(any(isinstance(v, dict) and v.get("range_candidate_exists") and not v.get("final_is_range") for v in (targets or {}).values())),
+        }
+    return out
