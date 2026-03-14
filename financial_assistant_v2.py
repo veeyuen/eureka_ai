@@ -47637,3 +47637,205 @@ def _nlp111_enforce_final_output_range_truth_v1(output: dict, *, question_contra
             "assertion_failed": bool(any(isinstance(v, dict) and v.get("range_candidate_exists") and not v.get("final_is_range") for v in (targets or {}).values())),
         }
     return out
+
+
+# === NLP112: hard final export row rewrite from final output truth ===
+try:
+    globals()["_YUREEKA_CODE_VERSION_LOCK"] = "NLP112"
+    globals()["CODE_VERSION"] = "NLP112"
+except Exception:
+    pass
+
+try:
+    _nlp112_patch = {
+        "patch_id": "NLP112",
+        "scope": "hard-final-export-range-rewrite",
+        "summary": "Derive range truth from the final assembled output (canonical row, metric card, summary, and compatible web-context ranges) and hard-rewrite the exported canonical row plus mirrored wrappers so range truth cannot leave export as a point.",
+        "risk": "medium",
+    }
+    if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "NLP112" for e in PATCH_TRACKER_V1):
+        PATCH_TRACKER_V1.insert(0, dict(_nlp112_patch))
+    try:
+        _yureeka_patch_tracker_ensure_head_v1("NLP112", dict(_nlp112_patch))
+    except Exception:
+        pass
+except Exception:
+    pass
+
+
+def _nlp112_parse_range_from_final_output_v1(output: dict, metric_key: str, metric_row: dict, *, question_contract: dict = None, web_context: dict = None) -> dict:
+    out = output if isinstance(output, dict) else {}
+    rr = metric_row if isinstance(metric_row, dict) else {}
+    qc = question_contract if isinstance(question_contract, dict) else {}
+    texts = []
+    try:
+        txt = _nlp106_build_value_shape_text_v1(metric_key, rr)
+        if txt:
+            texts.append(("canonical_row_text", txt))
+    except Exception:
+        pass
+    try:
+        pr = out.get("primary_response") if isinstance(out.get("primary_response"), dict) else {}
+        pm = pr.get("primary_metrics") if isinstance(pr.get("primary_metrics"), dict) else {}
+        m1 = pm.get("metric_1") if isinstance(pm.get("metric_1"), dict) else {}
+        for label, txt in [
+            ("primary_metric_1_value", str(m1.get("value") or "")),
+            ("primary_metric_1_display", str(m1.get("display_value") or "")),
+            ("executive_summary", str(pr.get("executive_summary") or out.get("executive_summary") or "")),
+        ]:
+            if txt and txt not in [t for _, t in texts]:
+                texts.append((label, txt))
+    except Exception:
+        pass
+    best = {}
+    for label, txt in texts:
+        try:
+            shp = _nlp105_parse_range_from_text_v1(txt, metric_row=rr)
+        except Exception:
+            shp = {}
+        if isinstance(shp, dict) and shp.get("shape") == "range":
+            score = 120 if label == "canonical_row_text" else 115 if label.startswith("primary_metric_1") else 110
+            cand = {
+                "shape": shp,
+                "source_url": str((((rr.get("provenance") or {}).get("source_url") if isinstance(rr.get("provenance"), dict) else "") or "")),
+                "source_kind": label,
+                "text": txt,
+                "score": score,
+            }
+            if not best or score > int(best.get("score") or -1):
+                best = cand
+    try:
+        web_best = _nlp108_best_range_for_row_v1(metric_key, rr, question_contract=qc, web_context=web_context if isinstance(web_context, dict) else {})
+    except Exception:
+        web_best = {}
+    if isinstance(web_best, dict) and isinstance(web_best.get("shape"), dict) and web_best.get("shape", {}).get("shape") == "range":
+        if not best or int(web_best.get("score") or 100) >= int(best.get("score") or -1):
+            best = dict(web_best)
+    return best if isinstance(best, dict) else {}
+
+
+def _nlp112_force_final_export_range_truth_v1(output: dict, *, question_contract: dict = None, web_context: dict = None) -> dict:
+    out = dict(output) if isinstance(output, dict) else {}
+    qc = question_contract if isinstance(question_contract, dict) else {}
+    pr = out.get("primary_response") if isinstance(out.get("primary_response"), dict) else {}
+    pmc = pr.get("primary_metrics_canonical") if isinstance(pr.get("primary_metrics_canonical"), dict) else {}
+    if not isinstance(pmc, dict) or not pmc:
+        return out if isinstance(output, dict) else output
+    pmc2 = {k: (dict(v) if isinstance(v, dict) else v) for k, v in pmc.items()}
+    target_keys = _nlp107_pick_target_metric_keys_v1(pmc2, question_contract=qc)
+    if not target_keys:
+        target_keys = list(pmc2.keys())[:1]
+    targets = {}
+    changed = False
+    for key in target_keys:
+        rr = pmc2.get(key)
+        if not isinstance(rr, dict):
+            continue
+        cand = _nlp112_parse_range_from_final_output_v1(out, key, rr, question_contract=qc, web_context=web_context)
+        shp = dict(cand.get("shape") or {}) if isinstance(cand, dict) else {}
+        has_range = bool(isinstance(shp, dict) and shp.get("shape") == "range")
+        final_is_range = bool(str(rr.get("value_shape") or "") == "range" and isinstance(rr.get("value_range"), dict) and rr.get("value") is None)
+        if has_range and not final_is_range:
+            try:
+                new_rr = _nlp107_apply_range_to_row_v1(
+                    key,
+                    rr,
+                    shp,
+                    question_contract=qc,
+                    best_range=cand if isinstance(cand, dict) else {},
+                    promotion_source="nlp112_hard_final_export_truth_v1",
+                )
+            except Exception:
+                new_rr = None
+            if isinstance(new_rr, dict):
+                new_rr["value_last_writer_v1"] = "nlp112_hard_final_export_truth_v1"
+                prov = new_rr.get("provenance") if isinstance(new_rr.get("provenance"), dict) else {}
+                prov["method"] = "nlp112_hard_final_export_truth_v1"
+                prov["source_url"] = str(cand.get("source_url") or prov.get("source_url") or "")
+                prov["nlp112_final_range_truth_v1"] = {
+                    "applied": True,
+                    "metric_key": str(key or ""),
+                    "source_kind": str(cand.get("source_kind") or ""),
+                    "source_url": str(cand.get("source_url") or ""),
+                    "matched_text": str((shp or {}).get("matched_text") or cand.get("text") or ""),
+                    "value_range": dict(new_rr.get("value_range") or {}),
+                    "previous_point_value": rr.get("value"),
+                }
+                new_rr["provenance"] = prov
+                new_rr.setdefault("debug", {})
+                if isinstance(new_rr.get("debug"), dict):
+                    new_rr["debug"]["nlp112_final_range_truth_v1"] = {
+                        "v": "nlp112_final_range_truth_v1",
+                        "applied": True,
+                        "metric_key": str(key or ""),
+                        "source_kind": str(cand.get("source_kind") or ""),
+                        "matched_text": str((shp or {}).get("matched_text") or cand.get("text") or ""),
+                        "value_shape": str(new_rr.get("value_shape") or ""),
+                        "value_range": dict(new_rr.get("value_range") or {}),
+                    }
+                pmc2[key] = new_rr
+                rr = new_rr
+                changed = True
+                final_is_range = bool(str(rr.get("value_shape") or "") == "range" and isinstance(rr.get("value_range"), dict) and rr.get("value") is None)
+        targets[str(key)] = {
+            "range_candidate_exists": bool(has_range),
+            "final_is_range": bool(final_is_range),
+            "value": rr.get("value") if isinstance(rr, dict) else None,
+            "value_shape": str((rr or {}).get("value_shape") or "point") if isinstance(rr, dict) else "point",
+            "value_last_writer_v1": str((rr or {}).get("value_last_writer_v1") or "") if isinstance(rr, dict) else "",
+            "source_url": str((((rr or {}).get("provenance") or {}).get("source_url") if isinstance((rr or {}).get("provenance"), dict) else "") or ""),
+            "matched_text": str((((rr or {}).get("provenance") or {}).get("nlp112_final_range_truth_v1", {}) if isinstance((rr or {}).get("provenance"), dict) else {}).get("matched_text") or ((shp or {}).get("matched_text") if isinstance(shp, dict) else "") or ""),
+        }
+    pr["primary_metrics_canonical"] = pmc2
+    try:
+        pr = _nlp108_sync_primary_metrics_with_canonical_v1(pr, question_contract=qc)
+    except Exception:
+        pass
+    try:
+        pr = _nlp108_sync_summary_with_value_shapes_v1(pr, question_contract=qc)
+    except Exception:
+        pass
+    pr.setdefault("debug", {})
+    if isinstance(pr.get("debug"), dict):
+        pr["debug"]["nlp112_final_output_range_truth_v1"] = {
+            "v": "nlp112_final_output_range_truth_v1",
+            "changed": bool(changed),
+            "targets": targets,
+            "assertion_failed": bool(any(isinstance(v, dict) and v.get("range_candidate_exists") and not v.get("final_is_range") for v in (targets or {}).values())),
+        }
+    out["primary_response"] = pr
+    try:
+        if isinstance(pr.get("primary_metrics_canonical"), dict):
+            out["primary_metrics_canonical"] = dict(pr.get("primary_metrics_canonical") or {})
+            out.setdefault("results", {})
+            if isinstance(out.get("results"), dict):
+                out["results"]["primary_metrics_canonical"] = dict(pr.get("primary_metrics_canonical") or {})
+                out["results"].setdefault("primary_response", {})
+                if isinstance(out["results"].get("primary_response"), dict):
+                    out["results"]["primary_response"]["primary_metrics_canonical"] = dict(pr.get("primary_metrics_canonical") or {})
+        if isinstance(pr.get("primary_metrics"), dict):
+            out.setdefault("primary_response", {})
+            if isinstance(out.get("primary_response"), dict):
+                out["primary_response"]["primary_metrics"] = dict(pr.get("primary_metrics") or {})
+    except Exception:
+        pass
+    out.setdefault("debug", {})
+    if isinstance(out.get("debug"), dict):
+        out["debug"]["nlp112_final_output_range_truth_v1"] = {
+            "v": "nlp112_final_output_range_truth_v1",
+            "changed": bool(changed),
+            "targets": targets,
+            "assertion_failed": bool(any(isinstance(v, dict) and v.get("range_candidate_exists") and not v.get("final_is_range") for v in (targets or {}).values())),
+        }
+    return out
+
+
+# Override NLP111 wrapper with the harder final-output truth pass.
+_nlp111_enforce_final_output_range_truth_v1 = _nlp112_force_final_export_range_truth_v1
+
+# Keep version stamp trustworthy after all late patch setters.
+try:
+    globals()["_YUREEKA_CODE_VERSION_LOCK"] = "NLP112"
+    globals()["CODE_VERSION"] = "NLP112"
+except Exception:
+    pass
