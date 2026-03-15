@@ -501,7 +501,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "NLP114"
+_YUREEKA_CODE_VERSION_LOCK = "NLP115"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 # REFACTOR206: Release Candidate freeze (no pipeline behavior change).
 YUREEKA_RELEASE_CANDIDATE_V1 = False
@@ -44806,16 +44806,13 @@ except Exception:
 
 
 # Why:
-# - Streamlit can execute main() before later end-of-file patch-tracker "ADD" blocks run.
-# - This block registers the current patch *before* main() executes, so harness/version checks see an up-to-date tracker.
+# - Streamlit previously executed main() before later end-of-file patch blocks and helpers were defined.
+# - NLP115 defers main() until the true end of file so late patch helpers are available during runtime.
 try:
     if __name__ == "__main__":
-        main()
+        globals()["_YUREEKA_DEFER_MAIN_UNTIL_EOF_V1"] = True
 except Exception:
-    try:
-        st.exception(Exception(f"Yureeka app crashed during main() execution ({_yureeka_get_code_version()})."))
-    except Exception:
-        pass
+    pass
 # NLP18: patch tracker entry
 try:
     if isinstance(PATCH_TRACKER_V1, list) and not any(str(e.get("patch_id") or "") == "NLP18" for e in PATCH_TRACKER_V1 if isinstance(e, dict)):
@@ -47860,8 +47857,8 @@ except Exception:
 
 # === NLP113: robust final export range truth from selected evidence ===
 try:
-    globals()["_YUREEKA_CODE_VERSION_LOCK"] = "NLP114"
-    globals()["CODE_VERSION"] = "NLP114"
+    globals()["_YUREEKA_CODE_VERSION_LOCK"] = "NLP115"
+    globals()["CODE_VERSION"] = "NLP115"
 except Exception:
     pass
 
@@ -47883,7 +47880,7 @@ except Exception:
 
 try:
     _nlp114_patch = {
-        "patch_id": "NLP114",
+        "patch_id": "NLP115",
         "scope": "hard-final-range-sync",
         "summary": "Enforce final exported range truth in place across all primary_metrics_canonical mirrors, primary metric cards, and executive summary when compatible range evidence is present.",
         "risk": "medium",
@@ -48337,7 +48334,45 @@ _nlp111_enforce_final_output_range_truth_v1 = _nlp114_apply_hard_final_range_syn
 
 # Keep version stamp trustworthy after all late patch setters.
 try:
-    globals()["_YUREEKA_CODE_VERSION_LOCK"] = "NLP114"
-    globals()["CODE_VERSION"] = "NLP114"
+    globals()["_YUREEKA_CODE_VERSION_LOCK"] = "NLP115"
+    globals()["CODE_VERSION"] = "NLP115"
 except Exception:
     pass
+
+
+# NLP115: true end-of-file bootstrap so all late patch helpers are defined before runtime.
+try:
+    globals()["_YUREEKA_CODE_VERSION_LOCK"] = "NLP115"
+    globals()["CODE_VERSION"] = "NLP115"
+except Exception:
+    pass
+try:
+    _nlp115_patch = {
+        "patch_id": "NLP115",
+        "date": "2026-03-15",
+        "title": "NLP115 defer main until after late patch helpers",
+        "type": "bugfix",
+        "summary": "Defers Streamlit main() to end-of-file so late patch helper defs exist during runtime; preserves current range-sync logic.",
+        "acceptance": [
+            "Late patch helpers are defined before app runtime.",
+            "No NameError for late final range sync helpers.",
+            "Version stamp and patch tracker reflect NLP115."
+        ],
+        "risk": "low",
+    }
+    if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "NLP115" for e in PATCH_TRACKER_V1):
+        try:
+            _yureeka_patch_tracker_ensure_head_v1("NLP115", dict(_nlp115_patch))
+        except Exception:
+            PATCH_TRACKER_V1.insert(0, dict(_nlp115_patch))
+except Exception:
+    pass
+
+try:
+    if __name__ == "__main__" and bool(globals().get("_YUREEKA_DEFER_MAIN_UNTIL_EOF_V1")):
+        main()
+except Exception:
+    try:
+        st.exception(Exception(f"Yureeka app crashed during deferred main() execution ({_yureeka_get_code_version()})."))
+    except Exception:
+        pass
