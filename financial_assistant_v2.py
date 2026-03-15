@@ -501,7 +501,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "NLP113"
+_YUREEKA_CODE_VERSION_LOCK = "NLP114"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 # REFACTOR206: Release Candidate freeze (no pipeline behavior change).
 YUREEKA_RELEASE_CANDIDATE_V1 = False
@@ -36408,6 +36408,23 @@ def main():
                     output["debug"]["nlp59_llm_cache_write_summary_v1"] = _yureeka_llm_cache_write_summary_v1(stage="analysis")
                     output["debug"]["nlp60_llm_cache_inventory_v1"] = _yureeka_llm_cache_inventory_v1(stage="analysis")
                     try:
+                        output = _nlp114_apply_hard_final_range_sync_v1(
+                            output,
+                            question_contract=_nlp105_question_contract,
+                            web_context=web_context,
+                        )
+                    except Exception as _nlp114_exc:
+                        try:
+                            output.setdefault("debug", {})
+                            if isinstance(output.get("debug"), dict):
+                                output["debug"]["nlp114_final_output_range_truth_v1"] = {
+                                    "v": "nlp114_final_output_range_truth_v1",
+                                    "applied": False,
+                                    "exception": str(_nlp114_exc),
+                                }
+                        except Exception:
+                            pass
+                    try:
                         if _yureeka_llm_flag_bool_v1("ENABLE_LLM_SMOKE_TEST"):
                             output["debug"]["llm_smoke_test_v1"] = _yureeka_llm_smoke_test_v1(stage="analysis")
                     except Exception:
@@ -47843,8 +47860,8 @@ except Exception:
 
 # === NLP113: robust final export range truth from selected evidence ===
 try:
-    globals()["_YUREEKA_CODE_VERSION_LOCK"] = "NLP113"
-    globals()["CODE_VERSION"] = "NLP113"
+    globals()["_YUREEKA_CODE_VERSION_LOCK"] = "NLP114"
+    globals()["CODE_VERSION"] = "NLP114"
 except Exception:
     pass
 
@@ -47859,6 +47876,22 @@ try:
         PATCH_TRACKER_V1.insert(0, dict(_nlp113_patch))
     try:
         _yureeka_patch_tracker_ensure_head_v1("NLP113", dict(_nlp113_patch))
+    except Exception:
+        pass
+except Exception:
+    pass
+
+try:
+    _nlp114_patch = {
+        "patch_id": "NLP114",
+        "scope": "hard-final-range-sync",
+        "summary": "Enforce final exported range truth in place across all primary_metrics_canonical mirrors, primary metric cards, and executive summary when compatible range evidence is present.",
+        "risk": "medium",
+    }
+    if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "NLP114" for e in PATCH_TRACKER_V1):
+        PATCH_TRACKER_V1.insert(0, dict(_nlp114_patch))
+    try:
+        _yureeka_patch_tracker_ensure_head_v1("NLP114", dict(_nlp114_patch))
     except Exception:
         pass
 except Exception:
@@ -48114,12 +48147,197 @@ def _nlp113_force_final_export_range_truth_v1(output: dict, *, question_contract
     out['primary_response'] = pr
     return out
 
-# Replace prior final-output wrapper with robust selected-evidence rewrite.
-_nlp111_enforce_final_output_range_truth_v1 = _nlp113_force_final_export_range_truth_v1
+
+def _nlp114_iter_pmc_holders_v1(out: dict):
+    holders = []
+    if not isinstance(out, dict):
+        return holders
+    pr = out.get('primary_response')
+    if isinstance(pr, dict):
+        if not isinstance(pr.get('primary_metrics_canonical'), dict):
+            pr['primary_metrics_canonical'] = {}
+        holders.append(('primary_response.primary_metrics_canonical', pr['primary_metrics_canonical']))
+    if not isinstance(out.get('primary_metrics_canonical'), dict):
+        out['primary_metrics_canonical'] = dict((pr or {}).get('primary_metrics_canonical') or {})
+    if isinstance(out.get('primary_metrics_canonical'), dict):
+        holders.append(('primary_metrics_canonical', out['primary_metrics_canonical']))
+    rr = out.get('results')
+    if isinstance(rr, dict):
+        if not isinstance(rr.get('primary_metrics_canonical'), dict):
+            rr['primary_metrics_canonical'] = dict((pr or {}).get('primary_metrics_canonical') or {})
+        if isinstance(rr.get('primary_metrics_canonical'), dict):
+            holders.append(('results.primary_metrics_canonical', rr['primary_metrics_canonical']))
+        rpr = rr.get('primary_response')
+        if isinstance(rpr, dict):
+            if not isinstance(rpr.get('primary_metrics_canonical'), dict):
+                rpr['primary_metrics_canonical'] = dict((pr or {}).get('primary_metrics_canonical') or {})
+            if isinstance(rpr.get('primary_metrics_canonical'), dict):
+                holders.append(('results.primary_response.primary_metrics_canonical', rpr['primary_metrics_canonical']))
+    return holders
+
+def _nlp114_collect_final_range_candidates_v1(metric_key: str, out: dict):
+    cands = []
+    try:
+        for label, pmc in _nlp114_iter_pmc_holders_v1(out):
+            rr = pmc.get(metric_key) if isinstance(pmc, dict) else None
+            if isinstance(rr, dict):
+                for lbl, txt in _nlp113_row_text_candidates_v1(rr, out):
+                    shp = _nlp113_parse_simple_range_from_text_v1(txt, unit_hint=rr.get('unit') or '')
+                    if isinstance(shp, dict) and shp.get('shape') == 'range':
+                        cands.append((f'{label}:{lbl}', shp, rr))
+    except Exception:
+        pass
+    try:
+        wc = out.get('web_context') if isinstance(out.get('web_context'), dict) else {}
+        if isinstance(wc, dict):
+            for item in (wc.get('scraped_meta') or []):
+                txt = ''
+                if isinstance(item, dict):
+                    txt = item.get('text') or item.get('content') or item.get('snippet') or ''
+                    shp = _nlp113_parse_simple_range_from_text_v1(txt, unit_hint='')
+                    if isinstance(shp, dict) and shp.get('shape') == 'range':
+                        cands.append(('web_context.scraped_meta', shp, {'source_url': item.get('source_url') or item.get('url') or ''}))
+    except Exception:
+        pass
+    # prefer explicit selected evidence over derived views
+    priority = {
+        'primary_response.primary_metrics_canonical:evidence_best_snippet': 0,
+        'primary_response.primary_metrics_canonical:best_candidate_context': 1,
+        'primary_metrics_canonical:evidence_best_snippet': 2,
+        'results.primary_metrics_canonical:evidence_best_snippet': 3,
+        'results.primary_response.primary_metrics_canonical:evidence_best_snippet': 4,
+        'primary_response.primary_metrics_canonical:executive_summary': 6,
+        'primary_response.primary_metrics_canonical:metric_1_display': 7,
+        'web_context.scraped_meta': 8,
+    }
+    cands.sort(key=lambda t: (priority.get(t[0], 99), -abs((t[1] or {}).get('max', 0) - (t[1] or {}).get('min', 0))))
+    return cands
+
+def _nlp114_apply_hard_final_range_sync_v1(output: dict, *, question_contract: dict = None, web_context: dict = None):
+    out = output if isinstance(output, dict) else {}
+    if not isinstance(out, dict):
+        return output
+    if isinstance(web_context, dict) and not isinstance(out.get('web_context'), dict):
+        out['web_context'] = web_context
+    pr = out.get('primary_response') if isinstance(out.get('primary_response'), dict) else {}
+    pmc = pr.get('primary_metrics_canonical') if isinstance(pr.get('primary_metrics_canonical'), dict) else out.get('primary_metrics_canonical')
+    if not isinstance(pmc, dict) or not pmc:
+        return out
+    targets = _nlp113_pick_target_keys_v1(pmc, out)
+    applied = False
+    audits = {}
+    for key in targets:
+        cands = _nlp114_collect_final_range_candidates_v1(key, out)
+        best_label = ''; best_shape = {}; best_row = {}
+        if cands:
+            best_label, best_shape, best_row = cands[0]
+        audits[str(key)] = {'candidate_count': len(cands), 'best_label': str(best_label or ''), 'best_shape': dict(best_shape) if isinstance(best_shape, dict) else {}}
+        if not (isinstance(best_shape, dict) and best_shape.get('shape') == 'range'):
+            continue
+        min_v = float(best_shape.get('min')); max_v = float(best_shape.get('max'))
+        if min_v == max_v:
+            continue
+        source_url = ''
+        try:
+            source_url = str((((best_row.get('provenance') or {}).get('best_candidate') or {}).get('source_url') or ((best_row.get('provenance') or {}).get('source_url') or best_row.get('source_url') or '')))
+        except Exception:
+            source_url = str(best_row.get('source_url') or '')
+        for holder_label, holder in _nlp114_iter_pmc_holders_v1(out):
+            rr = holder.get(key) if isinstance(holder, dict) else None
+            if not isinstance(rr, dict):
+                continue
+            prev_value = rr.get('value')
+            unit = str(rr.get('unit') or best_shape.get('unit') or '').strip()
+            rr['value'] = None
+            rr['value_shape'] = 'range'
+            rr['value_point_fallback'] = prev_value
+            rr['value_range'] = {
+                'min': min_v, 'max': max_v, 'n': 2,
+                'method': 'nlp114_hard_final_range_sync_v1',
+                'matched_text': str(best_shape.get('matched_text') or ''),
+                'source_label': str(best_label or ''),
+                'source_url': str(source_url or ''),
+            }
+            rr['range'] = {'min': min_v, 'max': max_v, 'n': 2, 'method': 'nlp114_hard_final_range_sync_v1'}
+            rr['value_range_display'] = f"{min_v:g}-{max_v:g} {unit}".strip()
+            rr['display_value'] = rr['value_range_display']
+            rr['value_last_writer_v1'] = 'nlp114_hard_final_range_sync_v1'
+            rr['selected_value_shape_v1'] = {'metric_key': str(key), 'value_shape': 'range', 'display_value': rr['value_range_display']}
+            rr['evidence_best_snippet'] = str(best_shape.get('matched_text') or rr.get('evidence_best_snippet') or '')
+            prov = rr.get('provenance') if isinstance(rr.get('provenance'), dict) else {}
+            bc = prov.get('best_candidate') if isinstance(prov.get('best_candidate'), dict) else {}
+            bc['context_snippet'] = rr['evidence_best_snippet']
+            if source_url:
+                bc['source_url'] = source_url
+                prov['source_url'] = source_url
+            bc['value_shape'] = 'range'
+            bc['value_range'] = {'min': min_v, 'max': max_v}
+            prov['best_candidate'] = bc
+            prov['method'] = 'nlp114_hard_final_range_sync_v1'
+            prov['nlp114_final_range_truth_v1'] = {
+                'applied': True,
+                'holder': holder_label,
+                'metric_key': str(key),
+                'source_label': str(best_label or ''),
+                'source_url': str(source_url or ''),
+                'matched_text': rr['evidence_best_snippet'],
+                'value_range': {'min': min_v, 'max': max_v},
+                'previous_point_value': prev_value,
+            }
+            rr['provenance'] = prov
+            dbg = rr.get('debug') if isinstance(rr.get('debug'), dict) else {}
+            dbg['nlp114_final_range_truth_v1'] = {
+                'v': 'nlp114_final_range_truth_v1',
+                'applied': True,
+                'metric_key': str(key),
+                'holder': holder_label,
+                'value_shape': 'range',
+                'value_range': {'min': min_v, 'max': max_v},
+                'source_label': str(best_label or ''),
+            }
+            rr['debug'] = dbg
+            holder[key] = rr
+        # sync summary + cards across primary_response and top-level
+        pr = out.get('primary_response') if isinstance(out.get('primary_response'), dict) else {}
+        pmetrics = pr.get('primary_metrics') if isinstance(pr.get('primary_metrics'), dict) else {}
+        m1 = pmetrics.get('metric_1') if isinstance(pmetrics.get('metric_1'), dict) else {}
+        m1['value'] = f"{min_v:g}-{max_v:g}"
+        m1['display_value'] = f"{min_v:g}-{max_v:g} {str(((pr.get('primary_metrics_canonical') or {}).get(key) or {}).get('unit') or best_shape.get('unit') or '').strip()}".strip()
+        m1['value_shape'] = 'range'
+        m1['value_range'] = {'min': min_v, 'max': max_v}
+        pmetrics['metric_1'] = m1
+        pr['primary_metrics'] = pmetrics
+        out['primary_metrics'] = pmetrics
+        summ = str(pr.get('executive_summary') or out.get('executive_summary') or '')
+        forced = f"Selected estimate is a range of {min_v:g}-{max_v:g} {str(((pr.get('primary_metrics_canonical') or {}).get(key) or {}).get('unit') or best_shape.get('unit') or '').strip()}.".strip()
+        if forced not in summ:
+            summ = (summ + ' ' + forced).strip() if summ else forced
+        pr['executive_summary'] = summ
+        out['executive_summary'] = summ
+        out['primary_response'] = pr
+        applied = True
+        break
+    dbg = out.get('debug') if isinstance(out.get('debug'), dict) else {}
+    dbg['nlp114_final_output_range_truth_v1'] = {
+        'v': 'nlp114_final_output_range_truth_v1',
+        'applied': bool(applied),
+        'targets': audits,
+        'assertion_failed': bool(any(isinstance(v, dict) and v.get('candidate_count') and not applied for v in audits.values())),
+    }
+    out['debug'] = dbg
+    pr = out.get('primary_response') if isinstance(out.get('primary_response'), dict) else {}
+    prdbg = pr.get('debug') if isinstance(pr.get('debug'), dict) else {}
+    prdbg['nlp114_final_output_range_truth_v1'] = dbg['nlp114_final_output_range_truth_v1']
+    pr['debug'] = prdbg
+    out['primary_response'] = pr
+    return out
+
+# Replace prior final-output wrapper with hard in-place final synchronization.
+_nlp111_enforce_final_output_range_truth_v1 = _nlp114_apply_hard_final_range_sync_v1
 
 # Keep version stamp trustworthy after all late patch setters.
 try:
-    globals()["_YUREEKA_CODE_VERSION_LOCK"] = "NLP113"
-    globals()["CODE_VERSION"] = "NLP113"
+    globals()["_YUREEKA_CODE_VERSION_LOCK"] = "NLP114"
+    globals()["CODE_VERSION"] = "NLP114"
 except Exception:
     pass
