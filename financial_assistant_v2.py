@@ -49872,6 +49872,135 @@ try:
 except Exception:
     pass
 
+# NLP122: deferred main moved to true EOF; see end-of-file block below.
+
+
+# === NLP122: target-point final hard override (maintainable + target-scoped) ===
+def _nlp122_force_target_point_hard_override_v1(out: dict, question_contract: dict = None) -> dict:
+    if not isinstance(out, dict):
+        return out
+    pr = out.get('primary_response') if isinstance(out.get('primary_response'), dict) else {}
+    pmc = pr.get('primary_metrics_canonical') if isinstance(pr.get('primary_metrics_canonical'), dict) else out.get('primary_metrics_canonical')
+    if not isinstance(pmc, dict) or not pmc:
+        return out
+    qc = _nlp120_get_question_contract_v1(out, question_contract=question_contract)
+    target_keys = _nlp120_pick_target_keys_v1(pmc, qc, out)
+    topdbg = out.get('debug') if isinstance(out.get('debug'), dict) else {}
+    tgt_dbg = topdbg.get('nlp120_target_scoped_truth_v1') if isinstance(topdbg.get('nlp120_target_scoped_truth_v1'), dict) else {}
+    target_audits = tgt_dbg.get('targets') if isinstance(tgt_dbg.get('targets'), dict) else {}
+    changed = False
+    audits = {}
+    for key in target_keys:
+        rr = pmc.get(key) if isinstance(pmc.get(key), dict) else None
+        a = target_audits.get(str(key)) if isinstance(target_audits.get(str(key)), dict) else {}
+        expected_shape = _nlp119_expected_value_shape_v1(qc, key, rr or {})
+        if expected_shape != 'point':
+            audits[str(key)] = {'skipped': 'expected_non_point'}
+            continue
+        applied = bool(a.get('applied'))
+        try:
+            v_after = a.get('value_after')
+            v_after = None if v_after is None else float(v_after)
+        except Exception:
+            v_after = None
+        if not applied or v_after is None:
+            audits[str(key)] = {'skipped': 'no_point_audit'}
+            continue
+        base = dict(rr) if isinstance(rr, dict) else {}
+        unit = str(base.get('unit') or '').strip()
+        if not unit:
+            unit = 'M' if abs(v_after) >= 1 else ''
+        base['value'] = float(v_after)
+        base['display_value'] = f"{float(v_after):g} {unit}".strip()
+        base['unit'] = unit
+        for kk in ('value_shape', 'value_range', 'range', 'value_range_display', 'value_point_fallback'):
+            base.pop(kk, None)
+        if a.get('candidate_source_url'):
+            base['source_url'] = a.get('candidate_source_url')
+        base['value_last_writer_v1'] = 'nlp122_target_point_hard_override_v1'
+        dbg = base.get('debug') if isinstance(base.get('debug'), dict) else {}
+        dbg['nlp122_target_point_hard_override_v1'] = {
+            'v': 'nlp122_target_point_hard_override_v1',
+            'applied': True,
+            'value': float(v_after),
+            'unit': unit,
+            'from_nlp120_value_after': True,
+        }
+        # Explicitly mark legacy range rewrite as blocked for this target.
+        dbg['nlp114_final_output_range_truth_v1'] = {'v': 'nlp114_final_output_range_truth_v1', 'applied': False, 'blocked_by': 'nlp122_target_point_hard_override_v1'}
+        base['debug'] = dbg
+        # Sync canonical holders.
+        for _, holder in _nlp114_iter_pmc_holders_v1(out):
+            if isinstance(holder, dict):
+                holder[str(key)] = dict(base)
+        # Sync metric cards/views.
+        if isinstance(out.get('primary_response'), dict):
+            _nlp121_force_metric1_point_v1(out['primary_response'], base)
+        _nlp121_force_metric1_point_v1(out, base)
+        if isinstance(out.get('results'), dict):
+            _nlp121_force_metric1_point_v1(out['results'], base)
+            if isinstance(out['results'].get('primary_response'), dict):
+                _nlp121_force_metric1_point_v1(out['results']['primary_response'], base)
+        # Sync summaries and remove stale range sentence fragments.
+        point_sentence = _nlp121_point_sentence_v1(float(v_after), unit)
+        holders = [
+            out,
+            out.get('primary_response') if isinstance(out.get('primary_response'), dict) else None,
+            out.get('results') if isinstance(out.get('results'), dict) else None,
+            (out.get('results') or {}).get('primary_response') if isinstance((out.get('results') or {}).get('primary_response'), dict) else None,
+        ]
+        for holder in holders:
+            if not isinstance(holder, dict):
+                continue
+            cleaned = _nlp121_clean_summary_for_point_v1(holder.get('executive_summary'))
+            cleaned = re.sub(r'\s*Selected estimate is a range of\s+[^.]+\.?', '', cleaned, flags=re.I)
+            cleaned = re.sub(r'\s*Selected estimate is\s+\d{4}\s*-\s*\d{4}\s*[A-Za-z%$]*\.?', '', cleaned, flags=re.I)
+            holder['executive_summary'] = ((cleaned + ' ' + point_sentence).strip() if point_sentence else cleaned)
+        audits[str(key)] = {
+            'applied': True,
+            'value': float(v_after),
+            'unit': unit,
+            'source_url': base.get('source_url'),
+            'expected_shape': expected_shape,
+        }
+        changed = True
+
+    dbg = out.get('debug') if isinstance(out.get('debug'), dict) else {}
+    dbg['nlp122_target_point_hard_override_v1'] = {
+        'v': 'nlp122_target_point_hard_override_v1',
+        'changed': changed,
+        'targets': audits,
+        'question_contract': qc,
+    }
+    # Also suppress legacy range-debug signal when overridden target point exists.
+    if changed:
+        dbg['nlp114_final_output_range_truth_v1'] = {'v': 'nlp114_final_output_range_truth_v1', 'applied': False, 'blocked_by': 'nlp122_target_point_hard_override_v1'}
+    out['debug'] = dbg
+    pr = out.get('primary_response') if isinstance(out.get('primary_response'), dict) else {}
+    prdbg = pr.get('debug') if isinstance(pr.get('debug'), dict) else {}
+    prdbg['nlp122_target_point_hard_override_v1'] = dbg['nlp122_target_point_hard_override_v1']
+    if changed:
+        prdbg['nlp114_final_output_range_truth_v1'] = {'v': 'nlp114_final_output_range_truth_v1', 'applied': False, 'blocked_by': 'nlp122_target_point_hard_override_v1'}
+    pr['debug'] = prdbg
+    out['primary_response'] = pr
+    return out
+
+
+def _nlp122_enforce_final_output_truth_v1(output: dict, *, question_contract: dict = None, web_context: dict = None):
+    out = _nlp121_enforce_final_output_truth_v1(output, question_contract=question_contract, web_context=web_context)
+    out = _nlp122_force_target_point_hard_override_v1(out, question_contract=question_contract)
+    return out
+
+
+# Supersede earlier final-output wrapper with target-point hard override.
+_nlp111_enforce_final_output_range_truth_v1 = _nlp122_enforce_final_output_truth_v1
+
+try:
+    globals()['_YUREEKA_CODE_VERSION_LOCK'] = 'NLP122'
+    globals()['CODE_VERSION'] = 'NLP122'
+except Exception:
+    pass
+
 try:
     if __name__ == "__main__" and bool(globals().get("_YUREEKA_DEFER_MAIN_UNTIL_EOF_V1")):
         main()
