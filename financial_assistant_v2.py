@@ -501,7 +501,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "NLP120"
+_YUREEKA_CODE_VERSION_LOCK = "NLP121"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 # REFACTOR206: Release Candidate freeze (no pipeline behavior change).
 YUREEKA_RELEASE_CANDIDATE_V1 = False
@@ -49754,8 +49754,121 @@ def _nlp120_enforce_final_output_truth_v1(output: dict, *, question_contract: di
 _nlp111_enforce_final_output_range_truth_v1 = _nlp120_enforce_final_output_truth_v1
 
 try:
-    globals()['_YUREEKA_CODE_VERSION_LOCK'] = 'NLP120'
-    globals()['CODE_VERSION'] = 'NLP120'
+    globals()['_YUREEKA_CODE_VERSION_LOCK'] = 'NLP121'
+    globals()['CODE_VERSION'] = 'NLP121'
+except Exception:
+    pass
+
+
+# === NLP121: target-point final view sync (maintainable + target-scoped) ===
+def _nlp121_point_sentence_v1(val, unit):
+    try:
+        return f"Selected estimate is {float(val):g} {str(unit or '').strip()}.".strip()
+    except Exception:
+        return ""
+
+
+def _nlp121_clean_summary_for_point_v1(summary: str) -> str:
+    s = str(summary or '')
+    # Remove synthetic range / stale selected-estimate sentences only; keep broader narrative intact.
+    s = re.sub(r'\s*Selected estimate is a range of\s+[^.]+\.?', '', s, flags=re.I)
+    s = re.sub(r'\s*Selected estimate is\s+[^.]+\.?', '', s, flags=re.I)
+    s = re.sub(r'\s{2,}', ' ', s).strip()
+    return s
+
+
+def _nlp121_force_metric1_point_v1(holder: dict, rr: dict):
+    if not isinstance(holder, dict) or not isinstance(rr, dict):
+        return
+    try:
+        val = rr.get('value')
+        if val is None:
+            return
+        val = float(val)
+    except Exception:
+        return
+    unit = str(rr.get('unit') or '').strip()
+    pm = holder.get('primary_metrics') if isinstance(holder.get('primary_metrics'), dict) else {}
+    m1 = pm.get('metric_1') if isinstance(pm.get('metric_1'), dict) else {}
+    m1['value'] = f"{val:g}"
+    m1['display_value'] = f"{val:g} {unit}".strip()
+    m1['unit'] = unit
+    for kk in ('value_shape', 'value_range', 'range', 'value_range_display', 'value_point_fallback'):
+        m1.pop(kk, None)
+    pm['metric_1'] = m1
+    holder['primary_metrics'] = pm
+
+
+def _nlp121_force_target_point_views_v1(out: dict, question_contract: dict = None) -> dict:
+    if not isinstance(out, dict):
+        return out
+    pr = out.get('primary_response') if isinstance(out.get('primary_response'), dict) else {}
+    pmc = pr.get('primary_metrics_canonical') if isinstance(pr.get('primary_metrics_canonical'), dict) else out.get('primary_metrics_canonical')
+    if not isinstance(pmc, dict) or not pmc:
+        return out
+    qc = _nlp120_get_question_contract_v1(out, question_contract=question_contract)
+    target_keys = _nlp120_pick_target_keys_v1(pmc, qc, out)
+    audits = {}
+    changed = False
+    for key in target_keys:
+        rr = pmc.get(key) if isinstance(pmc.get(key), dict) else None
+        if not isinstance(rr, dict):
+            continue
+        if str(rr.get('value_shape') or '').strip().lower() == 'range':
+            audits[str(key)] = {'skipped': 'range_truth_present'}
+            continue
+        try:
+            val = rr.get('value')
+            if val is None:
+                audits[str(key)] = {'skipped': 'no_point_value'}
+                continue
+            val = float(val)
+        except Exception:
+            audits[str(key)] = {'skipped': 'bad_point_value'}
+            continue
+        unit = str(rr.get('unit') or '').strip()
+        # Sync all known views from the target canonical row.
+        for _, holder in _nlp114_iter_pmc_holders_v1(out):
+            if isinstance(holder, dict):
+                holder[key] = dict(rr)
+        if isinstance(out.get('primary_response'), dict):
+            _nlp121_force_metric1_point_v1(out['primary_response'], rr)
+        _nlp121_force_metric1_point_v1(out, rr)
+        if isinstance(out.get('results'), dict):
+            _nlp121_force_metric1_point_v1(out['results'], rr)
+            if isinstance(out['results'].get('primary_response'), dict):
+                _nlp121_force_metric1_point_v1(out['results']['primary_response'], rr)
+        # Sync summaries.
+        point_sentence = _nlp121_point_sentence_v1(val, unit)
+        for holder in [out, out.get('primary_response'), (out.get('results') if isinstance(out.get('results'), dict) else None), ((out.get('results') or {}).get('primary_response') if isinstance((out.get('results') or {}).get('primary_response'), dict) else None)]:
+            if not isinstance(holder, dict):
+                continue
+            cleaned = _nlp121_clean_summary_for_point_v1(holder.get('executive_summary'))
+            holder['executive_summary'] = ((cleaned + ' ' + point_sentence).strip() if point_sentence else cleaned)
+        audits[str(key)] = {'applied': True, 'value': val, 'unit': unit, 'point_sentence': point_sentence}
+        changed = True
+    dbg = out.get('debug') if isinstance(out.get('debug'), dict) else {}
+    dbg['nlp121_target_point_views_v1'] = {'v': 'nlp121_target_point_views_v1', 'changed': changed, 'targets': audits, 'question_contract': qc}
+    out['debug'] = dbg
+    pr = out.get('primary_response') if isinstance(out.get('primary_response'), dict) else {}
+    prdbg = pr.get('debug') if isinstance(pr.get('debug'), dict) else {}
+    prdbg['nlp121_target_point_views_v1'] = dbg['nlp121_target_point_views_v1']
+    pr['debug'] = prdbg
+    out['primary_response'] = pr
+    return out
+
+
+def _nlp121_enforce_final_output_truth_v1(output: dict, *, question_contract: dict = None, web_context: dict = None):
+    out = _nlp120_enforce_final_output_truth_v1(output, question_contract=question_contract, web_context=web_context)
+    out = _nlp121_force_target_point_views_v1(out, question_contract=question_contract)
+    return out
+
+# Supersede earlier final-output wrapper with target-point final sync.
+_nlp111_enforce_final_output_range_truth_v1 = _nlp121_enforce_final_output_truth_v1
+
+try:
+    globals()['_YUREEKA_CODE_VERSION_LOCK'] = 'NLP121'
+    globals()['CODE_VERSION'] = 'NLP121'
 except Exception:
     pass
 
