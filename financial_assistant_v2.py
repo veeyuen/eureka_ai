@@ -48347,9 +48347,9 @@ except Exception:
 # (e.g. 2026-2040) and CAGR/percent snippets from corrupting point-valued metrics.
 try:
     _nlp116_patch = {
-        "patch_id": "NLP116",
+        "patch_id": "NLP117",
         "date": "2026-03-16",
-        "title": "NLP116 tighten final range evidence gating",
+        "title": "NLP117 strict direct-evidence range sync and stock-count question contract",
         "type": "bugfix",
         "summary": "Restricts hard final range sync to direct evidence-bearing metric ranges, rejects year spans/CAGR/percent text, and ignores summary/card-derived pseudo-ranges.",
         "acceptance": [
@@ -48359,7 +48359,7 @@ try:
         ],
         "risk": "low",
     }
-    if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "NLP116" for e in PATCH_TRACKER_V1):
+    if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "NLP117" for e in PATCH_TRACKER_V1):
         try:
             _yureeka_patch_tracker_ensure_head_v1("NLP116", dict(_nlp116_patch))
         except Exception:
@@ -48530,31 +48530,245 @@ def _nlp116_apply_hard_final_range_sync_v1(output: dict, *, question_contract: d
 # Tighten final range sync with direct-evidence-only plausible range gating.
 _nlp111_enforce_final_output_range_truth_v1 = _nlp116_apply_hard_final_range_sync_v1
 
+
+
+# [MOD:MAINTAINABLE_REGISTRIES]
+# NLP117: supersede over-aggressive final range sync and fix charger-stock question contract.
+try:
+    _nlp117_patch = {
+        "patch_id": "NLP117",
+        "date": "2026-03-16",
+        "title": "NLP117 strict direct-evidence range sync and stock-count question contract",
+        "type": "bugfix",
+        "summary": "Disables summary/card-derived pseudo-range promotion, keeps point-valued charger cases as points, and corrects charger-stock question contracts away from annual_flow.",
+        "acceptance": [
+            "T02 no longer exports fake 2026-2040 or 2026-2034 M ranges.",
+            "T06 still exports a true 220-280 M range from direct evidence.",
+            "Charger stock/count questions parse as stock_count rather than annual_flow."
+        ],
+        "risk": "low",
+    }
+    if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "NLP117" for e in PATCH_TRACKER_V1):
+        try:
+            _yureeka_patch_tracker_ensure_head_v1("NLP117", dict(_nlp117_patch))
+        except Exception:
+            PATCH_TRACKER_V1.insert(0, dict(_nlp117_patch))
+except Exception:
+    pass
+
+try:
+    _nlp117_prev_parse_question_contract_v1 = _nlp105_parse_question_contract_v1
+except Exception:
+    _nlp117_prev_parse_question_contract_v1 = None
+
+
+def _nlp117_parse_question_contract_v1(question_text: str, *, category_hint: str = "", registry: dict = None) -> dict:
+    try:
+        base = _nlp117_prev_parse_question_contract_v1(question_text, category_hint=category_hint, registry=registry) if callable(_nlp117_prev_parse_question_contract_v1) else {}
+    except Exception:
+        base = {}
+    out = dict(base) if isinstance(base, dict) else {}
+    q = str(question_text or "")
+    norm = _nlp100_normalize_text_v1(q)
+    fam = str(out.get('target_family') or '').strip().lower()
+    is_charger_stock_q = bool(
+        fam in ('charging_infrastructure_stock', 'public_chargers', 'private_residential_chargers')
+        or re.search(r"\b(number of|how many|public ev charging|public charging|charging connections|charging points|public chargers|ev chargers|chargers)\b", norm)
+    )
+    if is_charger_stock_q:
+        # Charger-count questions should not be annual_flow merely because they are projected.
+        out['target_family'] = fam or 'charging_infrastructure_stock'
+        out['measure_kind'] = 'stock_count'
+        out['unit_family'] = 'count'
+        if not str(out.get('time_relation') or '').strip() and re.search(r"\b(by|through|to)\s+(19\d{2}|20\d{2}|21\d{2})\b", norm):
+            out['time_relation'] = 'by_horizon'
+        if not out.get('time_anchor'):
+            try:
+                yrs = [int(y) for y in re.findall(r"\b(19\d{2}|20\d{2}|21\d{2})\b", q)]
+                if yrs:
+                    out['time_anchor'] = yrs[-1]
+            except Exception:
+                pass
+        dbg_hits = dict(out.get('measure_kind_hits') or {}) if isinstance(out.get('measure_kind_hits'), dict) else {}
+        dbg_hits.setdefault('stock_count', [])
+        if 'nlp117_charger_stock_question_override' not in dbg_hits['stock_count']:
+            dbg_hits['stock_count'].append('nlp117_charger_stock_question_override')
+        out['measure_kind_hits'] = dbg_hits
+    out['v'] = 'nlp117_question_contract_v2'
+    return out
+
+
+_nlp105_parse_question_contract_v1 = _nlp117_parse_question_contract_v1
+
+
+def _nlp117_collect_direct_evidence_texts_v1(metric_row: dict):
+    rr = metric_row if isinstance(metric_row, dict) else {}
+    seen = set(); items = []
+    def _add(label, txt):
+        s = str(txt or '').strip()
+        if s and s not in seen:
+            seen.add(s)
+            items.append((label, s))
+    _add('evidence_best_snippet', rr.get('evidence_best_snippet'))
+    try:
+        _add('best_candidate_context', (((rr.get('provenance') or {}).get('best_candidate') or {}).get('context_snippet')))
+    except Exception:
+        pass
+    try:
+        for item in (rr.get('evidence_snippets_top') or []):
+            if isinstance(item, dict):
+                _add('evidence_snippets_top', item.get('snippet') or item.get('text') or item.get('context_snippet'))
+    except Exception:
+        pass
+    return items
+
+
+def _nlp117_direct_range_shape_for_row_v1(metric_key: str, row: dict, question_contract: dict = None):
+    rr = row if isinstance(row, dict) else {}
+    for label, txt in _nlp117_collect_direct_evidence_texts_v1(rr):
+        shp = _nlp113_parse_simple_range_from_text_v1(txt, unit_hint=rr.get('unit') or '')
+        if _nlp116_is_plausible_range_shape_v1(metric_key, shp, txt, row=rr, question_contract=question_contract):
+            return label, shp, txt
+    return '', {}, ''
+
+
+def _nlp117_enforce_final_output_range_truth_v1(output: dict, *, question_contract: dict = None, web_context: dict = None):
+    out = dict(output) if isinstance(output, dict) else {}
+    pr = out.get('primary_response') if isinstance(out.get('primary_response'), dict) else {}
+    pmc = pr.get('primary_metrics_canonical') if isinstance(pr.get('primary_metrics_canonical'), dict) else out.get('primary_metrics_canonical')
+    if not isinstance(pmc, dict) or not pmc:
+        return output if isinstance(output, dict) else out
+    # Build strict QC from explicit argument or exported debug.
+    qc = question_contract if isinstance(question_contract, dict) else None
+    if not isinstance(qc, dict):
+        try:
+            qc = (((pr.get('debug') or {}).get('nlp105_question_contract_v1') or {}).get('question_contract')) if isinstance(pr.get('debug'), dict) else None
+        except Exception:
+            qc = None
+    if not isinstance(qc, dict):
+        qc = {}
+    keys = _nlp113_pick_target_keys_v1(pmc, out)
+    audits = {}
+    changed = False
+    for key in keys:
+        rr = pmc.get(key) if isinstance(pmc.get(key), dict) else None
+        if not isinstance(rr, dict):
+            continue
+        label, shp, txt = _nlp117_direct_range_shape_for_row_v1(key, rr, question_contract=qc)
+        audits[str(key)] = {
+            'direct_range_candidate': bool(isinstance(shp, dict) and shp.get('shape') == 'range'),
+            'source_label': str(label or ''),
+            'matched_text': str(txt or ''),
+            'pre_value': rr.get('value'),
+            'pre_value_shape': str(rr.get('value_shape') or ''),
+        }
+        if not (isinstance(shp, dict) and shp.get('shape') == 'range'):
+            # Keep point-valued rows untouched. Explicitly remove suspicious fake ranges if present.
+            if str(rr.get('value_shape') or '') == 'range':
+                vr = rr.get('value_range') if isinstance(rr.get('value_range'), dict) else {}
+                if _nlp116_is_year_like_pair_v1(vr.get('min'), vr.get('max')):
+                    prev_point = rr.get('value_point_fallback')
+                    if prev_point is not None:
+                        rr['value'] = prev_point
+                    rr.pop('value_shape', None)
+                    rr.pop('value_range', None)
+                    rr.pop('range', None)
+                    rr.pop('value_range_display', None)
+                    rr['display_value'] = f"{rr.get('value')} {str(rr.get('unit') or '').strip()}".strip()
+                    dbg = rr.get('debug') if isinstance(rr.get('debug'), dict) else {}
+                    dbg['nlp117_fake_range_reverted_v1'] = {
+                        'applied': True,
+                        'reason': 'year_like_range_without_direct_evidence',
+                        'metric_key': str(key),
+                    }
+                    rr['debug'] = dbg
+                    pmc[key] = rr
+                    changed = True
+            continue
+        source_url = ''
+        try:
+            source_url = str((((rr.get('provenance') or {}).get('best_candidate') or {}).get('source_url') or ((rr.get('provenance') or {}).get('source_url') or rr.get('source_url') or '')))
+        except Exception:
+            source_url = str(rr.get('source_url') or '')
+        new_rr = _nlp113_apply_range_truth_to_row_v1(key, rr, shp, source_url=source_url, source_kind=f'nlp117:{label or "direct_evidence"}')
+        dbg = new_rr.get('debug') if isinstance(new_rr.get('debug'), dict) else {}
+        dbg['nlp117_final_range_truth_v1'] = {
+            'v': 'nlp117_final_range_truth_v1',
+            'applied': True,
+            'metric_key': str(key),
+            'source_label': str(label or ''),
+            'matched_text': str(txt or ''),
+        }
+        new_rr['debug'] = dbg
+        pmc[key] = new_rr
+        changed = True
+    pr['primary_metrics_canonical'] = pmc
+    out['primary_response'] = pr
+    try:
+        out['primary_metrics_canonical'] = dict(pmc)
+        out.setdefault('results', {})
+        if isinstance(out.get('results'), dict):
+            out['results']['primary_metrics_canonical'] = dict(pmc)
+            out['results'].setdefault('primary_response', {})
+            if isinstance(out['results'].get('primary_response'), dict):
+                out['results']['primary_response']['primary_metrics_canonical'] = dict(pmc)
+    except Exception:
+        pass
+    # Sync cards/summary only if row is truly range-shaped after strict direct-evidence gating.
+    for key in keys:
+        rr = pmc.get(key) if isinstance(pmc.get(key), dict) else None
+        if isinstance(rr, dict) and str(rr.get('value_shape') or '') == 'range' and isinstance(rr.get('value_range'), dict):
+            out = _nlp113_sync_final_views_v1(out, key)
+            break
+    dbg = out.get('debug') if isinstance(out.get('debug'), dict) else {}
+    dbg['nlp117_final_output_range_truth_v1'] = {
+        'v': 'nlp117_final_output_range_truth_v1',
+        'applied': bool(changed),
+        'targets': audits,
+    }
+    out['debug'] = dbg
+    pr = out.get('primary_response') if isinstance(out.get('primary_response'), dict) else {}
+    prdbg = pr.get('debug') if isinstance(pr.get('debug'), dict) else {}
+    prdbg['nlp117_final_output_range_truth_v1'] = dbg['nlp117_final_output_range_truth_v1']
+    # Also expose the corrected question contract for easier debugging.
+    try:
+        prdbg['nlp117_question_contract_v2'] = {'question_contract': dict(qc)}
+    except Exception:
+        pass
+    pr['debug'] = prdbg
+    out['primary_response'] = pr
+    return out
+
+
+# Supersede older late range wrappers with a strict direct-evidence-only version.
+_nlp111_enforce_final_output_range_truth_v1 = _nlp117_enforce_final_output_range_truth_v1
+
+
 # NLP116: true end-of-file bootstrap so all late patch helpers are defined before runtime.
 try:
-    globals()["_YUREEKA_CODE_VERSION_LOCK"] = "NLP116"
-    globals()["CODE_VERSION"] = "NLP116"
+    globals()["_YUREEKA_CODE_VERSION_LOCK"] = "NLP117"
+    globals()["CODE_VERSION"] = "NLP117"
 except Exception:
     pass
 try:
-    _nlp116_patch_boot = {
-        "patch_id": "NLP116",
+    _nlp117_patch_boot = {
+        "patch_id": "NLP117",
         "date": "2026-03-16",
-        "title": "NLP116 tighten final range evidence gating",
+        "title": "NLP117 strict direct-evidence range sync and stock-count question contract",
         "type": "bugfix",
         "summary": "Restricts hard final range sync to direct evidence-bearing metric ranges and excludes year/CAGR/percent pseudo-ranges.",
         "acceptance": [
             "T06 still exports a true 220-280M range.",
             "T02 no longer exports fake 2026-2040 M range.",
-            "Version stamp and patch tracker reflect NLP116."
+            "Version stamp and patch tracker reflect NLP117."
         ],
         "risk": "low",
     }
-    if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "NLP116" for e in PATCH_TRACKER_V1):
+    if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "NLP117" for e in PATCH_TRACKER_V1):
         try:
-            _yureeka_patch_tracker_ensure_head_v1("NLP116", dict(_nlp116_patch_boot))
+            _yureeka_patch_tracker_ensure_head_v1("NLP117", dict(_nlp117_patch_boot))
         except Exception:
-            PATCH_TRACKER_V1.insert(0, dict(_nlp116_patch_boot))
+            PATCH_TRACKER_V1.insert(0, dict(_nlp117_patch_boot))
 except Exception:
     pass
 
