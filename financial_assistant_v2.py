@@ -501,7 +501,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "NLP121"
+_YUREEKA_CODE_VERSION_LOCK = "NLP123"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 # REFACTOR206: Release Candidate freeze (no pipeline behavior change).
 YUREEKA_RELEASE_CANDIDATE_V1 = False
@@ -49998,6 +49998,174 @@ _nlp111_enforce_final_output_range_truth_v1 = _nlp122_enforce_final_output_truth
 try:
     globals()['_YUREEKA_CODE_VERSION_LOCK'] = 'NLP122'
     globals()['CODE_VERSION'] = 'NLP122'
+except Exception:
+    pass
+
+
+
+# === NLP123: block legacy nlp114 final range rewrites for target-point truths ===
+try:
+    _nlp123_patch = {
+        "patch_id": "NLP123",
+        "scope": "target-point-block-legacy-range",
+        "summary": "When target-scoped point truth is established, block legacy nlp114 range rewrites from mutating that target key and sync all exported mirrors from the corrected point row.",
+        "risk": "low",
+    }
+    if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "NLP123" for e in PATCH_TRACKER_V1):
+        try:
+            _yureeka_patch_tracker_ensure_head_v1("NLP123", dict(_nlp123_patch))
+        except Exception:
+            PATCH_TRACKER_V1.insert(0, dict(_nlp123_patch))
+except Exception:
+    pass
+
+
+def _nlp123_force_target_point_block_legacy_v1(output: dict, *, question_contract: dict = None):
+    out = dict(output) if isinstance(output, dict) else {}
+    if not isinstance(out, dict):
+        return output
+    qc = _nlp120_get_question_contract_v1(out, question_contract=question_contract)
+    pr = out.get('primary_response') if isinstance(out.get('primary_response'), dict) else {}
+    pmc = pr.get('primary_metrics_canonical') if isinstance(pr.get('primary_metrics_canonical'), dict) else out.get('primary_metrics_canonical')
+    if not isinstance(pmc, dict) or not pmc:
+        return out
+    target_keys = _nlp120_pick_target_keys_v1(pmc, qc, out)
+    topdbg = out.get('debug') if isinstance(out.get('debug'), dict) else {}
+    tgt_dbg = topdbg.get('nlp120_target_scoped_truth_v1') if isinstance(topdbg.get('nlp120_target_scoped_truth_v1'), dict) else {}
+    target_audits = tgt_dbg.get('targets') if isinstance(tgt_dbg.get('targets'), dict) else {}
+    changed = False
+    audits = {}
+    for key in target_keys:
+        rr = pmc.get(key) if isinstance(pmc.get(key), dict) else None
+        a = target_audits.get(str(key)) if isinstance(target_audits.get(str(key)), dict) else {}
+        expected_shape = _nlp119_expected_value_shape_v1(qc, key, rr or {})
+        if expected_shape != 'point':
+            audits[str(key)] = {'skipped': 'expected_non_point'}
+            continue
+        try:
+            v_after = a.get('value_after')
+            v_after = None if v_after is None else float(v_after)
+        except Exception:
+            v_after = None
+        if v_after is None:
+            try:
+                curv = (rr or {}).get('value') if isinstance(rr, dict) else None
+                if curv is not None and str((rr or {}).get('value_shape') or '') != 'range':
+                    v_after = float(curv)
+            except Exception:
+                v_after = None
+        if v_after is None:
+            audits[str(key)] = {'skipped': 'no_point_value'}
+            continue
+        base = dict(rr) if isinstance(rr, dict) else {}
+        unit = str(base.get('unit') or '').strip()
+        if not unit:
+            unit = 'M' if abs(v_after) >= 1 else ''
+        base['value'] = float(v_after)
+        base['display_value'] = f"{float(v_after):g} {unit}".strip()
+        base['unit'] = unit
+        for kk in ('value_shape', 'value_range', 'range', 'value_range_display', 'value_point_fallback', 'selected_value_shape_v1'):
+            base.pop(kk, None)
+        if a.get('candidate_source_url'):
+            base['source_url'] = a.get('candidate_source_url')
+        prov = base.get('provenance') if isinstance(base.get('provenance'), dict) else {}
+        bc = prov.get('best_candidate') if isinstance(prov.get('best_candidate'), dict) else {}
+        bc.pop('value_shape', None)
+        bc.pop('value_range', None)
+        if a.get('candidate_source_url'):
+            bc['source_url'] = a.get('candidate_source_url')
+            prov['source_url'] = a.get('candidate_source_url')
+        prov['best_candidate'] = bc
+        prov['method'] = 'nlp123_target_point_block_legacy_v1'
+        prov['nlp114_final_range_truth_v1'] = {'applied': False, 'blocked_by': 'nlp123_target_point_block_legacy_v1'}
+        prov['nlp114_final_output_range_truth_v1'] = {'applied': False, 'blocked_by': 'nlp123_target_point_block_legacy_v1'}
+        base['provenance'] = prov
+        base['value_last_writer_v1'] = 'nlp123_target_point_block_legacy_v1'
+        dbg = base.get('debug') if isinstance(base.get('debug'), dict) else {}
+        dbg['nlp123_target_point_block_legacy_v1'] = {
+            'v': 'nlp123_target_point_block_legacy_v1',
+            'applied': True,
+            'value': float(v_after),
+            'unit': unit,
+        }
+        dbg['nlp114_final_range_truth_v1'] = {'v': 'nlp114_final_range_truth_v1', 'applied': False, 'blocked_by': 'nlp123_target_point_block_legacy_v1'}
+        dbg['nlp114_final_output_range_truth_v1'] = {'v': 'nlp114_final_output_range_truth_v1', 'applied': False, 'blocked_by': 'nlp123_target_point_block_legacy_v1'}
+        base['debug'] = dbg
+        # Canonical holders
+        for _, holder in _nlp114_iter_pmc_holders_v1(out):
+            if isinstance(holder, dict):
+                holder[str(key)] = dict(base)
+        # Metric cards/views
+        if isinstance(out.get('primary_response'), dict):
+            _nlp121_force_metric1_point_v1(out['primary_response'], base)
+        _nlp121_force_metric1_point_v1(out, base)
+        if isinstance(out.get('results'), dict):
+            _nlp121_force_metric1_point_v1(out['results'], base)
+            if isinstance(out['results'].get('primary_response'), dict):
+                _nlp121_force_metric1_point_v1(out['results']['primary_response'], base)
+        # Summary sync
+        point_sentence = _nlp121_point_sentence_v1(float(v_after), unit)
+        holders = [
+            out,
+            out.get('primary_response') if isinstance(out.get('primary_response'), dict) else None,
+            out.get('results') if isinstance(out.get('results'), dict) else None,
+            (out.get('results') or {}).get('primary_response') if isinstance((out.get('results') or {}).get('primary_response'), dict) else None,
+        ]
+        for holder in holders:
+            if not isinstance(holder, dict):
+                continue
+            cleaned = _nlp121_clean_summary_for_point_v1(holder.get('executive_summary'))
+            cleaned = re.sub(r'\s*Selected estimate is a range of\s+[^.]+\.?', '', cleaned, flags=re.I)
+            cleaned = re.sub(r'\s*Selected estimate is\s+\d{4}\s*-\s*\d{4}\s*[A-Za-z%$]*\.?', '', cleaned, flags=re.I)
+            holder['executive_summary'] = ((cleaned + ' ' + point_sentence).strip() if point_sentence else cleaned)
+        audits[str(key)] = {
+            'applied': True,
+            'value': float(v_after),
+            'unit': unit,
+            'source_url': base.get('source_url'),
+            'expected_shape': expected_shape,
+        }
+        changed = True
+    dbg = out.get('debug') if isinstance(out.get('debug'), dict) else {}
+    dbg['nlp123_target_point_block_legacy_v1'] = {
+        'v': 'nlp123_target_point_block_legacy_v1',
+        'changed': changed,
+        'targets': audits,
+        'question_contract': qc,
+    }
+    if changed:
+        dbg['nlp114_final_range_truth_v1'] = {'v': 'nlp114_final_range_truth_v1', 'applied': False, 'blocked_by': 'nlp123_target_point_block_legacy_v1'}
+        dbg['nlp114_final_output_range_truth_v1'] = {'v': 'nlp114_final_output_range_truth_v1', 'applied': False, 'blocked_by': 'nlp123_target_point_block_legacy_v1'}
+    out['debug'] = dbg
+    pr = out.get('primary_response') if isinstance(out.get('primary_response'), dict) else {}
+    prdbg = pr.get('debug') if isinstance(pr.get('debug'), dict) else {}
+    prdbg['nlp123_target_point_block_legacy_v1'] = dbg['nlp123_target_point_block_legacy_v1']
+    if changed:
+        prdbg['nlp114_final_range_truth_v1'] = {'v': 'nlp114_final_range_truth_v1', 'applied': False, 'blocked_by': 'nlp123_target_point_block_legacy_v1'}
+        prdbg['nlp114_final_output_range_truth_v1'] = {'v': 'nlp114_final_output_range_truth_v1', 'applied': False, 'blocked_by': 'nlp123_target_point_block_legacy_v1'}
+    pr['debug'] = prdbg
+    out['primary_response'] = pr
+    return out
+
+
+def _nlp123_enforce_final_output_truth_v1(output: dict, *, question_contract: dict = None, web_context: dict = None):
+    out = _nlp122_enforce_final_output_truth_v1(output, question_contract=question_contract, web_context=web_context)
+    out = _nlp123_force_target_point_block_legacy_v1(out, question_contract=question_contract)
+    return out
+
+
+_nlp111_enforce_final_output_range_truth_v1 = _nlp123_enforce_final_output_truth_v1
+
+try:
+    globals()['_YUREEKA_CODE_VERSION_LOCK'] = 'NLP123'
+    globals()['CODE_VERSION'] = 'NLP123'
+except Exception:
+    pass
+
+# refresh frozen version getter to the latest patch id
+try:
+    def _yureeka_get_code_version(_lock='NLP123'):
+        return str(_lock)
 except Exception:
     pass
 
