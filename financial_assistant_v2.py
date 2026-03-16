@@ -48340,31 +48340,221 @@ except Exception:
     pass
 
 
-# NLP115: true end-of-file bootstrap so all late patch helpers are defined before runtime.
+
+# [MOD:MAINTAINABLE_REGISTRIES]
+# NLP116: tighten hard final range sync so only true metric-count/currency ranges
+# from direct evidence text can promote final range truth. This prevents year spans
+# (e.g. 2026-2040) and CAGR/percent snippets from corrupting point-valued metrics.
 try:
-    globals()["_YUREEKA_CODE_VERSION_LOCK"] = "NLP115"
-    globals()["CODE_VERSION"] = "NLP115"
-except Exception:
-    pass
-try:
-    _nlp115_patch = {
-        "patch_id": "NLP115",
-        "date": "2026-03-15",
-        "title": "NLP115 defer main until after late patch helpers",
+    _nlp116_patch = {
+        "patch_id": "NLP116",
+        "date": "2026-03-16",
+        "title": "NLP116 tighten final range evidence gating",
         "type": "bugfix",
-        "summary": "Defers Streamlit main() to end-of-file so late patch helper defs exist during runtime; preserves current range-sync logic.",
+        "summary": "Restricts hard final range sync to direct evidence-bearing metric ranges, rejects year spans/CAGR/percent text, and ignores summary/card-derived pseudo-ranges.",
         "acceptance": [
-            "Late patch helpers are defined before app runtime.",
-            "No NameError for late final range sync helpers.",
-            "Version stamp and patch tracker reflect NLP115."
+            "T06 still promotes true charger-count range evidence.",
+            "T02 point estimate 275M is not corrupted into a fake 2026-2040 range.",
+            "Year spans/CAGR/percent snippets never promote final metric ranges."
         ],
         "risk": "low",
     }
-    if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "NLP115" for e in PATCH_TRACKER_V1):
+    if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "NLP116" for e in PATCH_TRACKER_V1):
         try:
-            _yureeka_patch_tracker_ensure_head_v1("NLP115", dict(_nlp115_patch))
+            _yureeka_patch_tracker_ensure_head_v1("NLP116", dict(_nlp116_patch))
         except Exception:
-            PATCH_TRACKER_V1.insert(0, dict(_nlp115_patch))
+            PATCH_TRACKER_V1.insert(0, dict(_nlp116_patch))
+except Exception:
+    pass
+
+
+def _nlp116_is_year_like_pair_v1(min_v, max_v):
+    try:
+        a = float(min_v); b = float(max_v)
+    except Exception:
+        return False
+    return (1900.0 <= a <= 2100.0) and (1900.0 <= b <= 2100.0) and abs(a - round(a)) < 1e-9 and abs(b - round(b)) < 1e-9
+
+
+def _nlp116_is_plausible_range_shape_v1(metric_key: str, shape: dict, text: str = '', row: dict = None, question_contract: dict = None) -> bool:
+    shp = shape if isinstance(shape, dict) else {}
+    s = str(text or shp.get('matched_text') or '').strip()
+    sl = s.lower()
+    if not (isinstance(shp, dict) and shp.get('shape') == 'range'):
+        return False
+    try:
+        min_v = float(shp.get('min')); max_v = float(shp.get('max'))
+    except Exception:
+        return False
+    if min_v == max_v:
+        return False
+    # Never treat year spans as metric ranges.
+    if _nlp116_is_year_like_pair_v1(min_v, max_v):
+        return False
+    # Reject rate/percent style ranges.
+    if '%' in sl or 'percent' in sl or 'cagr' in sl or 'growth rate' in sl:
+        return False
+    # Must look like an actual range expression, not just two unrelated numerals.
+    if not (('between' in sl and ' and ' in sl) or ('-' in sl) or ('–' in s) or ('—' in s)):
+        return False
+    # Require an amount unit in the matched text or shape. Prevent bare 2026-2040 spans.
+    unit = str(shp.get('unit') or '').strip().upper()
+    has_amount_unit = bool(unit in {'K', 'M', 'B', 'T'} or any(tok in sl for tok in ['million', 'billion', 'trillion', 'thousand']))
+    if not has_amount_unit:
+        return False
+    # Metric-family compatibility: charger counts and investments should not absorb summary pseudo-ranges.
+    mk = str(metric_key or '').lower()
+    if 'charg' in mk:
+        if not any(tok in sl for tok in ['charger', 'chargers', 'charging point', 'charging points', 'charging connection', 'charging connections', 'public charger', 'public chargers', 'public charging']):
+            return False
+    if 'investment' in mk:
+        if not any(tok in sl for tok in ['investment', 'capex', 'spending', 'capital', 'funding']):
+            return False
+    rr = row if isinstance(row, dict) else {}
+    rr_unit = str(rr.get('unit') or '').strip().upper()
+    if rr_unit and unit and rr_unit != unit:
+        # Allow same-magnitude family only when text is explicitly long-form and row unit missing; otherwise reject mismatch.
+        return False
+    qc = question_contract if isinstance(question_contract, dict) else {}
+    mkind = str(qc.get('measure_kind') or '').lower()
+    if mkind and 'cumulative' in mkind and any(tok in sl for tok in ['annual', 'per year', 'annually']):
+        return False
+    return True
+
+
+def _nlp116_collect_final_range_candidates_v1(metric_key: str, out: dict):
+    cands = []
+    direct_labels = {'evidence_best_snippet', 'best_candidate_context', 'evidence_snippets_top'}
+    try:
+        pr = out.get('primary_response') if isinstance(out.get('primary_response'), dict) else {}
+        qc = pr.get('debug', {}).get('nlp105_question_contract_v1', {}).get('question_contract') if isinstance(pr.get('debug'), dict) else None
+    except Exception:
+        qc = None
+    try:
+        for label, pmc in _nlp114_iter_pmc_holders_v1(out):
+            rr = pmc.get(metric_key) if isinstance(pmc, dict) else None
+            if isinstance(rr, dict):
+                for lbl, txt in _nlp113_row_text_candidates_v1(rr, out):
+                    if lbl not in direct_labels:
+                        continue
+                    shp = _nlp113_parse_simple_range_from_text_v1(txt, unit_hint=rr.get('unit') or '')
+                    if _nlp116_is_plausible_range_shape_v1(metric_key, shp, txt, row=rr, question_contract=qc):
+                        cands.append((f'{label}:{lbl}', shp, rr))
+    except Exception:
+        pass
+    try:
+        wc = out.get('web_context') if isinstance(out.get('web_context'), dict) else {}
+        if isinstance(wc, dict):
+            for item in (wc.get('scraped_meta') or []):
+                txt = ''
+                if isinstance(item, dict):
+                    txt = item.get('text') or item.get('content') or item.get('snippet') or ''
+                    shp = _nlp113_parse_simple_range_from_text_v1(txt, unit_hint='')
+                    fake_row = {'unit': ''}
+                    if _nlp116_is_plausible_range_shape_v1(metric_key, shp, txt, row=fake_row, question_contract=qc):
+                        cands.append(('web_context.scraped_meta', shp, {'source_url': item.get('source_url') or item.get('url') or ''}))
+    except Exception:
+        pass
+    priority = {
+        'primary_response.primary_metrics_canonical:evidence_best_snippet': 0,
+        'primary_response.primary_metrics_canonical:best_candidate_context': 1,
+        'primary_response.primary_metrics_canonical:evidence_snippets_top': 2,
+        'primary_metrics_canonical:evidence_best_snippet': 3,
+        'results.primary_metrics_canonical:evidence_best_snippet': 4,
+        'results.primary_response.primary_metrics_canonical:evidence_best_snippet': 5,
+        'web_context.scraped_meta': 20,
+    }
+    cands.sort(key=lambda t: (priority.get(t[0], 99), -abs((t[1] or {}).get('max', 0) - (t[1] or {}).get('min', 0))))
+    return cands
+
+
+def _nlp116_apply_hard_final_range_sync_v1(output: dict, *, question_contract: dict = None, web_context: dict = None):
+    out = _nlp114_apply_hard_final_range_sync_v1(output, question_contract=question_contract, web_context=web_context)
+    # If the prior pass applied a suspicious range from years/CAGR, repair by re-running with stricter candidates only.
+    if not isinstance(out, dict):
+        return out
+    pr = out.get('primary_response') if isinstance(out.get('primary_response'), dict) else {}
+    pmc = pr.get('primary_metrics_canonical') if isinstance(pr.get('primary_metrics_canonical'), dict) else out.get('primary_metrics_canonical')
+    if not isinstance(pmc, dict) or not pmc:
+        return out
+    targets = _nlp113_pick_target_keys_v1(pmc, out)
+    audits = {}
+    applied = False
+    for key in targets:
+        cands = _nlp116_collect_final_range_candidates_v1(key, out)
+        best_label = ''; best_shape = {}; best_row = {}
+        if cands:
+            best_label, best_shape, best_row = cands[0]
+        audits[str(key)] = {'candidate_count': len(cands), 'best_label': str(best_label or ''), 'best_shape': dict(best_shape) if isinstance(best_shape, dict) else {}}
+        if not (isinstance(best_shape, dict) and best_shape.get('shape') == 'range'):
+            continue
+        source_url = ''
+        try:
+            source_url = str((((best_row.get('provenance') or {}).get('best_candidate') or {}).get('source_url') or ((best_row.get('provenance') or {}).get('source_url') or best_row.get('source_url') or '')))
+        except Exception:
+            source_url = str(best_row.get('source_url') or '')
+        # Apply the strict range truth only for plausible direct-evidence ranges.
+        for holder_label, holder in _nlp114_iter_pmc_holders_v1(out):
+            rr = holder.get(key) if isinstance(holder, dict) else None
+            if not isinstance(rr, dict):
+                continue
+            new_rr = _nlp113_apply_range_truth_to_row_v1(key, rr, best_shape, source_url=source_url, source_kind=f'nlp116:{best_label or "direct_evidence"}')
+            dbg = new_rr.get('debug') if isinstance(new_rr.get('debug'), dict) else {}
+            dbg['nlp116_final_range_truth_v1'] = {
+                'v': 'nlp116_final_range_truth_v1',
+                'applied': True,
+                'holder': holder_label,
+                'metric_key': str(key),
+                'source_label': str(best_label or ''),
+                'matched_text': str(best_shape.get('matched_text') or ''),
+            }
+            new_rr['debug'] = dbg
+            holder[key] = new_rr
+        out = _nlp113_sync_final_views_v1(out, key)
+        applied = True
+        break
+    dbg = out.get('debug') if isinstance(out.get('debug'), dict) else {}
+    dbg['nlp116_final_output_range_truth_v1'] = {
+        'v': 'nlp116_final_output_range_truth_v1',
+        'applied': bool(applied),
+        'targets': audits,
+    }
+    out['debug'] = dbg
+    pr = out.get('primary_response') if isinstance(out.get('primary_response'), dict) else {}
+    prdbg = pr.get('debug') if isinstance(pr.get('debug'), dict) else {}
+    prdbg['nlp116_final_output_range_truth_v1'] = dbg['nlp116_final_output_range_truth_v1']
+    pr['debug'] = prdbg
+    out['primary_response'] = pr
+    return out
+
+# Tighten final range sync with direct-evidence-only plausible range gating.
+_nlp111_enforce_final_output_range_truth_v1 = _nlp116_apply_hard_final_range_sync_v1
+
+# NLP116: true end-of-file bootstrap so all late patch helpers are defined before runtime.
+try:
+    globals()["_YUREEKA_CODE_VERSION_LOCK"] = "NLP116"
+    globals()["CODE_VERSION"] = "NLP116"
+except Exception:
+    pass
+try:
+    _nlp116_patch_boot = {
+        "patch_id": "NLP116",
+        "date": "2026-03-16",
+        "title": "NLP116 tighten final range evidence gating",
+        "type": "bugfix",
+        "summary": "Restricts hard final range sync to direct evidence-bearing metric ranges and excludes year/CAGR/percent pseudo-ranges.",
+        "acceptance": [
+            "T06 still exports a true 220-280M range.",
+            "T02 no longer exports fake 2026-2040 M range.",
+            "Version stamp and patch tracker reflect NLP116."
+        ],
+        "risk": "low",
+    }
+    if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "NLP116" for e in PATCH_TRACKER_V1):
+        try:
+            _yureeka_patch_tracker_ensure_head_v1("NLP116", dict(_nlp116_patch_boot))
+        except Exception:
+            PATCH_TRACKER_V1.insert(0, dict(_nlp116_patch_boot))
 except Exception:
     pass
 
