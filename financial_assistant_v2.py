@@ -501,7 +501,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "NLP119"
+_YUREEKA_CODE_VERSION_LOCK = "NLP120"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 # REFACTOR206: Release Candidate freeze (no pipeline behavior change).
 YUREEKA_RELEASE_CANDIDATE_V1 = False
@@ -49549,6 +49549,213 @@ _nlp111_enforce_final_output_range_truth_v1 = _nlp119_enforce_final_output_truth
 try:
     globals()['_YUREEKA_CODE_VERSION_LOCK'] = 'NLP119'
     globals()['CODE_VERSION'] = 'NLP119'
+except Exception:
+    pass
+
+
+
+# [MOD:NLP120_TARGET_SCOPED_DIRECT_EVIDENCE]
+# NLP120: Scope direct-evidence truth to the target family only, and suppress stale point/range pollution
+# on non-target metrics. Also supersede older point/range presentation mismatches for target-point questions.
+try:
+    _nlp120_patch = {
+        "patch_id": "NLP120",
+        "code_version": "NLP120",
+        "title": "NLP120 target-scoped direct evidence preference",
+        "scope": "llm-sidecar",
+        "summary": "Restricts direct evidence truth to target-family rows, blocks stale NLP114-style range overfire on point-valued target questions, and keeps presentation synced to the final target row.",
+        "acceptance": [
+            "T02 target row resolves to the injected 275M public-only point estimate in assisted paths without fake year-span ranges.",
+            "Direct-evidence truth does not overwrite unrelated CAGR or investment rows for charger-stock questions.",
+            "T06 range behavior remains eligible because range selection is still driven by the target contract.",
+            "Version stamp and patch tracker reflect NLP120.",
+        ],
+        "risk": "medium",
+    }
+    if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "NLP120" for e in PATCH_TRACKER_V1):
+        try:
+            _yureeka_patch_tracker_ensure_head_v1("NLP120", dict(_nlp120_patch))
+        except Exception:
+            PATCH_TRACKER_V1.insert(0, dict(_nlp120_patch))
+except Exception:
+    pass
+
+
+def _nlp120_get_question_contract_v1(output: dict, question_contract: dict = None) -> dict:
+    if isinstance(question_contract, dict) and question_contract:
+        return dict(question_contract)
+    out = output if isinstance(output, dict) else {}
+    pr = out.get('primary_response') if isinstance(out.get('primary_response'), dict) else {}
+    for dbg_key in ('nlp117_question_contract_v2', 'nlp105_question_contract_v1'):
+        try:
+            dbg = pr.get('debug') if isinstance(pr.get('debug'), dict) else {}
+            qc = ((dbg.get(dbg_key) or {}).get('question_contract')) if isinstance(dbg.get(dbg_key), dict) else None
+            if isinstance(qc, dict) and qc:
+                return dict(qc)
+        except Exception:
+            pass
+    return {}
+
+
+def _nlp120_metric_matches_target_v1(metric_key: str, qc: dict, metric_row: dict = None) -> bool:
+    mk = str(metric_key or '').lower()
+    qcv = qc if isinstance(qc, dict) else {}
+    fam = str(qcv.get('target_family') or '').lower()
+    measure_kind = str(qcv.get('measure_kind') or '').lower()
+    unit_family = str(qcv.get('unit_family') or '').lower()
+    row = metric_row if isinstance(metric_row, dict) else {}
+    if fam in ('charging_infrastructure_stock', 'public_chargers', 'private_residential_chargers'):
+        if any(tok in mk for tok in ('cagr', 'growth', 'invest', 'currency', 'percent')):
+            return False
+        if unit_family == 'count' and '__unit_count' not in mk and 'charg' not in mk:
+            return False
+        if 'charg' not in mk:
+            return False
+        if measure_kind in ('stock_count', 'stock') and any(tok in mk for tok in ('flow', 'annual')):
+            return False
+        return True
+    if fam == 'charging_investment':
+        return ('invest' in mk or 'currency' in mk) and not any(tok in mk for tok in ('cagr', 'growth', 'percent'))
+    if fam == 'ev_sales_count':
+        return ('sale' in mk or 'unit_count' in mk) and not any(tok in mk for tok in ('share', 'percent', 'cagr', 'growth'))
+    if fam == 'ev_sales_share':
+        return any(tok in mk for tok in ('share', 'percent')) and 'sale' in mk
+    return False
+
+
+def _nlp120_pick_target_keys_v1(pmc: dict, qc: dict, output: dict) -> list:
+    if not isinstance(pmc, dict) or not pmc:
+        return []
+    hits = []
+    for k, v in pmc.items():
+        if _nlp120_metric_matches_target_v1(k, qc, v if isinstance(v, dict) else None):
+            hits.append(k)
+    if hits:
+        return hits
+    try:
+        picked = _nlp113_pick_target_keys_v1(pmc, output if isinstance(output, dict) else {})
+        return list(picked[:1]) if isinstance(picked, list) else []
+    except Exception:
+        return list(pmc.keys())[:1]
+
+
+def _nlp120_cleanup_non_target_rows_v1(out: dict, target_keys: set):
+    if not isinstance(out, dict):
+        return out
+    for _, holder in _nlp114_iter_pmc_holders_v1(out):
+        if not isinstance(holder, dict):
+            continue
+        for key, row in list(holder.items()):
+            if key in target_keys or not isinstance(row, dict):
+                continue
+            dbg = row.get('debug') if isinstance(row.get('debug'), dict) else {}
+            pt = dbg.get('nlp118_final_point_truth_v1') if isinstance(dbg.get('nlp118_final_point_truth_v1'), dict) else {}
+            if pt and row.get('value_last_writer_v1') == 'nlp118_final_export_point_truth_v1':
+                prev = pt.get('previous_value')
+                if prev is not None:
+                    row['value'] = prev
+                for kk in ('display_value', 'source_url', 'evidence_best_snippet'):
+                    # leave existing fields untouched if we cannot reconstruct them safely
+                    pass
+                dbg['nlp120_non_target_cleanup_v1'] = {
+                    'v': 'nlp120_non_target_cleanup_v1',
+                    'restored_previous_value': prev,
+                    'from_writer': 'nlp118_final_export_point_truth_v1',
+                }
+                row['debug'] = dbg
+    return out
+
+
+def _nlp120_sync_target_point_views_v1(out: dict, metric_key: str) -> dict:
+    out = _nlp118_sync_final_point_views_v1(out, metric_key)
+    if not isinstance(out, dict):
+        return out
+    pr = out.get('primary_response') if isinstance(out.get('primary_response'), dict) else {}
+    pmc = pr.get('primary_metrics_canonical') if isinstance(pr.get('primary_metrics_canonical'), dict) else {}
+    rr = pmc.get(metric_key) if isinstance(pmc.get(metric_key), dict) else {}
+    if not isinstance(rr, dict):
+        return out
+    try:
+        val = float(rr.get('value')) if rr.get('value') is not None else None
+    except Exception:
+        val = None
+    unit = str(rr.get('unit') or '').strip()
+    if val is not None:
+        summ = str(pr.get('executive_summary') or out.get('executive_summary') or '')
+        summ = re.sub(r'Selected estimate[^.]*\.?', '', summ, flags=re.I).strip()
+        point_sentence = f"Selected estimate is {val:g} {unit}.".strip()
+        if summ:
+            summ = (summ + ' ' + point_sentence).strip()
+        else:
+            summ = point_sentence
+        pr['executive_summary'] = summ
+        out['executive_summary'] = summ
+        prdbg = pr.get('debug') if isinstance(pr.get('debug'), dict) else {}
+        prdbg['nlp120_target_point_sync_v1'] = {'v': 'nlp120_target_point_sync_v1', 'metric_key': str(metric_key), 'value': val, 'unit': unit}
+        pr['debug'] = prdbg
+        out['primary_response'] = pr
+    return out
+
+
+def _nlp120_enforce_final_output_truth_v1(output: dict, *, question_contract: dict = None, web_context: dict = None):
+    base = _nlp117_enforce_final_output_range_truth_v1(output, question_contract=question_contract, web_context=web_context)
+    out = dict(base) if isinstance(base, dict) else {}
+    qc = _nlp120_get_question_contract_v1(out, question_contract=question_contract)
+    pr = out.get('primary_response') if isinstance(out.get('primary_response'), dict) else {}
+    pmc = pr.get('primary_metrics_canonical') if isinstance(pr.get('primary_metrics_canonical'), dict) else out.get('primary_metrics_canonical')
+    if not isinstance(pmc, dict) or not pmc:
+        return out
+    target_keys = _nlp120_pick_target_keys_v1(pmc, qc, out)
+    target_set = set(target_keys)
+    changed = False
+    audits = {}
+    for key in target_keys:
+        rr = pmc.get(key) if isinstance(pmc.get(key), dict) else None
+        if not isinstance(rr, dict):
+            continue
+        expected_shape = _nlp119_expected_value_shape_v1(qc, key, rr)
+        cands = _nlp119_collect_direct_evidence_candidates_v1(key, rr, out, question_contract=qc, web_context=web_context)
+        audit = {'expected_shape': expected_shape, 'candidate_count': len(cands), 'applied': False, 'value_before': rr.get('value'), 'shape_before': str(rr.get('value_shape') or 'point')}
+        if cands:
+            cand = cands[0]
+            audit['candidate_source_url'] = cand.get('source_url')
+            audit['candidate_shape'] = cand.get('shape')
+            if expected_shape == 'range' and cand.get('shape') == 'range':
+                new_rr = _nlp119_apply_range_truth_to_row_v1(key, rr, cand, question_contract=qc)
+                for _, holder in _nlp114_iter_pmc_holders_v1(out):
+                    if isinstance(holder, dict):
+                        holder[key] = dict(new_rr)
+                out = _nlp119_sync_final_range_views_v1(out, key, question_contract=qc)
+                changed = True
+                audit['applied'] = True
+                audit['shape_after'] = 'range'
+            elif expected_shape == 'point' and cand.get('shape') == 'point':
+                new_rr = _nlp118_apply_point_truth_to_row_v1(key, rr, cand)
+                for _, holder in _nlp114_iter_pmc_holders_v1(out):
+                    if isinstance(holder, dict):
+                        holder[key] = dict(new_rr)
+                out = _nlp120_sync_target_point_views_v1(out, key)
+                changed = True
+                audit['applied'] = True
+                audit['shape_after'] = 'point'
+                audit['value_after'] = new_rr.get('value')
+        audits[str(key)] = audit
+    out = _nlp120_cleanup_non_target_rows_v1(out, target_set)
+    dbg = out.get('debug') if isinstance(out.get('debug'), dict) else {}
+    dbg['nlp120_target_scoped_truth_v1'] = {'v': 'nlp120_target_scoped_truth_v1', 'changed': bool(changed), 'target_keys': list(target_keys), 'question_contract': qc, 'targets': audits}
+    out['debug'] = dbg
+    pr = out.get('primary_response') if isinstance(out.get('primary_response'), dict) else {}
+    prdbg = pr.get('debug') if isinstance(pr.get('debug'), dict) else {}
+    prdbg['nlp120_target_scoped_truth_v1'] = dbg.get('nlp120_target_scoped_truth_v1', {})
+    pr['debug'] = prdbg
+    out['primary_response'] = pr
+    return out
+
+_nlp111_enforce_final_output_range_truth_v1 = _nlp120_enforce_final_output_truth_v1
+
+try:
+    globals()['_YUREEKA_CODE_VERSION_LOCK'] = 'NLP120'
+    globals()['CODE_VERSION'] = 'NLP120'
 except Exception:
     pass
 
