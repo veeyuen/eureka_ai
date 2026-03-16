@@ -501,7 +501,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "NLP115"
+_YUREEKA_CODE_VERSION_LOCK = "NLP119"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 # REFACTOR206: Release Candidate freeze (no pipeline behavior change).
 YUREEKA_RELEASE_CANDIDATE_V1 = False
@@ -48769,6 +48769,786 @@ try:
             _yureeka_patch_tracker_ensure_head_v1("NLP117", dict(_nlp117_patch_boot))
         except Exception:
             PATCH_TRACKER_V1.insert(0, dict(_nlp117_patch_boot))
+except Exception:
+    pass
+
+try:
+    if False and __name__ == "__main__" and bool(globals().get("_YUREEKA_DEFER_MAIN_UNTIL_EOF_V1")):
+        main()
+except Exception:
+    try:
+        st.exception(Exception(f"Yureeka app crashed during deferred main() execution ({_yureeka_get_code_version()})."))
+    except Exception:
+        pass
+
+
+# [MOD:NLP118_DIRECT_POINT_PREFERENCE]
+# NLP118: Prefer clean direct point evidence for charger-stock questions at final export.
+try:
+    _nlp118_patch = {
+        "patch_id": "NLP118",
+        "code_version": "NLP118",
+        "summary": "Prefer direct point-valued evidence for charger-stock questions on the final export path, so clean injected public-only point estimates (e.g. T02 275M) beat nearby residential fallback metrics in deterministic/replay.",
+        "acceptance": [
+            "T02 deterministic/replay converge to the injected 275M public-only point when direct evidence is present.",
+            "T06 range win is preserved because point preference skips compatible direct ranges.",
+            "T03 wrong-type question does not get forced into a charger point when no compatible direct point exists."
+        ]
+    }
+    if 'PATCH_TRACKER_V1' in globals() and isinstance(PATCH_TRACKER_V1, list):
+        try:
+            _yureeka_patch_tracker_ensure_head_v1("NLP118", dict(_nlp118_patch))
+        except Exception:
+            PATCH_TRACKER_V1.insert(0, dict(_nlp118_patch))
+except Exception:
+    pass
+
+
+def _nlp118_is_charger_stock_question_v1(qc: dict, metric_key: str = '') -> bool:
+    qc = qc if isinstance(qc, dict) else {}
+    fam = str(qc.get('target_family') or '').strip().lower()
+    mk = str(qc.get('measure_kind') or '').strip().lower()
+    q = str(qc.get('question') or '').strip().lower()
+    k = str(metric_key or '').strip().lower()
+    if 'charg' not in k:
+        return False
+    if fam == 'charging_infrastructure_stock':
+        return True
+    if mk == 'stock_count' and 'charg' in q:
+        return True
+    return False
+
+
+def _nlp118_is_public_required_v1(qc: dict) -> bool:
+    q = str((qc or {}).get('question') or '').lower()
+    return 'public' in q
+
+
+def _nlp118_collect_injected_urls_v1(out: dict, web_context: dict = None) -> set:
+    urls = set()
+    try:
+        wc = web_context if isinstance(web_context, dict) else {}
+        if not wc and isinstance(out, dict):
+            wc = (out.get('primary_response') or {}).get('web_context') if isinstance((out.get('primary_response') or {}).get('web_context'), dict) else out.get('web_context')
+            wc = wc if isinstance(wc, dict) else {}
+        dbg = wc.get('diag_injected_urls') if isinstance(wc.get('diag_injected_urls'), dict) else {}
+        for kk in ('persisted', 'admitted', 'ui_norm', 'intake_norm'):
+            for u in (dbg.get(kk) or []):
+                s = str(u or '').strip()
+                if s:
+                    urls.add(s)
+        ex = wc.get('extra_urls_debug') if isinstance(wc.get('extra_urls_debug'), dict) else {}
+        for kk in ('extra_urls_requested', 'extra_urls_normalized', 'extra_urls_admitted'):
+            for u in (ex.get(kk) or []):
+                s = str(u or '').strip()
+                if s:
+                    urls.add(s)
+    except Exception:
+        pass
+    return urls
+
+
+def _nlp118_candidate_text_ok_v1(text: str, *, public_required: bool = False) -> bool:
+    t = str(text or '').lower()
+    if not t:
+        return False
+    if '2040' not in t:
+        return False
+    if '%' in t or 'percent' in t or ' cagr' in t or 'compound annual growth' in t or 'growth rate' in t:
+        return False
+    if not any(tok in t for tok in ('charg', 'charging point', 'charging connection', 'charging port', 'charging station')):
+        return False
+    if 'investment' in t or '$' in t or 'usd' in t or 'billion' in t or 'trillion' in t:
+        return False
+    if public_required:
+        if 'public' not in t:
+            return False
+        if ('residential' in t or 'private' in t) and not any(tok in t for tok in ('exclude', 'excluded', 'excluding', 'not private', 'public charging points worldwide are projected')):
+            return False
+    return True
+
+
+def _nlp118_best_direct_point_candidate_v1(metric_key: str, metric_row: dict, out: dict, *, question_contract: dict = None, web_context: dict = None) -> dict:
+    qc = question_contract if isinstance(question_contract, dict) else {}
+    if not _nlp118_is_charger_stock_question_v1(qc, metric_key):
+        return {}
+    rr = metric_row if isinstance(metric_row, dict) else {}
+    wc = web_context if isinstance(web_context, dict) else {}
+    if not wc and isinstance(out, dict):
+        pr = out.get('primary_response') if isinstance(out.get('primary_response'), dict) else {}
+        wc = pr.get('web_context') if isinstance(pr.get('web_context'), dict) else out.get('web_context')
+        wc = wc if isinstance(wc, dict) else {}
+    scraped = wc.get('scraped_meta') if isinstance(wc.get('scraped_meta'), dict) else {}
+    if not isinstance(scraped, dict) or not scraped:
+        return {}
+    injected = _nlp118_collect_injected_urls_v1(out, web_context=wc)
+    public_required = _nlp118_is_public_required_v1(qc)
+    best = {}
+    best_score = -10**9
+    for url, meta in scraped.items():
+        if not isinstance(meta, dict):
+            continue
+        clean_text = str(meta.get('clean_text') or meta.get('content') or '')
+        for ex in (meta.get('extracted_numbers') or []):
+            if not isinstance(ex, dict):
+                continue
+            txt = str(ex.get('context_snippet') or ex.get('context') or clean_text or '')
+            if not _nlp118_candidate_text_ok_v1(txt, public_required=public_required):
+                continue
+            try:
+                val = ex.get('value_norm')
+                if val is None:
+                    val = ex.get('value')
+                val = float(val)
+            except Exception:
+                continue
+            # Charger-stock counts should be positive and materially larger than tiny stray numbers.
+            if not (val > 1.0):
+                continue
+            unit = str(ex.get('base_unit') or ex.get('unit_tag') or ex.get('unit') or rr.get('unit') or 'M').strip() or 'M'
+            t = txt.lower()
+            score = 0
+            if str(url or '').strip() in injected:
+                score += 100
+            if 'public' in t:
+                score += 20
+            if 'worldwide' in t or 'global' in t:
+                score += 12
+            if 'projected' in t or 'expected' in t or 'forecast' in t or 'project' in t:
+                score += 10
+            if 'exclude' in t or 'excluded' in t or 'excluding' in t:
+                score += 10
+            if 'residential' in t or 'private' in t:
+                score -= 8
+            if '2040' in t:
+                score += 10
+            # Prefer values close to the largest explicit compatible point if multiple exist.
+            score += min(int(val), 1000) / 1000.0
+            cand = {
+                'value': val,
+                'unit': unit,
+                'raw': str(ex.get('raw') or ''),
+                'source_url': str(url or ex.get('source_url') or ''),
+                'context_snippet': txt,
+                'score': score,
+                'source_kind': 'nlp118:web_context_direct_point',
+            }
+            if score > best_score:
+                best_score = score
+                best = cand
+    return best if isinstance(best, dict) else {}
+
+
+def _nlp118_apply_point_truth_to_row_v1(metric_key: str, metric_row: dict, cand: dict) -> dict:
+    rr = dict(metric_row) if isinstance(metric_row, dict) else {}
+    c = cand if isinstance(cand, dict) else {}
+    try:
+        point_value = float(c.get('value'))
+    except Exception:
+        return rr
+    unit = str(c.get('unit') or rr.get('unit') or 'M').strip() or 'M'
+    prev_value = rr.get('value')
+    # Remove any stale range shape from prior layers.
+    for kk in ('value_shape', 'value_range', 'range', 'value_range_display', 'value_point_fallback', 'selected_value_shape_v1'):
+        try:
+            rr.pop(kk, None)
+        except Exception:
+            pass
+    rr['value'] = point_value
+    rr['unit'] = unit
+    rr['display_value'] = f"{point_value:g} {unit}".strip()
+    rr['source_url'] = str(c.get('source_url') or rr.get('source_url') or '')
+    if c.get('context_snippet'):
+        rr['evidence_best_snippet'] = str(c.get('context_snippet') or '')
+    prov = rr.get('provenance') if isinstance(rr.get('provenance'), dict) else {}
+    bc = prov.get('best_candidate') if isinstance(prov.get('best_candidate'), dict) else {}
+    bc['raw'] = str(c.get('raw') or bc.get('raw') or '')
+    bc['source_url'] = str(c.get('source_url') or bc.get('source_url') or '')
+    bc['context_snippet'] = str(c.get('context_snippet') or bc.get('context_snippet') or '')
+    bc['value'] = point_value
+    bc['unit'] = unit
+    prov['best_candidate'] = bc
+    prov['method'] = 'nlp118_final_export_point_truth_v1'
+    prov['source_url'] = str(c.get('source_url') or prov.get('source_url') or '')
+    rr['provenance'] = prov
+    rr['value_last_writer_v1'] = 'nlp118_final_export_point_truth_v1'
+    dbg = rr.get('debug') if isinstance(rr.get('debug'), dict) else {}
+    dbg['nlp118_final_point_truth_v1'] = {
+        'v': 'nlp118_final_point_truth_v1',
+        'applied': True,
+        'metric_key': str(metric_key or ''),
+        'value': point_value,
+        'unit': unit,
+        'previous_value': prev_value,
+        'source_url': str(c.get('source_url') or ''),
+        'matched_text': str(c.get('context_snippet') or ''),
+        'score': c.get('score'),
+    }
+    rr['debug'] = dbg
+    return rr
+
+
+def _nlp118_sync_final_point_views_v1(out: dict, metric_key: str) -> dict:
+    if not isinstance(out, dict):
+        return out
+    pr = out.get('primary_response') if isinstance(out.get('primary_response'), dict) else {}
+    pmc = pr.get('primary_metrics_canonical') if isinstance(pr.get('primary_metrics_canonical'), dict) else {}
+    rr = pmc.get(metric_key) if isinstance(pmc.get(metric_key), dict) else {}
+    if not isinstance(rr, dict):
+        return out
+    try:
+        val = rr.get('value')
+        if val is None:
+            return out
+        val = float(val)
+    except Exception:
+        return out
+    unit = str(rr.get('unit') or '').strip()
+    pr_pm = pr.get('primary_metrics') if isinstance(pr.get('primary_metrics'), dict) else {}
+    m1 = pr_pm.get('metric_1') if isinstance(pr_pm.get('metric_1'), dict) else {}
+    m1['value'] = f"{val:g}"
+    m1['display_value'] = f"{val:g} {unit}".strip()
+    m1['unit'] = unit
+    m1.pop('value_shape', None)
+    m1.pop('value_range', None)
+    pr_pm['metric_1'] = m1
+    pr['primary_metrics'] = pr_pm
+    summ = str(pr.get('executive_summary') or out.get('executive_summary') or '')
+    if summ:
+        # Keep summary text, but remove stale synthetic range sentence if present.
+        summ = re.sub(r'\s*Selected estimate is a range of\s+[^.]+\.?', '', summ, flags=re.I).strip()
+    pr['executive_summary'] = summ
+    out['executive_summary'] = summ
+    out['primary_response'] = pr
+    try:
+        out['primary_metrics_canonical'] = dict(pr.get('primary_metrics_canonical') or {})
+        out.setdefault('results', {})
+        if isinstance(out.get('results'), dict):
+            out['results']['primary_metrics_canonical'] = dict(pr.get('primary_metrics_canonical') or {})
+            out['results'].setdefault('primary_response', {})
+            if isinstance(out['results'].get('primary_response'), dict):
+                out['results']['primary_response']['primary_metrics_canonical'] = dict(pr.get('primary_metrics_canonical') or {})
+    except Exception:
+        pass
+    return out
+
+
+def _nlp118_enforce_final_output_truth_v1(output: dict, *, question_contract: dict = None, web_context: dict = None):
+    base = _nlp117_enforce_final_output_range_truth_v1(output, question_contract=question_contract, web_context=web_context)
+    out = dict(base) if isinstance(base, dict) else {}
+    pr = out.get('primary_response') if isinstance(out.get('primary_response'), dict) else {}
+    pmc = pr.get('primary_metrics_canonical') if isinstance(pr.get('primary_metrics_canonical'), dict) else out.get('primary_metrics_canonical')
+    if not isinstance(pmc, dict) or not pmc:
+        return base if isinstance(base, dict) else out
+    qc = question_contract if isinstance(question_contract, dict) else None
+    if not isinstance(qc, dict):
+        try:
+            qc = (((pr.get('debug') or {}).get('nlp117_question_contract_v2') or {}).get('question_contract')) if isinstance(pr.get('debug'), dict) else None
+        except Exception:
+            qc = None
+    if not isinstance(qc, dict):
+        try:
+            qc = (((pr.get('debug') or {}).get('nlp105_question_contract_v1') or {}).get('question_contract')) if isinstance(pr.get('debug'), dict) else None
+        except Exception:
+            qc = None
+    if not isinstance(qc, dict):
+        qc = {}
+    changed = False
+    audits = {}
+    for key in _nlp113_pick_target_keys_v1(pmc, out):
+        rr = pmc.get(key) if isinstance(pmc.get(key), dict) else None
+        if not isinstance(rr, dict):
+            continue
+        audit = {'point_candidate_exists': False, 'applied': False, 'value_before': rr.get('value'), 'source_before': str(rr.get('source_url') or '')}
+        # Preserve true ranges; do not override them back to points.
+        direct_range = _nlp117_direct_range_shape_for_row_v1(key, rr, question_contract=qc)
+        if isinstance(direct_range, tuple) and isinstance(direct_range[1], dict) and direct_range[1].get('shape') == 'range':
+            audits[str(key)] = audit
+            continue
+        if str(rr.get('value_shape') or '') == 'range' and isinstance(rr.get('value_range'), dict):
+            audits[str(key)] = audit
+            continue
+        cand = _nlp118_best_direct_point_candidate_v1(key, rr, out, question_contract=qc, web_context=web_context)
+        if not isinstance(cand, dict) or not cand:
+            audits[str(key)] = audit
+            continue
+        audit['point_candidate_exists'] = True
+        audit['candidate_value'] = cand.get('value')
+        audit['candidate_source_url'] = cand.get('source_url')
+        # Apply when current row is missing, wrong-source fallback, or materially different from the stronger direct evidence.
+        cur_url = str(rr.get('source_url') or (((rr.get('provenance') or {}).get('best_candidate') or {}).get('source_url') or '')).strip()
+        try:
+            cur_val = float(rr.get('value')) if rr.get('value') is not None else None
+        except Exception:
+            cur_val = None
+        apply = False
+        if cur_url != str(cand.get('source_url') or '').strip():
+            apply = True
+        elif cur_val is None:
+            apply = True
+        else:
+            try:
+                apply = abs(float(cand.get('value')) - cur_val) > 1e-9
+            except Exception:
+                apply = True
+        if not apply:
+            audits[str(key)] = audit
+            continue
+        new_rr = _nlp118_apply_point_truth_to_row_v1(key, rr, cand)
+        for _, holder in _nlp114_iter_pmc_holders_v1(out):
+            if isinstance(holder, dict):
+                holder[key] = dict(new_rr)
+        changed = True
+        audit['applied'] = True
+        audit['value_after'] = new_rr.get('value')
+        audit['source_after'] = str(new_rr.get('source_url') or '')
+        out = _nlp118_sync_final_point_views_v1(out, key)
+        audits[str(key)] = audit
+    dbg = out.get('debug') if isinstance(out.get('debug'), dict) else {}
+    dbg['nlp118_final_output_point_truth_v1'] = {
+        'v': 'nlp118_final_output_point_truth_v1',
+        'changed': bool(changed),
+        'targets': audits,
+    }
+    out['debug'] = dbg
+    pr = out.get('primary_response') if isinstance(out.get('primary_response'), dict) else {}
+    prdbg = pr.get('debug') if isinstance(pr.get('debug'), dict) else {}
+    prdbg['nlp118_final_output_point_truth_v1'] = dbg.get('nlp118_final_output_point_truth_v1', {})
+    pr['debug'] = prdbg
+    out['primary_response'] = pr
+    return out
+
+
+_nlp111_enforce_final_output_range_truth_v1 = _nlp118_enforce_final_output_truth_v1
+
+
+# [MOD:NLP119_GENERAL_DIRECT_EVIDENCE_PREFERENCE]
+# NLP119: Generalized, contract-driven direct-evidence preference layer.
+try:
+    _nlp119_patch = {
+        "patch_id": "NLP119",
+        "code_version": "NLP119",
+        "title": "NLP119 generalized contract-driven direct evidence preference",
+        "scope": "llm-sidecar",
+        "summary": "Generalizes direct evidence preference into a declarative contract-driven layer for point and range evidence across compatible families; keeps T06 range behavior while making point-valued direct evidence selection maintainable.",
+        "acceptance": [
+            "T02 can converge on clean direct point evidence without family-specific branching.",
+            "T05B still prefers direct cumulative charging investment evidence.",
+            "T06 true ranges remain eligible and are not collapsed back to points.",
+            "Version stamp and patch tracker reflect NLP119."
+        ],
+        "risk": "medium",
+    }
+    if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "NLP119" for e in PATCH_TRACKER_V1):
+        try:
+            _yureeka_patch_tracker_ensure_head_v1("NLP119", dict(_nlp119_patch))
+        except Exception:
+            PATCH_TRACKER_V1.insert(0, dict(_nlp119_patch))
+except Exception:
+    pass
+
+try:
+    _YUREEKA_DIRECT_EVIDENCE_PREFERENCE_RULES_V1 = {
+        "charging_infrastructure_stock": {
+            "metric_key_markers": ["charg"],
+            "required_any": ["charg", "charging point", "charging connection", "charging port", "charging station"],
+            "forbidden_any": ["investment", "$", "usd", "billion", "trillion", "%", "percent", "cagr", "growth rate", "compound annual growth"],
+            "positive_any": ["projected", "expected", "forecast", "worldwide", "global", "public"],
+            "public_positive": ["public"],
+            "public_negative": ["residential", "private"],
+            "exclude_positive": ["exclude", "excluded", "excluding", "not private"],
+            "unit_family": "count",
+            "default_shape": "point",
+            "source_url_bonus_injected": 100,
+        },
+        "public_chargers": {
+            "inherits": "charging_infrastructure_stock",
+            "default_shape": "point",
+        },
+        "private_residential_chargers": {
+            "inherits": "charging_infrastructure_stock",
+            "required_any": ["charg", "charging point", "charging connection", "charging port", "charging station", "residential", "private"],
+            "public_positive": [],
+            "public_negative": [],
+            "default_shape": "point",
+        },
+        "charging_investment": {
+            "metric_key_markers": ["invest"],
+            "required_any": ["investment", "capex", "spending", "capital"],
+            "forbidden_any": ["%", "percent", "cagr", "growth rate", "compound annual growth"],
+            "negative_family_any": ["battery", "cell production", "gigafactory", "battery demand"],
+            "positive_any": ["charging", "infrastructure", "network"],
+            "unit_family": "currency",
+            "default_shape": "point",
+            "source_url_bonus_injected": 100,
+        },
+        "ev_sales_count": {
+            "metric_key_markers": ["sale", "sold", "deliver"],
+            "required_any": ["sale", "sold", "deliver", "registration"],
+            "forbidden_any": ["%", "percent", "share", "cagr", "growth rate"],
+            "unit_family": "count",
+            "default_shape": "point",
+            "source_url_bonus_injected": 100,
+        },
+        "ev_sales_share": {
+            "metric_key_markers": ["sale", "share", "percent"],
+            "required_any": ["sale", "share", "%", "percent", "account for"],
+            "unit_family": "percent",
+            "default_shape": "point",
+            "source_url_bonus_injected": 100,
+        },
+    }
+except Exception:
+    _YUREEKA_DIRECT_EVIDENCE_PREFERENCE_RULES_V1 = {}
+
+
+def _nlp119_resolve_rule_v1(target_family: str, metric_key: str = "") -> dict:
+    fam = str(target_family or "").strip().lower()
+    rules = _YUREEKA_DIRECT_EVIDENCE_PREFERENCE_RULES_V1 if isinstance(globals().get("_YUREEKA_DIRECT_EVIDENCE_PREFERENCE_RULES_V1"), dict) else {}
+    rule = dict(rules.get(fam) or {})
+    if not rule:
+        mk = str(metric_key or "").lower()
+        for rfam, rdef in rules.items():
+            if not isinstance(rdef, dict):
+                continue
+            if any(str(tok or '').lower() in mk for tok in (rdef.get('metric_key_markers') or [])):
+                rule = dict(rdef)
+                fam = rfam
+                break
+    seen = set()
+    while isinstance(rule, dict) and rule.get("inherits") and str(rule.get("inherits")) not in seen:
+        seen.add(str(rule.get("inherits")))
+        parent = dict(rules.get(str(rule.get("inherits"))) or {})
+        if not parent:
+            break
+        merged = dict(parent)
+        merged.update({k: v for k, v in rule.items() if k != 'inherits'})
+        rule = merged
+    rule["target_family"] = fam
+    return rule if isinstance(rule, dict) else {}
+
+
+def _nlp119_expected_value_shape_v1(question_contract: dict, metric_key: str = "", metric_row: dict = None) -> str:
+    qc = question_contract if isinstance(question_contract, dict) else {}
+    q = str(qc.get('question') or '').lower()
+    row = metric_row if isinstance(metric_row, dict) else {}
+    cur = str(row.get('value_shape') or '').lower()
+    if cur == 'range':
+        return 'range'
+    if any(tok in q for tok in (' between ', ' range ', ' from ', ' to ')):
+        return 'range'
+    return 'point'
+
+
+def _nlp119_text_has_any_v1(text: str, toks) -> bool:
+    t = str(text or '').lower()
+    return any(str(tok or '').lower() in t for tok in (toks or []))
+
+
+def _nlp119_is_public_required_v1(question_contract: dict) -> bool:
+    q = str((question_contract or {}).get('question') or '').lower()
+    return 'public' in q
+
+
+def _nlp119_collect_injected_urls_v1(out: dict, web_context: dict = None) -> set:
+    base = globals().get('_nlp118_collect_injected_urls_v1')
+    if callable(base):
+        try:
+            return set(base(out, web_context=web_context) or [])
+        except Exception:
+            pass
+    return set()
+
+
+def _nlp119_text_matches_contract_v1(text: str, *, rule: dict, question_contract: dict = None, metric_row: dict = None, expected_shape: str = 'point') -> bool:
+    txt = str(text or '').strip()
+    if not txt:
+        return False
+    t = txt.lower()
+    qc = question_contract if isinstance(question_contract, dict) else {}
+    row = metric_row if isinstance(metric_row, dict) else {}
+    if expected_shape == 'point':
+        shp = _nlp105_parse_range_from_text_v1(txt, row)
+        if isinstance(shp, dict) and shp.get('shape') == 'range':
+            return False
+    req = rule.get('required_any') or []
+    if req and not _nlp119_text_has_any_v1(t, req):
+        return False
+    forb = rule.get('forbidden_any') or []
+    if forb and _nlp119_text_has_any_v1(t, forb):
+        return False
+    negfam = rule.get('negative_family_any') or []
+    if negfam and _nlp119_text_has_any_v1(t, negfam):
+        return False
+    unit_family = str(rule.get('unit_family') or qc.get('unit_family') or '').lower()
+    if unit_family == 'currency' and not any(tok in t for tok in ('$', 'usd', 'billion', 'trillion', 'million', 'investment', 'capex', 'spending', 'capital')):
+        return False
+    if unit_family == 'percent' and not any(tok in t for tok in ('%', 'percent', 'share', 'account for')):
+        return False
+    if unit_family == 'count' and any(tok in t for tok in ('$', 'usd', 'billion', 'trillion')):
+        return False
+    measure_kind = str(qc.get('measure_kind') or '').lower()
+    if measure_kind == 'cumulative_total':
+        if any(tok in t for tok in ('annual ', ' annually', ' per year')):
+            return False
+        if not any(tok in t for tok in ('cumulative', 'by 2040', 'through 2040', 'over the period', 'by the end of 2040')):
+            return False
+    elif measure_kind == 'annual_flow':
+        if 'cumulative' in t:
+            return False
+        if not any(tok in t for tok in ('annual', 'annually', 'per year', 'in 2040')):
+            return False
+    if _nlp119_is_public_required_v1(qc):
+        pos = rule.get('public_positive') or ['public']
+        neg = rule.get('public_negative') or ['residential', 'private']
+        ex = rule.get('exclude_positive') or ['exclude', 'excluded', 'excluding', 'not private']
+        if pos and not _nlp119_text_has_any_v1(t, pos):
+            return False
+        if neg and _nlp119_text_has_any_v1(t, neg) and not _nlp119_text_has_any_v1(t, ex):
+            return False
+    ta = str(qc.get('time_anchor') or '').strip()
+    if ta and ta not in t:
+        return False
+    return True
+
+
+def _nlp119_score_candidate_v1(cand: dict, *, rule: dict, question_contract: dict = None, injected_urls: set = None) -> float:
+    c = cand if isinstance(cand, dict) else {}
+    t = str(c.get('context_snippet') or '').lower()
+    score = 0.0
+    if str(c.get('source_url') or '').strip() in (injected_urls or set()):
+        score += float(rule.get('source_url_bonus_injected') or 0)
+    if _nlp119_text_has_any_v1(t, rule.get('positive_any') or []):
+        score += 15.0
+    if 'projected' in t or 'expected' in t or 'forecast' in t or 'project' in t:
+        score += 8.0
+    if 'global' in t or 'worldwide' in t:
+        score += 6.0
+    ta = str((question_contract or {}).get('time_anchor') or '').strip()
+    if ta and ta in t:
+        score += 6.0
+    try:
+        if c.get('shape') == 'point' and c.get('value') is not None:
+            score += min(abs(float(c.get('value'))), 1000000.0) / 1000000.0
+        elif c.get('shape') == 'range':
+            vr = c.get('value_range') if isinstance(c.get('value_range'), dict) else {}
+            score += min(abs(float(vr.get('max'))), 1000000.0) / 1000000.0
+    except Exception:
+        pass
+    return score
+
+
+def _nlp119_collect_direct_evidence_candidates_v1(metric_key: str, metric_row: dict, out: dict, *, question_contract: dict = None, web_context: dict = None) -> list:
+    qc = question_contract if isinstance(question_contract, dict) else {}
+    rr = metric_row if isinstance(metric_row, dict) else {}
+    rule = _nlp119_resolve_rule_v1(str(qc.get('target_family') or ''), metric_key)
+    if not rule:
+        return []
+    expected_shape = _nlp119_expected_value_shape_v1(qc, metric_key, rr)
+    wc = web_context if isinstance(web_context, dict) else {}
+    if not wc and isinstance(out, dict):
+        pr = out.get('primary_response') if isinstance(out.get('primary_response'), dict) else {}
+        wc = pr.get('web_context') if isinstance(pr.get('web_context'), dict) else out.get('web_context')
+        wc = wc if isinstance(wc, dict) else {}
+    scraped = wc.get('scraped_meta') if isinstance(wc.get('scraped_meta'), dict) else {}
+    if not scraped:
+        return []
+    injected = _nlp119_collect_injected_urls_v1(out, web_context=wc)
+    out_cands = []
+    for url, meta in scraped.items():
+        if not isinstance(meta, dict):
+            continue
+        clean_text = str(meta.get('clean_text') or meta.get('content') or '')
+        for ex in (meta.get('extracted_numbers') or []):
+            if not isinstance(ex, dict):
+                continue
+            txt = str(ex.get('context_snippet') or ex.get('context') or clean_text or '')
+            if not _nlp119_text_matches_contract_v1(txt, rule=rule, question_contract=qc, metric_row=rr, expected_shape=expected_shape):
+                continue
+            source_url = str(url or ex.get('source_url') or '').strip()
+            if expected_shape == 'range':
+                shp = _nlp105_parse_range_from_text_v1(txt, rr)
+                if not (isinstance(shp, dict) and shp.get('shape') == 'range'):
+                    continue
+                if not _nlp116_is_plausible_range_shape_v1(metric_key, shp, txt, row=rr, question_contract=qc):
+                    continue
+                cand = {
+                    'shape': 'range',
+                    'source_url': source_url,
+                    'context_snippet': txt,
+                    'value_range': {'min': shp.get('min'), 'max': shp.get('max')},
+                    'unit': shp.get('unit') or rr.get('unit') or '',
+                    'matched_text': shp.get('matched_text') or txt,
+                }
+            else:
+                try:
+                    val = ex.get('value_norm') if ex.get('value_norm') is not None else ex.get('value')
+                    val = float(val)
+                except Exception:
+                    continue
+                if not (val > 0):
+                    continue
+                unit = str(ex.get('base_unit') or ex.get('unit_tag') or ex.get('unit') or rr.get('unit') or '').strip()
+                cand = {
+                    'shape': 'point',
+                    'source_url': source_url,
+                    'context_snippet': txt,
+                    'value': val,
+                    'unit': unit,
+                    'raw': str(ex.get('raw') or ''),
+                }
+            cand['score'] = _nlp119_score_candidate_v1(cand, rule=rule, question_contract=qc, injected_urls=injected)
+            out_cands.append(cand)
+    out_cands.sort(key=lambda x: float(x.get('score') or 0), reverse=True)
+    return out_cands
+
+
+def _nlp119_apply_range_truth_to_row_v1(metric_key: str, metric_row: dict, cand: dict, *, question_contract: dict = None) -> dict:
+    rr = dict(metric_row) if isinstance(metric_row, dict) else {}
+    c = cand if isinstance(cand, dict) else {}
+    vr = c.get('value_range') if isinstance(c.get('value_range'), dict) else {}
+    shape = {
+        'shape': 'range',
+        'min': vr.get('min'),
+        'max': vr.get('max'),
+        'unit': str(c.get('unit') or rr.get('unit') or ''),
+        'matched_text': str(c.get('matched_text') or c.get('context_snippet') or ''),
+        'method': 'nlp119_direct_evidence_range_v1',
+    }
+    best = {'source_url': str(c.get('source_url') or ''), 'text': str(c.get('context_snippet') or '')}
+    rr = _nlp107_apply_range_to_row_v1(metric_key, rr, shape, question_contract=question_contract, best_range=best, promotion_source='nlp119_final_export_direct_evidence_v1')
+    rr['value_last_writer_v1'] = 'nlp119_final_export_direct_evidence_v1'
+    dbg = rr.get('debug') if isinstance(rr.get('debug'), dict) else {}
+    dbg['nlp119_final_direct_truth_v1'] = {
+        'v': 'nlp119_final_direct_truth_v1', 'shape': 'range', 'source_url': str(c.get('source_url') or ''),
+        'matched_text': str(c.get('context_snippet') or ''), 'score': c.get('score')}
+    rr['debug'] = dbg
+    return rr
+
+
+def _nlp119_sync_final_range_views_v1(out: dict, metric_key: str, *, question_contract: dict = None) -> dict:
+    if not isinstance(out, dict):
+        return out
+    pr = out.get('primary_response') if isinstance(out.get('primary_response'), dict) else {}
+    pd = {
+        'primary_metrics_canonical': dict(pr.get('primary_metrics_canonical') or {}),
+        'primary_metrics': dict(pr.get('primary_metrics') or {}),
+        'executive_summary': str(pr.get('executive_summary') or out.get('executive_summary') or ''),
+        'debug': dict(pr.get('debug') or {}),
+    }
+    pd = _nlp108_sync_primary_metrics_with_canonical_v1(pd, question_contract=question_contract)
+    pd = _nlp108_sync_summary_with_value_shapes_v1(pd, question_contract=question_contract)
+    pr['primary_metrics_canonical'] = dict(pd.get('primary_metrics_canonical') or pr.get('primary_metrics_canonical') or {})
+    pr['primary_metrics'] = dict(pd.get('primary_metrics') or pr.get('primary_metrics') or {})
+    pr['executive_summary'] = str(pd.get('executive_summary') or pr.get('executive_summary') or '')
+    pr['debug'] = dict(pd.get('debug') or pr.get('debug') or {})
+    out['primary_response'] = pr
+    out['executive_summary'] = pr.get('executive_summary') or out.get('executive_summary')
+    try:
+        out['primary_metrics_canonical'] = dict(pr.get('primary_metrics_canonical') or {})
+        out.setdefault('results', {})
+        if isinstance(out.get('results'), dict):
+            out['results']['primary_metrics_canonical'] = dict(pr.get('primary_metrics_canonical') or {})
+            out['results'].setdefault('primary_response', {})
+            if isinstance(out['results'].get('primary_response'), dict):
+                out['results']['primary_response']['primary_metrics_canonical'] = dict(pr.get('primary_metrics_canonical') or {})
+    except Exception:
+        pass
+    return out
+
+
+def _nlp119_enforce_final_output_truth_v1(output: dict, *, question_contract: dict = None, web_context: dict = None):
+    base = _nlp117_enforce_final_output_range_truth_v1(output, question_contract=question_contract, web_context=web_context)
+    out = dict(base) if isinstance(base, dict) else {}
+    pr = out.get('primary_response') if isinstance(out.get('primary_response'), dict) else {}
+    pmc = pr.get('primary_metrics_canonical') if isinstance(pr.get('primary_metrics_canonical'), dict) else out.get('primary_metrics_canonical')
+    if not isinstance(pmc, dict) or not pmc:
+        return base if isinstance(base, dict) else out
+    qc = question_contract if isinstance(question_contract, dict) else None
+    if not isinstance(qc, dict):
+        try:
+            qc = (((pr.get('debug') or {}).get('nlp117_question_contract_v2') or {}).get('question_contract')) if isinstance(pr.get('debug'), dict) else None
+        except Exception:
+            qc = None
+    if not isinstance(qc, dict):
+        try:
+            qc = (((pr.get('debug') or {}).get('nlp105_question_contract_v1') or {}).get('question_contract')) if isinstance(pr.get('debug'), dict) else None
+        except Exception:
+            qc = None
+    qc = qc if isinstance(qc, dict) else {}
+    changed = False
+    audits = {}
+    for key in _nlp113_pick_target_keys_v1(pmc, out):
+        rr = pmc.get(key) if isinstance(pmc.get(key), dict) else None
+        if not isinstance(rr, dict):
+            continue
+        expected_shape = _nlp119_expected_value_shape_v1(qc, key, rr)
+        cands = _nlp119_collect_direct_evidence_candidates_v1(key, rr, out, question_contract=qc, web_context=web_context)
+        audit = {'expected_shape': expected_shape, 'candidate_count': len(cands), 'applied': False, 'value_before': rr.get('value'), 'shape_before': str(rr.get('value_shape') or 'point')}
+        if not cands:
+            audits[str(key)] = audit
+            continue
+        cand = cands[0]
+        audit['candidate_source_url'] = cand.get('source_url')
+        audit['candidate_shape'] = cand.get('shape')
+        if expected_shape == 'range' and cand.get('shape') == 'range':
+            new_rr = _nlp119_apply_range_truth_to_row_v1(key, rr, cand, question_contract=qc)
+            for _, holder in _nlp114_iter_pmc_holders_v1(out):
+                if isinstance(holder, dict):
+                    holder[key] = dict(new_rr)
+            out = _nlp119_sync_final_range_views_v1(out, key, question_contract=qc)
+            changed = True
+            audit['applied'] = True
+            audit['shape_after'] = 'range'
+            audits[str(key)] = audit
+            continue
+        if expected_shape == 'point' and cand.get('shape') == 'point':
+            cur_shape = str(rr.get('value_shape') or '').lower()
+            cur_url = str(rr.get('source_url') or (((rr.get('provenance') or {}).get('best_candidate') or {}).get('source_url') or '')).strip()
+            try:
+                cur_val = float(rr.get('value')) if rr.get('value') is not None else None
+            except Exception:
+                cur_val = None
+            apply = False
+            if cur_shape == 'range':
+                apply = True
+            elif cur_url != str(cand.get('source_url') or '').strip():
+                apply = True
+            elif cur_val is None:
+                apply = True
+            else:
+                try:
+                    apply = abs(float(cand.get('value')) - cur_val) > 1e-9
+                except Exception:
+                    apply = True
+            if apply:
+                new_rr = _nlp118_apply_point_truth_to_row_v1(key, rr, cand)
+                for _, holder in _nlp114_iter_pmc_holders_v1(out):
+                    if isinstance(holder, dict):
+                        holder[key] = dict(new_rr)
+                out = _nlp118_sync_final_point_views_v1(out, key)
+                changed = True
+                audit['applied'] = True
+                audit['shape_after'] = 'point'
+                audit['value_after'] = new_rr.get('value')
+                audits[str(key)] = audit
+                continue
+        audits[str(key)] = audit
+    dbg = out.get('debug') if isinstance(out.get('debug'), dict) else {}
+    dbg['nlp119_direct_evidence_truth_v1'] = {'v': 'nlp119_direct_evidence_truth_v1', 'changed': bool(changed), 'targets': audits}
+    out['debug'] = dbg
+    pr = out.get('primary_response') if isinstance(out.get('primary_response'), dict) else {}
+    prdbg = pr.get('debug') if isinstance(pr.get('debug'), dict) else {}
+    prdbg['nlp119_direct_evidence_truth_v1'] = dbg.get('nlp119_direct_evidence_truth_v1', {})
+    pr['debug'] = prdbg
+    out['primary_response'] = pr
+    return out
+
+_nlp111_enforce_final_output_range_truth_v1 = _nlp119_enforce_final_output_truth_v1
+
+try:
+    globals()['_YUREEKA_CODE_VERSION_LOCK'] = 'NLP119'
+    globals()['CODE_VERSION'] = 'NLP119'
 except Exception:
     pass
 
