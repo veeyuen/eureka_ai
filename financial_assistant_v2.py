@@ -501,7 +501,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 # REFACTOR12: single-source-of-truth version lock.
 # - All JSON outputs must stamp using _yureeka_get_code_version().
 # - The getter is intentionally "frozen" via a default arg to prevent late overrides.
-_YUREEKA_CODE_VERSION_LOCK = "NLP123"
+_YUREEKA_CODE_VERSION_LOCK = "NLP125"
 CODE_VERSION = _YUREEKA_CODE_VERSION_LOCK
 # REFACTOR206: Release Candidate freeze (no pipeline behavior change).
 YUREEKA_RELEASE_CANDIDATE_V1 = False
@@ -50168,6 +50168,305 @@ try:
         return str(_lock)
 except Exception:
     pass
+
+
+
+# === NLP124: hard resync all exported mirrors from target-point truth ===
+try:
+    _nlp124_patch = {
+        "patch_id": "NLP124",
+        "scope": "target-point-hard-resync-all-mirrors",
+        "summary": "After final truth selection, force every exported mirror of the target metric to copy from the authoritative point-valued target row and clear stale legacy range metadata.",
+        "risk": "low",
+    }
+    if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "NLP124" for e in PATCH_TRACKER_V1):
+        try:
+            _yureeka_patch_tracker_ensure_head_v1("NLP124", dict(_nlp124_patch))
+        except Exception:
+            PATCH_TRACKER_V1.insert(0, dict(_nlp124_patch))
+except Exception:
+    pass
+
+
+def _nlp124_hard_resync_target_point_mirrors_v1(output: dict, *, question_contract: dict = None):
+    out = dict(output) if isinstance(output, dict) else {}
+    if not isinstance(out, dict):
+        return output
+    qc = _nlp120_get_question_contract_v1(out, question_contract=question_contract)
+    pr = out.get('primary_response') if isinstance(out.get('primary_response'), dict) else {}
+    pmc = pr.get('primary_metrics_canonical') if isinstance(pr.get('primary_metrics_canonical'), dict) else out.get('primary_metrics_canonical')
+    if not isinstance(pmc, dict) or not pmc:
+        return out
+    target_keys = _nlp120_pick_target_keys_v1(pmc, qc, out)
+    changed = False
+    audits = {}
+    for key in target_keys:
+        row = pmc.get(key) if isinstance(pmc.get(key), dict) else None
+        expected_shape = _nlp119_expected_value_shape_v1(qc, key, row or {})
+        if expected_shape != 'point':
+            audits[str(key)] = {'skipped': 'expected_non_point'}
+            continue
+        base = dict(row) if isinstance(row, dict) else {}
+        try:
+            val = base.get('value')
+            val = None if val is None else float(val)
+        except Exception:
+            val = None
+        if val is None:
+            audits[str(key)] = {'skipped': 'no_point_value'}
+            continue
+        unit = str(base.get('unit') or '').strip()
+        if not unit:
+            unit = 'M' if abs(val) >= 1 else ''
+        base['value'] = float(val)
+        base['unit'] = unit
+        base['display_value'] = f"{float(val):g} {unit}".strip()
+        for kk in ('value_shape','value_range','range','value_range_display','value_point_fallback','selected_value_shape_v1'):
+            base.pop(kk, None)
+        prov = base.get('provenance') if isinstance(base.get('provenance'), dict) else {}
+        bc = prov.get('best_candidate') if isinstance(prov.get('best_candidate'), dict) else {}
+        for kk in ('value_shape','value_range','range','value_range_display','value_point_fallback','selected_value_shape_v1'):
+            bc.pop(kk, None)
+        prov['best_candidate'] = bc
+        prov['method'] = 'nlp124_hard_resync_target_point_mirrors_v1'
+        prov['nlp114_final_range_truth_v1'] = {'applied': False, 'blocked_by': 'nlp124_hard_resync_target_point_mirrors_v1'}
+        prov['nlp114_final_output_range_truth_v1'] = {'applied': False, 'blocked_by': 'nlp124_hard_resync_target_point_mirrors_v1'}
+        base['provenance'] = prov
+        base['value_last_writer_v1'] = 'nlp124_hard_resync_target_point_mirrors_v1'
+        dbg = base.get('debug') if isinstance(base.get('debug'), dict) else {}
+        dbg['nlp124_hard_resync_target_point_mirrors_v1'] = {
+            'v': 'nlp124_hard_resync_target_point_mirrors_v1',
+            'applied': True,
+            'value': float(val),
+            'unit': unit,
+        }
+        dbg['nlp114_final_range_truth_v1'] = {'v': 'nlp114_final_range_truth_v1', 'applied': False, 'blocked_by': 'nlp124_hard_resync_target_point_mirrors_v1'}
+        dbg['nlp114_final_output_range_truth_v1'] = {'v': 'nlp114_final_output_range_truth_v1', 'applied': False, 'blocked_by': 'nlp124_hard_resync_target_point_mirrors_v1'}
+        base['debug'] = dbg
+        # Hard copy authoritative base into every canonical holder.
+        for _, holder in _nlp114_iter_pmc_holders_v1(out):
+            if isinstance(holder, dict):
+                holder[str(key)] = dict(base)
+        # Also ensure direct nested mirrors if present.
+        for holder in [out, pr, out.get('results') if isinstance(out.get('results'), dict) else None, (out.get('results') or {}).get('primary_response') if isinstance((out.get('results') or {}).get('primary_response'), dict) else None]:
+            if isinstance(holder, dict) and isinstance(holder.get('primary_metrics_canonical'), dict):
+                holder['primary_metrics_canonical'][str(key)] = dict(base)
+        # Sync cards/views from the same authoritative base.
+        if isinstance(out.get('primary_response'), dict):
+            _nlp121_force_metric1_point_v1(out['primary_response'], base)
+        _nlp121_force_metric1_point_v1(out, base)
+        if isinstance(out.get('results'), dict):
+            _nlp121_force_metric1_point_v1(out['results'], base)
+            if isinstance(out['results'].get('primary_response'), dict):
+                _nlp121_force_metric1_point_v1(out['results']['primary_response'], base)
+        point_sentence = _nlp121_point_sentence_v1(float(val), unit)
+        holders = [out, out.get('primary_response') if isinstance(out.get('primary_response'), dict) else None, out.get('results') if isinstance(out.get('results'), dict) else None, (out.get('results') or {}).get('primary_response') if isinstance((out.get('results') or {}).get('primary_response'), dict) else None]
+        for holder in holders:
+            if not isinstance(holder, dict):
+                continue
+            cleaned = _nlp121_clean_summary_for_point_v1(holder.get('executive_summary'))
+            cleaned = re.sub(r'\s*Selected estimate is a range of\s+[^.]+\.?', '', cleaned, flags=re.I)
+            cleaned = re.sub(r'\s*Selected estimate is\s+\d{4}\s*-\s*\d{4}\s*[A-Za-z%$]*\.?', '', cleaned, flags=re.I)
+            holder['executive_summary'] = ((cleaned + ' ' + point_sentence).strip() if point_sentence else cleaned)
+        audits[str(key)] = {'applied': True, 'value': float(val), 'unit': unit, 'source_url': base.get('source_url')}
+        changed = True
+    dbg = out.get('debug') if isinstance(out.get('debug'), dict) else {}
+    dbg['nlp124_hard_resync_target_point_mirrors_v1'] = {
+        'v': 'nlp124_hard_resync_target_point_mirrors_v1',
+        'changed': changed,
+        'targets': audits,
+        'question_contract': qc,
+    }
+    out['debug'] = dbg
+    pr = out.get('primary_response') if isinstance(out.get('primary_response'), dict) else {}
+    prdbg = pr.get('debug') if isinstance(pr.get('debug'), dict) else {}
+    prdbg['nlp124_hard_resync_target_point_mirrors_v1'] = dbg['nlp124_hard_resync_target_point_mirrors_v1']
+    pr['debug'] = prdbg
+    out['primary_response'] = pr
+    return out
+
+
+def _nlp124_enforce_final_output_truth_v1(output: dict, *, question_contract: dict = None, web_context: dict = None):
+    out = _nlp123_enforce_final_output_truth_v1(output, question_contract=question_contract, web_context=web_context)
+    out = _nlp124_hard_resync_target_point_mirrors_v1(out, question_contract=question_contract)
+    return out
+
+
+_nlp111_enforce_final_output_range_truth_v1 = _nlp124_enforce_final_output_truth_v1
+
+try:
+    globals()['_YUREEKA_CODE_VERSION_LOCK'] = 'NLP124'
+    globals()['CODE_VERSION'] = 'NLP124'
+except Exception:
+    pass
+
+try:
+    def _yureeka_get_code_version(_lock='NLP124'):
+        return str(_lock)
+except Exception:
+    pass
+
+try:
+    if False and __name__ == "__main__" and bool(globals().get("_YUREEKA_DEFER_MAIN_UNTIL_EOF_V1")):
+        main()
+except Exception:
+    try:
+        st.exception(Exception(f"Yureeka app crashed during deferred main() execution ({_yureeka_get_code_version()})."))
+    except Exception:
+        pass
+
+
+# NLP125: auth hardening for Perplexity/Gemini key loading + provider key selection
+try:
+    if isinstance(PATCH_TRACKER_V1, list) and not any(isinstance(e, dict) and str(e.get("patch_id") or "") == "NLP125" for e in PATCH_TRACKER_V1):
+        PATCH_TRACKER_V1.insert(0, {
+            "patch_id": "NLP125",
+            "scope": "auth-hardening",
+            "summary": "Stop silent all-key secrets→env fallback, strip loaded keys, prefer runtime PERPLEXITY_KEY for Perplexity provider calls, and publish masked auth-source diagnostics.",
+            "risk": "low",
+        })
+except Exception:
+    pass
+
+try:
+    globals()['_YUREEKA_CODE_VERSION_LOCK'] = 'NLP125'
+    globals()['CODE_VERSION'] = 'NLP125'
+except Exception:
+    pass
+
+try:
+    def _yureeka_get_code_version(_lock='NLP125'):
+        return str(_lock)
+except Exception:
+    pass
+
+_YUREEKA_AUTH_DIAG_V1 = {}
+
+def _nlp125_mask_key_v1(val: str) -> str:
+    try:
+        s = str(val or '').strip()
+        if len(s) < 12:
+            return f'<len={len(s)}>'
+        return f'{s[:6]}...{s[-4:]} (len={len(s)})'
+    except Exception:
+        return '<masked>'
+
+
+def _nlp125_get_secret_or_env_v1(name: str):
+    secret_err = ''
+    try:
+        if hasattr(st, 'secrets'):
+            _v = st.secrets.get(name)
+            if _v is not None and str(_v).strip():
+                return (str(_v).strip(), 'st.secrets', secret_err)
+    except Exception as e:
+        secret_err = str(e)
+    try:
+        _v = os.getenv(name, '')
+        if _v is not None and str(_v).strip():
+            return (str(_v).strip(), 'env', secret_err)
+    except Exception:
+        pass
+    return ('', 'missing', secret_err)
+
+
+def load_api_keys():
+    """Load and validate API keys with per-key fallback, stripping, and masked diagnostics."""
+    perplexity_key, perplexity_src, perplexity_err = _nlp125_get_secret_or_env_v1('PERPLEXITY_API_KEY')
+    gemini_key, gemini_src, gemini_err = _nlp125_get_secret_or_env_v1('GEMINI_API_KEY')
+    serpapi_key, serpapi_src, serpapi_err = _nlp125_get_secret_or_env_v1('SERPAPI_KEY')
+    scrapingdog_key, scrapingdog_src, scrapingdog_err = _nlp125_get_secret_or_env_v1('SCRAPINGDOG_KEY')
+
+    diag = {
+        'v': 'nlp125_auth_key_loading_v1',
+        'perplexity': {
+            'source': perplexity_src,
+            'present': bool(perplexity_key),
+            'masked': _nlp125_mask_key_v1(perplexity_key),
+            'secret_error': str(perplexity_err or ''),
+            'env_present': bool(str(os.getenv('PERPLEXITY_API_KEY', '') or '').strip()),
+            'alt_env_present': bool(str(os.getenv('YUREEKA_PERPLEXITY_API_KEY', '') or '').strip()),
+        },
+        'gemini': {
+            'source': gemini_src,
+            'present': bool(gemini_key),
+            'masked': _nlp125_mask_key_v1(gemini_key),
+            'secret_error': str(gemini_err or ''),
+        },
+        'serpapi': {
+            'source': serpapi_src,
+            'present': bool(serpapi_key),
+            'masked': _nlp125_mask_key_v1(serpapi_key),
+            'secret_error': str(serpapi_err or ''),
+        },
+        'scrapingdog': {
+            'source': scrapingdog_src,
+            'present': bool(scrapingdog_key),
+            'masked': _nlp125_mask_key_v1(scrapingdog_key),
+            'secret_error': str(scrapingdog_err or ''),
+        },
+    }
+    try:
+        globals()['_YUREEKA_AUTH_DIAG_V1'] = dict(diag)
+    except Exception:
+        pass
+    try:
+        st.session_state.setdefault('debug', {})
+        st.session_state['debug']['nlp125_auth_key_loading_v1'] = dict(diag)
+    except Exception:
+        pass
+
+    if not perplexity_key or len(perplexity_key) < 10:
+        st.error('❌ PERPLEXITY_API_KEY is missing or invalid')
+        st.stop()
+
+    if not gemini_key or len(gemini_key) < 10:
+        st.error('❌ GEMINI_API_KEY is missing or invalid')
+        st.stop()
+
+    return perplexity_key, gemini_key, serpapi_key, scrapingdog_key
+
+
+PERPLEXITY_KEY, GEMINI_KEY, SERPAPI_KEY, SCRAPINGDOG_KEY = load_api_keys()
+
+
+def _yureeka_llm_pick_api_key_v1(base_url: str) -> Tuple[str, str]:
+    """Pick an API key based on provider base_url. Returns (key, source_label)."""
+    try:
+        b = str(base_url or '')
+    except Exception:
+        b = ''
+    is_pplx = _yureeka_llm_is_perplexity_base_v1(b)
+
+    candidates = []
+    if bool(is_pplx):
+        try:
+            _k = globals().get('PERPLEXITY_KEY')
+            if isinstance(_k, str) and _k.strip():
+                candidates.append(('PERPLEXITY_KEY_RUNTIME', _k.strip()))
+        except Exception:
+            pass
+        candidates.extend([
+            ('PERPLEXITY_API_KEY', str(os.environ.get('PERPLEXITY_API_KEY') or '').strip()),
+            ('YUREEKA_PERPLEXITY_API_KEY', str(os.environ.get('YUREEKA_PERPLEXITY_API_KEY') or '').strip()),
+        ])
+    else:
+        candidates = [
+            ('OPENAI_API_KEY', str(os.environ.get('OPENAI_API_KEY') or '').strip()),
+            ('YUREEKA_OPENAI_API_KEY', str(os.environ.get('YUREEKA_OPENAI_API_KEY') or '').strip()),
+            ('YUREEKA_LLM_API_KEY', str(os.environ.get('YUREEKA_LLM_API_KEY') or '').strip()),
+        ]
+
+    for label, val in candidates:
+        try:
+            if isinstance(val, str) and val.strip():
+                return (val.strip(), str(label))
+        except Exception:
+            continue
+    try:
+        return ('', str(candidates[0][0]) if candidates else '')
+    except Exception:
+        return ('', '')
 
 try:
     if __name__ == "__main__" and bool(globals().get("_YUREEKA_DEFER_MAIN_UNTIL_EOF_V1")):
